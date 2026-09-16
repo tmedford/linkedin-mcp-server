@@ -14,6 +14,14 @@ on:
   schedule:
     - cron: "0 7 * * *"   # 03:00 America/New_York; GitHub cron is UTC
   workflow_dispatch:      # and runnable by hand from the Actions tab
+    inputs:
+      branch:
+        description: >-
+          Branch to sync. Defaults to main. Point it at a scratch branch to
+          rehearse the merge/test/push path without risking main - a nightly
+          that has only ever taken the no-op path is untested.
+        default: main
+        required: false
 
 permissions:
   contents: write
@@ -28,17 +36,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ inputs.branch || 'main' }}
           fetch-depth: 0      # merges need real history, not a shallow clone
+
+      - name: Name the branch
+        run: echo "branch=${{ inputs.branch || 'main' }}" >> "$GITHUB_ENV"
 
       - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/stickerdaniel/linkedin-mcp-server.git
           git fetch upstream main
-          echo "behind=$(git rev-list --count main..upstream/main)" >> "$GITHUB_ENV"
+          echo "behind=$(git rev-list --count "$branch"..upstream/main)" >> "$GITHUB_ENV"
 
       - name: Report position
-        run: echo "Fork is $behind commit(s) behind upstream/main."
+        run: echo "$branch is $behind commit(s) behind upstream/main."
 
       - name: Merge upstream
         if: env.behind != '0'
@@ -47,8 +58,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if ! git merge --no-edit upstream/main; then
             git merge --abort
-            echo "::error::Merge conflict with upstream. main is untouched and needs a human."
-            git diff --name-only main upstream/main | sed 's/^/conflicting candidate: /'
+            echo "::error::Merge conflict with upstream. $branch is untouched and needs a human."
+            git diff --name-only "$branch" upstream/main | sed 's/^/conflicting candidate: /'
             exit 1
           fi
 
@@ -72,4 +83,4 @@ jobs:
 
       - name: Push
         if: env.behind != '0'
-        run: git push origin main
+        run: git push origin "HEAD:$branch"
