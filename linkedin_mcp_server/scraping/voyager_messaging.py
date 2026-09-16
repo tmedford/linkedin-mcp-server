@@ -163,16 +163,27 @@ def forget_cached_query() -> None:
     _QUERY_CACHE = None
 
 
-def _slug(profile_url: str) -> str:
-    """Pull the /in/<slug>/ handle out of a profile URL, or "" if absent.
+# LinkedIn puts an OBFUSCATED member id where a vanity handle would go:
+# /in/ACoAADAv-8oB... rather than /in/ryan-dart. Measured against a live
+# mailbox, all 25 rows came back in the obfuscated form and none as a handle.
+# The two are not interchangeable - a vanity handle is what a human-facing
+# record files under, while the obfuscated id is stable and unique but opaque -
+# so they are reported separately and never conflated.
+_OBFUSCATED_ID = re.compile(r"^ACoAA[A-Za-z0-9_-]+$")
 
-    The slug is the key every ledger entry in this workspace is filed under,
-    so getting it from the API means a conversation can be correlated without
-    matching on a display name. Name matching is what split one contact across
-    two keys and what left a real lead with no key at all.
+
+def _handle(profile_url: str) -> str:
+    """Return the VANITY handle from a profile URL, or "" when there is none.
+
+    An obfuscated member id is deliberately NOT returned here. It is a valid
+    identifier but it is not a handle, and reporting it as one would file a
+    person under a key that cannot match any handle-keyed record.
     """
     match = re.search(r"/in/([^/?#]+)", profile_url or "")
-    return match.group(1) if match else ""
+    if not match:
+        return ""
+    candidate = match.group(1)
+    return "" if _OBFUSCATED_ID.match(candidate) else candidate
 
 
 class VoyagerMessagingReader:
@@ -453,7 +464,10 @@ class VoyagerMessagingReader:
                 # it only exists when LinkedIn hands back a profile URL.
                 "profile_urn": item.get("hostIdentityUrn") or "",
                 "profile_url": profile_url,
-                "profile_slug": _slug(profile_url),
+                # Populated only when LinkedIn actually returns a vanity URL.
+                # In practice it usually does not; profile_urn is the reliable
+                # identifier and this is the convenience when it exists.
+                "profile_handle": _handle(profile_url),
             }
         return out
 
@@ -501,7 +515,10 @@ class VoyagerMessagingReader:
             # of strings and cannot say WHICH person a headline belongs to, nor
             # carry an id at all. people is the one to build on.
             "people": people,
-            "participant_slugs": [p["profile_slug"] for p in people if p["profile_slug"]],
+            # The identifier that is always present. Handles are reported per
+            # person in `people` and are frequently absent, so a list of them
+            # would silently under-represent the participants.
+            "participant_urns": [p["profile_urn"] for p in people if p["profile_urn"]],
             "last_activity_at": conversation.get("lastActivityAt"),
             "last_activity_iso": self._iso(conversation.get("lastActivityAt")),
             "last_read_at": conversation.get("lastReadAt"),

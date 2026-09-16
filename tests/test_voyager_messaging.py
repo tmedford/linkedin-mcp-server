@@ -638,20 +638,22 @@ class TestPageSizeIsAlwaysPinned:
 # --------------------------------------------------------------------------- #
 
 
-def test_slug_is_extracted_only_from_a_member_profile_url():
-    from linkedin_mcp_server.scraping.voyager_messaging import _slug
+def test_handle_is_returned_only_for_a_real_vanity_url():
+    from linkedin_mcp_server.scraping.voyager_messaging import _handle
 
-    assert _slug("https://www.linkedin.com/in/ada-lovelace/") == "ada-lovelace"
-    assert _slug("https://www.linkedin.com/in/adamgodfrey") == "adamgodfrey"
-    # A company URL is not a person; returning its handle would file a
-    # conversation under a key that can never match a person in the ledger.
-    assert _slug("https://www.linkedin.com/company/zuora/") == ""
-    assert _slug("") == ""
-    assert _slug(None) == ""
+    assert _handle("https://www.linkedin.com/in/ada-lovelace/") == "ada-lovelace"
+    # THE CASE THAT MATTERS: measured against a live mailbox, every one of 25
+    # rows carried an obfuscated member id here, not a handle. Returning it as
+    # a handle would file the person under a key no handle-keyed record can
+    # ever match, which is worse than reporting nothing.
+    assert _handle("https://www.linkedin.com/in/ACoAADAv-8oBRorLph0IeTTiyH7") == ""
+    assert _handle("https://www.linkedin.com/company/zuora/") == ""
+    assert _handle("") == ""
+    assert _handle(None) == ""
 
 
-def test_participants_keep_urn_and_slug_apart():
-    """An absent slug must read as absent, never as a guess from the name."""
+def test_participants_keep_urn_and_handle_apart():
+    """The urn is always present; the handle is absent far more often than not."""
     from linkedin_mcp_server.scraping.voyager_messaging import VoyagerMessagingReader
 
     payload = {
@@ -659,39 +661,20 @@ def test_participants_keep_urn_and_slug_apart():
             {
                 "$type": "com.linkedin.messenger.MessagingParticipant",
                 "entityUrn": "urn:li:msg_messagingParticipant:1",
-                "hostIdentityUrn": "urn:li:fsd_profile:ABC123",
+                "hostIdentityUrn": "urn:li:fsd_profile:ACoAADAv",
                 "participantType": {
                     "member": {
-                        "firstName": {"text": "Ada"},
-                        "lastName": {"text": "Lovelace"},
-                        "headline": {"text": "Mathematician"},
-                        "profileUrl": "https://www.linkedin.com/in/ada-lovelace/",
-                    }
-                },
-            },
-            {
-                "$type": "com.linkedin.messenger.MessagingParticipant",
-                "entityUrn": "urn:li:msg_messagingParticipant:2",
-                "hostIdentityUrn": "urn:li:fsd_profile:NOURL",
-                "participantType": {
-                    "member": {
-                        "firstName": {"text": "No"},
-                        "lastName": {"text": "Url"},
-                        "headline": {"text": "Unknown"},
+                        "firstName": {"text": "Ryan"},
+                        "lastName": {"text": "Dart"},
+                        "headline": {"text": "Engagements"},
+                        "profileUrl": "https://www.linkedin.com/in/ACoAADAv-8oBRorL",
                     }
                 },
             },
         ]
     }
     people = VoyagerMessagingReader._participants(payload)
-
-    ada = people["urn:li:msg_messagingParticipant:1"]
-    assert ada["name"] == "Ada Lovelace"
-    assert ada["profile_slug"] == "ada-lovelace"
-    assert ada["profile_urn"] == "urn:li:fsd_profile:ABC123"
-
-    # No profileUrl means no slug. The urn is still there, so identity is not
-    # lost - but nothing is invented to fill the gap.
-    bare = people["urn:li:msg_messagingParticipant:2"]
-    assert bare["profile_slug"] == ""
-    assert bare["profile_urn"] == "urn:li:fsd_profile:NOURL"
+    ryan = people["urn:li:msg_messagingParticipant:1"]
+    assert ryan["name"] == "Ryan Dart"
+    assert ryan["profile_urn"] == "urn:li:fsd_profile:ACoAADAv"
+    assert ryan["profile_handle"] == ""
