@@ -626,3 +626,72 @@ class TestPageSizeIsAlwaysPinned:
         reader = _Reader([_payload(_rows(PAGE_SIZE), None)])
         await reader.get_conversations()
         assert f"count:{PAGE_SIZE}" in reader.fetched[0]
+
+
+# --------------------------------------------------------------------------- #
+# Participant identity
+#
+# The mailbox owner's own profile id is the only urn in a conversation row, so
+# before these fields existed a thread could be correlated to a person only by
+# matching a DISPLAY NAME. That is what split one contact across two ledger keys
+# and what let a real lead sit with no key at all.
+# --------------------------------------------------------------------------- #
+
+
+def test_slug_is_extracted_only_from_a_member_profile_url():
+    from linkedin_mcp_server.scraping.voyager_messaging import _slug
+
+    assert _slug("https://www.linkedin.com/in/ada-lovelace/") == "ada-lovelace"
+    assert _slug("https://www.linkedin.com/in/adamgodfrey") == "adamgodfrey"
+    # A company URL is not a person; returning its handle would file a
+    # conversation under a key that can never match a person in the ledger.
+    assert _slug("https://www.linkedin.com/company/zuora/") == ""
+    assert _slug("") == ""
+    assert _slug(None) == ""
+
+
+def test_participants_keep_urn_and_slug_apart():
+    """An absent slug must read as absent, never as a guess from the name."""
+    from linkedin_mcp_server.scraping.voyager_messaging import VoyagerMessagingReader
+
+    payload = {
+        "included": [
+            {
+                "$type": "com.linkedin.messenger.MessagingParticipant",
+                "entityUrn": "urn:li:msg_messagingParticipant:1",
+                "hostIdentityUrn": "urn:li:fsd_profile:ABC123",
+                "participantType": {
+                    "member": {
+                        "firstName": {"text": "Ada"},
+                        "lastName": {"text": "Lovelace"},
+                        "headline": {"text": "Mathematician"},
+                        "profileUrl": "https://www.linkedin.com/in/ada-lovelace/",
+                    }
+                },
+            },
+            {
+                "$type": "com.linkedin.messenger.MessagingParticipant",
+                "entityUrn": "urn:li:msg_messagingParticipant:2",
+                "hostIdentityUrn": "urn:li:fsd_profile:NOURL",
+                "participantType": {
+                    "member": {
+                        "firstName": {"text": "No"},
+                        "lastName": {"text": "Url"},
+                        "headline": {"text": "Unknown"},
+                    }
+                },
+            },
+        ]
+    }
+    people = VoyagerMessagingReader._participants(payload)
+
+    ada = people["urn:li:msg_messagingParticipant:1"]
+    assert ada["name"] == "Ada Lovelace"
+    assert ada["profile_slug"] == "ada-lovelace"
+    assert ada["profile_urn"] == "urn:li:fsd_profile:ABC123"
+
+    # No profileUrl means no slug. The urn is still there, so identity is not
+    # lost - but nothing is invented to fill the gap.
+    bare = people["urn:li:msg_messagingParticipant:2"]
+    assert bare["profile_slug"] == ""
+    assert bare["profile_urn"] == "urn:li:fsd_profile:NOURL"

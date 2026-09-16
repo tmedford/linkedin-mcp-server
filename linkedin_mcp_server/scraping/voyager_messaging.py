@@ -163,6 +163,18 @@ def forget_cached_query() -> None:
     _QUERY_CACHE = None
 
 
+def _slug(profile_url: str) -> str:
+    """Pull the /in/<slug>/ handle out of a profile URL, or "" if absent.
+
+    The slug is the key every ledger entry in this workspace is filed under,
+    so getting it from the API means a conversation can be correlated without
+    matching on a display name. Name matching is what split one contact across
+    two keys and what left a real lead with no key at all.
+    """
+    match = re.search(r"/in/([^/?#]+)", profile_url or "")
+    return match.group(1) if match else ""
+
+
 class VoyagerMessagingReader:
     """Page the full conversation list without touching the DOM."""
 
@@ -432,10 +444,16 @@ class VoyagerMessagingReader:
             member = (item.get("participantType") or {}).get("member") or {}
             first = (member.get("firstName") or {}).get("text") or ""
             last = (member.get("lastName") or {}).get("text") or ""
+            profile_url = member.get("profileUrl") or ""
             out[item.get("entityUrn", "")] = {
                 "name": f"{first} {last}".strip(),
                 "headline": (member.get("headline") or {}).get("text") or "",
-                "profile_urn": member.get("profileUrl") or item.get("hostIdentityUrn"),
+                # Two different identifiers, kept apart on purpose. The urn is
+                # stable but opaque; the slug is what the ledger keys on, and
+                # it only exists when LinkedIn hands back a profile URL.
+                "profile_urn": item.get("hostIdentityUrn") or "",
+                "profile_url": profile_url,
+                "profile_slug": _slug(profile_url),
             }
         return out
 
@@ -478,6 +496,12 @@ class VoyagerMessagingReader:
             or (conversation.get("headlineText") or {}).get("text"),
             "participants": [p["name"] for p in people if p["name"]],
             "headlines": [p["headline"] for p in people if p["headline"]],
+            # The identifiers, structured. participants/headlines stay as they
+            # are because the routine reads them, but they are parallel arrays
+            # of strings and cannot say WHICH person a headline belongs to, nor
+            # carry an id at all. people is the one to build on.
+            "people": people,
+            "participant_slugs": [p["profile_slug"] for p in people if p["profile_slug"]],
             "last_activity_at": conversation.get("lastActivityAt"),
             "last_activity_iso": self._iso(conversation.get("lastActivityAt")),
             "last_read_at": conversation.get("lastReadAt"),
