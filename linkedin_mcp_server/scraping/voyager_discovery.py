@@ -39,7 +39,13 @@ SURFACES: Dict[str, str] = {
 }
 
 _VOYAGER = "/voyager/api"
-_SETTLE_MS = 6000
+# Measured: at 6000ms the profile-views and invitations-sent captures came back
+# BYTE-IDENTICAL - 13 shared queries, 10 shared REST paths, and not one call
+# belonging to either surface. That is the app shell booting; each surface's own
+# data query fires later. Two different pages producing the same traffic is the
+# signal that the window closed too early, and it is a better check than any
+# single capture looking "full".
+_SETTLE_MS = 20000
 
 
 def classify(url: str) -> str:
@@ -96,15 +102,20 @@ class VoyagerDiscovery:
         statuses: Dict[str, int] = {}
 
         def _on_request(request: Any) -> None:
-            if _VOYAGER in request.url:
-                entry = summarise(request.url)
-                entry["method"] = request.method
-                entry["_url"] = request.url
-                requests.append(entry)
+            # Capture EVERY xhr/fetch, not just /voyager/api. Filtering to that
+            # prefix first presupposed the answer: the profile-views page
+            # renders real viewer rows while issuing no surface-specific
+            # /voyager/api call at all, so the prefix filter hid the very
+            # request this module exists to find.
+            if request.resource_type not in ("xhr", "fetch"):
+                return
+            entry = summarise(request.url)
+            entry["method"] = request.method
+            entry["_url"] = request.url
+            requests.append(entry)
 
         def _on_response(response: Any) -> None:
-            if _VOYAGER in response.url:
-                statuses[response.url] = response.status
+            statuses[response.url] = response.status
 
         page.on("request", _on_request)
         page.on("response", _on_response)
@@ -112,7 +123,14 @@ class VoyagerDiscovery:
             await page.goto(SURFACES[surface], wait_until="domcontentloaded")
             # The interesting calls are XHRs fired after first paint, so settle
             # rather than returning the moment the document is ready.
+            try:
+                await page.wait_for_load_state("networkidle", timeout=_SETTLE_MS)
+            except Exception:  # noqa: BLE001 - a busy page never goes idle, and
+                # that is not a failure: the fixed settle below still applies.
+                pass
             await page.wait_for_timeout(_SETTLE_MS)
+            landed_url = page.url
+            landed_title = await page.title()
         finally:
             page.remove_listener("request", _on_request)
             page.remove_listener("response", _on_response)
@@ -122,14 +140,32 @@ class VoyagerDiscovery:
 
         rest = [r for r in requests if r["kind"] == "rest"]
         graphql = [r for r in requests if r["kind"] == "graphql"]
+        other = [r for r in requests if r["kind"] == "other"]
+
+        # Whether we LANDED where we aimed. Without this a redirect to the feed
+        # or an interstitial produces a full, healthy-looking capture of the
+        # WRONG page's traffic, and every count below describes something we
+        # did not ask about.
+        requested = SURFACES[surface]
+        landed_on_target = landed_url.rstrip("/").startswith(
+            requested.split("?")[0].rstrip("/")
+        )
+
+        # Every LinkedIn page fires generic chrome - nav, badging, settings,
+        # /voyager/api/me. Their presence says nothing about whether THIS
+        # surface's data is REST, so the question is deliberately left open
+        # here rather than answered by a count that cannot answer it.
         return {
             "surface": surface,
-            "url": SURFACES[surface],
+            "requested_url": requested,
+            "landed_url": landed_url,
+            "landed_title": landed_title,
+            "landed_on_target": landed_on_target,
             "total": len(requests),
             "rest_count": len(rest),
             "graphql_count": len(graphql),
-            # The headline answer: can this surface leave the browser behind?
-            "browser_free_possible": bool(rest) ,
+            "other_count": len(other),
             "rest": rest,
             "graphql": graphql,
+            "other": other,
         }
