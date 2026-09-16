@@ -67,6 +67,25 @@ jobs:
         if: env.behind != '0'
         uses: astral-sh/setup-uv@v5
 
+      - name: Re-derive the generated architecture doc
+        if: env.behind != '0'
+        run: |
+          # docs/scraping-architecture.md is GENERATED from the scraping package
+          # and frozen by tests/scraping/test_architecture_docs.py. Upstream edits
+          # it and so do we, so git text-merges it - and a text merge of a
+          # generated file can come out conflict-free and still disagree with the
+          # code it claims to describe. Re-derive it from the merged source rather
+          # than trusting the merge, or every upstream change under scraping/
+          # halts this sync on a diff no human needs to read.
+          uv run python scripts/generate_scraping_architecture.py
+          if git diff --quiet -- docs/scraping-architecture.md; then
+            echo "Doc already agreed with the merged source."
+          else
+            git add docs/scraping-architecture.md
+            git commit -m "docs: regenerate scraping architecture after upstream merge"
+            echo "Re-derived the doc; the text merge was not authoritative."
+          fi
+
       - name: Test the tool this fork exists for
         if: env.behind != '0'
         run: |
