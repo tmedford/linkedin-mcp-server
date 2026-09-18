@@ -37,6 +37,7 @@ from linkedin_mcp_server import (
     daemon_descriptor,
     daemon_owner,
     daemon_version,
+    source_revision,
 )
 from linkedin_mcp_server.config.schema import AppConfig
 from linkedin_mcp_server.daemon import (
@@ -504,7 +505,14 @@ def _live_lookup(
     if (
         may_ask_for_turnover
         and daemon_version.compare(
-            owner=attachment.descriptor.package_version, frontend=__version__
+            owner=attachment.descriptor.package_version,
+            frontend=__version__,
+            # Served from a working tree, package_version is the same string on
+            # every commit, so the commit is what actually answers "is the owner
+            # running the current code". Empty on both sides for an installed
+            # copy, which falls back to the version comparison.
+            owner_revision=attachment.descriptor.source_revision,
+            frontend_revision=source_revision.current_revision(),
         )
         is daemon_version.Skew.OWNER_IS_STALE
     ):
@@ -513,12 +521,23 @@ def _live_lookup(
         # proceed at all, since it cannot take a lock the owner holds. So it
         # asks, and the replacement is elected from the ordinary path once the
         # lock comes free.
-        logger.info(
-            "The running daemon is version %s and this build is %s; asking it to "
-            "hand the browser over",
-            attachment.descriptor.package_version,
-            __version__,
-        )
+        # Report whichever comparison actually decided it. Naming versions when
+        # the commit was the deciding term would print two identical strings and
+        # read as a bug in the comparison rather than as the turnover it is.
+        if attachment.descriptor.source_revision and source_revision.current_revision():
+            logger.info(
+                "The running daemon is at commit %s and this build is %s; asking "
+                "it to hand the browser over",
+                attachment.descriptor.source_revision,
+                source_revision.current_revision(),
+            )
+        else:
+            logger.info(
+                "The running daemon is version %s and this build is %s; asking it "
+                "to hand the browser over",
+                attachment.descriptor.package_version,
+                __version__,
+            )
         _ask_to_stand_down(attachment)
         buried.add(instance)
         return (

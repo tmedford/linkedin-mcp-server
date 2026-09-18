@@ -62,6 +62,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from linkedin_mcp_server import source_revision
 from linkedin_mcp_server.common_utils import (
     is_still_at,
     secure_mkdir,
@@ -174,6 +175,20 @@ def _text(raw: Mapping[Any, Any], name: str) -> str:
             f"The daemon descriptor field {name} is missing or not text"
         )
     return value
+
+
+def _optional_text(raw: Mapping[Any, Any], name: str) -> str:
+    """Read a field that older writers did not emit, defaulting to absent.
+
+    Deliberately lenient where :func:`_text` is strict. A descriptor written by
+    a daemon that predates the field is not malformed, it is just older, and
+    rejecting it would turn adding a field into a flag day that strands every
+    already-running owner. Anything present but not text is treated as absent
+    rather than fatal, because this field only ever adds information to a
+    comparison that already has a fallback.
+    """
+    value = raw.get(name)
+    return value if isinstance(value, str) else ""
 
 
 def _digest_text(raw: Mapping[Any, Any], name: str) -> str:
@@ -849,6 +864,12 @@ class DaemonDescriptor:
     config_fingerprint: str
     started_at: str
     log_path: str
+    #: The commit this owner is running, when it runs from a checkout, else "".
+    #: Published because this fork is served out of a working tree, where
+    #: package_version is identical across every commit and so cannot say
+    #: whether an owner is running the current code. Defaulted so a descriptor
+    #: from an owner that predates the field still parses.
+    source_revision: str = field(default="")
     #: Diagnostics only. Never used to decide whether the daemon is alive: a
     #: recycled process id reads as alive forever, which is how a comparable
     #: server wedged itself permanently.
@@ -898,6 +919,7 @@ class DaemonDescriptor:
             config_fingerprint=_digest_text(raw, "config_fingerprint"),
             started_at=_text(raw, "started_at"),
             log_path=_text(raw, "log_path"),
+            source_revision=_optional_text(raw, "source_revision"),
             pid=_number(raw, "pid", default=0),
         )
         descriptor.check_endpoint_is_local()
@@ -1394,5 +1416,9 @@ def build(
         config_fingerprint=config_fingerprint(config, key=token),
         started_at=utcnow_iso(),
         log_path=str(log_path),
+        # Resolved from this process, not passed in: the whole value of the
+        # field is that it says what the owner is actually running, and a
+        # caller-supplied revision could say anything.
+        source_revision=source_revision.current_revision(),
         pid=os.getpid(),
     )
