@@ -121,8 +121,16 @@ async def test_registered_tools_and_extractor_delegates_are_counted_separately()
     tools = await create_mcp_server().list_tools()
     tool_names = {tool.name for tool in tools}
 
-    assert len(tool_names) == 20
-    assert tool_names == {*TOOL_DELEGATES, "close_session"}
+    assert len(tool_names) == 19
+    # The overlay supersedes get_inbox, so the tool is no longer served while
+    # the extractor delegate behind it stays exactly as upstream wrote it --
+    # superseding is done by not registering a tool, never by deleting their
+    # code. That asymmetry is the point, so it is named here rather than
+    # smuggled into a count: the delegate set still has get_inbox and the
+    # served set must not.
+    assert "get_inbox" in TOOL_DELEGATES
+    assert "get_inbox" not in tool_names
+    assert tool_names == {*TOOL_DELEGATES, "close_session"} - {"get_inbox"}
     assert len(TOOL_DELEGATES) == 19
     assert set(TOOL_DELEGATES.values()) == TOOL_FACADE_METHODS
     assert "close_session" not in TOOL_DELEGATES

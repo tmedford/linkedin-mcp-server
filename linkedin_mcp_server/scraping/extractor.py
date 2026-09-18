@@ -18,7 +18,7 @@ from linkedin_mcp_server.scraping.contracts import (
     rate_limited_section_error as rate_limited_section_error,
 )
 from linkedin_mcp_server.scraping.conversations import ConversationReader
-from linkedin_mcp_server.scraping.voyager_messaging import VoyagerMessagingReader
+from linkedin_mcp_server.voyager.messaging import VoyagerMessagingReader
 from linkedin_mcp_server.scraping.feed import FeedScraper
 from linkedin_mcp_server.scraping.job_pages import JobPageReader
 from linkedin_mcp_server.scraping.jobs import JobScraper

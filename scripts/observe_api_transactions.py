@@ -23,7 +23,7 @@ _DEFAULT_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 from linkedin_mcp_server.core.browser import BrowserManager
 from linkedin_mcp_server.scraping.session import ScrapingSession
-from linkedin_mcp_server.scraping.voyager_discovery import SURFACES, VoyagerDiscovery
+from linkedin_mcp_server.voyager.discovery import SURFACES, VoyagerDiscovery
 
 
 async def main(surfaces: list[str]) -> int:

@@ -15,8 +15,8 @@ from linkedin_mcp_server.core.exceptions import (
     LinkedInScraperException,
     RateLimitError,
 )
-from linkedin_mcp_server.scraping import voyager_messaging as vm_module
-from linkedin_mcp_server.scraping.voyager_messaging import (
+from linkedin_mcp_server.voyager import messaging as vm_module
+from linkedin_mcp_server.voyager.messaging import (
     KNOWN_CATEGORIES,
     PAGE_SIZE,
     VoyagerMessagingReader,
@@ -639,13 +639,13 @@ class TestPageSizeIsAlwaysPinned:
     `at_end` then compared 20 rows against PAGE_SIZE 25 and called it the end."""
 
     async def test_count_is_appended_when_the_query_has_none(self):
-        from linkedin_mcp_server.scraping.voyager_messaging import _set_count
+        from linkedin_mcp_server.voyager.messaging import _set_count
 
         bare = "https://x/g?variables=(mailboxUrn:urn:li:fsd_profile:ME)"
         assert f"count:{PAGE_SIZE}" in _set_count(bare, PAGE_SIZE)
 
     async def test_count_is_replaced_when_the_query_has_one(self):
-        from linkedin_mcp_server.scraping.voyager_messaging import _set_count
+        from linkedin_mcp_server.voyager.messaging import _set_count
 
         withcount = "https://x/g?variables=(count:20,mailboxUrn:M)"
         out = _set_count(withcount, PAGE_SIZE)
@@ -668,7 +668,7 @@ class TestPageSizeIsAlwaysPinned:
 
 
 def test_handle_is_returned_only_for_a_real_vanity_url():
-    from linkedin_mcp_server.scraping.voyager_messaging import _handle
+    from linkedin_mcp_server.voyager.messaging import _handle
 
     assert _handle("https://www.linkedin.com/in/ada-lovelace/") == "ada-lovelace"
     # THE CASE THAT MATTERS: measured against a live mailbox, every one of 25
@@ -683,7 +683,7 @@ def test_handle_is_returned_only_for_a_real_vanity_url():
 
 def test_participants_keep_urn_and_handle_apart():
     """The urn is always present; the handle is absent far more often than not."""
-    from linkedin_mcp_server.scraping.voyager_messaging import VoyagerMessagingReader
+    from linkedin_mcp_server.voyager.messaging import VoyagerMessagingReader
 
     payload = {
         "included": [

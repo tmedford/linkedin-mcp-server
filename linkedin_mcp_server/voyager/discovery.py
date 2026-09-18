@@ -32,7 +32,7 @@ SURFACES: Dict[str, str] = {
     "profile-views": "https://www.linkedin.com/analytics/profile-views/",
     "recruiter-views": (
         "https://www.linkedin.com/analytics/recruiter-views/"
-        "?timeRange=WvmpSearchFilterTimeRange_LAST_90_DAYS"
+        "?timeRange=WvmpSearchFilterTimeRange_LAST_365_DAYS"
     ),
     "invitations-received": "https://www.linkedin.com/mynetwork/invitation-manager/",
     "invitations-sent": "https://www.linkedin.com/mynetwork/invitation-manager/sent/",

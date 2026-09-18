@@ -1649,6 +1649,14 @@ class TestToolTimeouts:
             "close_session",
         )
 
+        # Upstream's list above is left exactly as written, and the swap this
+        # fork makes is applied to it here instead. Editing their tuple would
+        # conflict the moment they add a tool to it; expressing the override as
+        # an addition merges cleanly and says plainly what it does.
+        tool_names = tuple(n for n in tool_names if n != "get_inbox") + (
+            "get_conversations",
+        )
+
         for name in tool_names:
             tool = await mcp.get_tool(name)
             assert tool is not None
@@ -1680,6 +1688,14 @@ class TestToolTimeouts:
             "get_feed",
             "search_posts",
             "close_session",
+        )
+
+        # Upstream's list above is left exactly as written, and the swap this
+        # fork makes is applied to it here instead. Editing their tuple would
+        # conflict the moment they add a tool to it; expressing the override as
+        # an addition merges cleanly and says plainly what it does.
+        tool_names = tuple(n for n in tool_names if n != "get_inbox") + (
+            "get_conversations",
         )
 
         for name in tool_names:

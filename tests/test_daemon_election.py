@@ -5101,11 +5101,13 @@ class TestRealOwner:
             # in a `register_*` call.
             assert "get_person_profile" in names
             assert "close_session" in names
-            # This fork adds the Voyager conversations walk, so the set is one
-            # larger than upstream's. Named explicitly: a bare count bump would
-            # pass just as well if some other tool had silently gone missing.
-            assert "get_conversations" in names
-            assert len(names) == 20, sorted(names)
+            # This fork supersedes get_inbox with the Voyager conversations
+            # walk, so the COUNT matches upstream's while the membership does
+            # not. Asserted by name in both directions, because a count alone
+            # would pass just as happily if the swap had not happened at all.
+            assert "get_conversations" in names, sorted(names)
+            assert "get_inbox" not in names, sorted(names)
+            assert len(names) == 19, sorted(names)
         finally:
             _stop(result.get("pid"))
 
