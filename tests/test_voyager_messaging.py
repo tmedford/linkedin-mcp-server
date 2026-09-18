@@ -151,6 +151,35 @@ class TestBlankInputs:
         with pytest.raises(LinkedInScraperException, match="cursor was blank"):
             await reader.get_conversations(cursor=blank)
 
+    @pytest.mark.parametrize("kwargs", [{"cursor": ""}, {"category": ""}])
+    async def test_blank_guard_names_omission_not_just_none(self, kwargs):
+        """The remedy must be one the caller can actually perform.
+
+        Regression test for a real two-run outage: the message used to say only
+        "Pass None", an agent whose client could not express null read that as
+        "unreachable", and reported the tool dead -- while simply omitting the
+        argument worked throughout. Naming an impossible remedy reads as a dead
+        end, so the message must name omission, and must not offer bare "None"
+        as the sole way out.
+        """
+        reader = _Reader([_payload([], None)])
+        with pytest.raises(LinkedInScraperException) as exc:
+            await reader.get_conversations(**kwargs)
+        msg = str(exc.value)
+        assert "OMIT" in msg, f"remedy must name omitting the argument: {msg}"
+        assert "Pass None" not in msg, (
+            f"must not steer the caller to a null it may be unable to emit: {msg}"
+        )
+
+    async def test_omitting_cursor_reads_the_first_page(self):
+        """Omission is the documented first-page call, so pin it as behaviour."""
+        reader = _Reader([_payload(_rows(25), "CURSOR2")])
+        result = await reader.get_conversations()
+        assert len(result["conversations"]) == 25
+        assert result["next_cursor"] == "CURSOR2"
+        assert result["at_end"] is False
+        assert len(reader.fetched) == 1, "omitting cursor must cost exactly one request"
+
     async def test_unknown_category_is_rejected_before_the_request(self):
         """An unknown category returns an empty page from LinkedIn, so it must
         be refused here rather than read back as 'you have none of those'."""

@@ -668,15 +668,29 @@ class VoyagerMessagingReader:
         The agent calling this is already a loop. It does not need a second one
         hidden inside a tool call.
         """
+        # Both guards name OMITTING the argument first, because that is the
+        # remedy every caller can perform. Saying only "pass None" strands a
+        # caller whose client cannot express null: on 2026-09-17 an agent read
+        # "Pass None for the first page", concluded page one was unreachable,
+        # and reported this tool dead for two runs -- while omitting the
+        # argument worked the whole time and the schema never marked it
+        # required. An error that names an impossible remedy reads as a dead
+        # end, so name the possible one first.
         if category is not None and not category.strip():
             raise LinkedInScraperException(
-                "category was blank. Pass None for no filter, or one of: "
-                f"{', '.join(sorted(KNOWN_CATEGORIES))}."
+                "category was blank. OMIT the argument to inherit the "
+                "messaging page's own category (in practice PRIMARY_INBOX), "
+                f"or pass one of: {', '.join(sorted(KNOWN_CATEGORIES))}. "
+                "Omitting is not 'no filter' -- every conversations query "
+                "carries a category and there is none meaning 'all'."
             )
         if cursor is not None and not cursor.strip():
             raise LinkedInScraperException(
-                "cursor was blank. Pass None for the first page, or a "
-                "next_cursor from a previous call."
+                "cursor was blank. OMIT the argument entirely for the first "
+                "page, or pass a next_cursor from a previous call. An empty "
+                "string is rejected rather than treated as the first page, "
+                "because a paging loop whose cursor silently went blank would "
+                "otherwise re-read page one forever."
             )
 
         me = self._me_profile_id((await self._discover_query())[0])
