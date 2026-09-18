@@ -1032,6 +1032,70 @@ async def _conversations_page_scenario() -> dict[str, Any]:
     )
 
 
+async def _invitations_scenario() -> dict[str, Any]:
+    """Record what `get_invitations` does to the page.
+
+    The claim being pinned is the side-effect profile, same as the
+    conversations walk: reading the invitation board must not navigate, must
+    not click, and must not accept, ignore or withdraw anything. One evaluate,
+    nothing else. The alternative this replaces drives a browser to the
+    invitation manager and scrolls a lazy list until it settles.
+
+    The evaluate is classified as ``voyager_conversations_fetch`` because the
+    authenticated fetch is now shared by every reader in the package and the
+    classifier keys on its csrf-token marker. The name is inherited rather than
+    accurate; renaming it would edit a line upstream owns for no behavioural
+    gain.
+    """
+    name = "get_invitations__baseline"
+    recorder = TraceRecorder(name, _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+
+    payload = {
+        "data": {
+            "data": {
+                "*elements": [
+                    {
+                        "invitation": {
+                            "entityUrn": "urn:li:invitation:1",
+                            "invitationType": "CONNECTION",
+                            "invitationState": "PENDING",
+                            "sentTime": 1_700_000_000_000,
+                            "sharedSecret": "s3cret",
+                            "customMessage": True,
+                            "message": "Happy to connect",
+                        },
+                        "fromMember": {
+                            "entityUrn": "urn:li:member:1",
+                            "firstName": "Ada",
+                            "lastName": "Lovelace",
+                            "occupation": "Engineer",
+                            "publicIdentifier": "ada-lovelace",
+                        },
+                    }
+                ]
+            }
+        },
+        "included": [],
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps(payload)},
+    )
+
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("get_invitations", "invitations"):
+            arguments: dict[str, Any] = {}
+            result = await extractor.get_invitations()
+    page.assert_clean()
+    return recorder.trace(
+        {"method": "get_invitations", "arguments": arguments},
+        result,
+    )
+
+
 class _ScriptedRequest:
     """The one Request attribute discovery reads."""
 
@@ -1110,6 +1174,7 @@ async def _facade_contract_trace() -> dict[str, Any]:
 TOOL_FACADE_METHODS = {
     "connect_with_person",
     "get_conversations",
+    "get_invitations",
     "extract_feed",
     "extract_page",
     "get_company_employees",
@@ -1202,6 +1267,7 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "inbox.json": await _conversation_scenario("get_inbox"),
         "conversation.json": await _conversation_scenario("get_conversation"),
         "conversations-page.json": await _conversations_page_scenario(),
+        "invitations.json": await _invitations_scenario(),
         "search-conversations.json": await _conversation_scenario(
             "search_conversations"
         ),

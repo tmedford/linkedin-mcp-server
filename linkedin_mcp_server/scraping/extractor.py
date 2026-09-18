@@ -18,6 +18,7 @@ from linkedin_mcp_server.scraping.contracts import (
     rate_limited_section_error as rate_limited_section_error,
 )
 from linkedin_mcp_server.scraping.conversations import ConversationReader
+from linkedin_mcp_server.voyager.invitations import VoyagerInvitationsReader
 from linkedin_mcp_server.voyager.messaging import VoyagerMessagingReader
 from linkedin_mcp_server.scraping.feed import FeedScraper
 from linkedin_mcp_server.scraping.job_pages import JobPageReader
@@ -74,6 +75,7 @@ class LinkedInExtractor:
             session, navigator, content, profile_page
         )
         self._voyager_messaging = VoyagerMessagingReader(session, navigator)
+        self._voyager_invitations = VoyagerInvitationsReader(session, navigator)
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -239,6 +241,19 @@ class LinkedInExtractor:
         return await self._voyager_messaging.get_conversations(
             cursor=cursor,
             category=category,
+        )
+
+    async def get_invitations(
+        self,
+        direction: str = "received",
+        start: int = 0,
+        count: int = 50,
+    ) -> dict[str, Any]:
+        """Read one page of the invitation board from the relationships API."""
+        return await self._voyager_invitations.get_invitations(
+            direction=direction,
+            start=start,
+            count=count,
         )
 
     async def get_conversation(

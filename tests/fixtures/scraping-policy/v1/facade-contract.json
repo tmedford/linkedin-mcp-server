@@ -44,6 +44,10 @@
         "coroutine": true,
         "signature": "(self, limit: 'int' = 20) -> 'dict[str, Any]'"
       },
+      "get_invitations": {
+        "coroutine": true,
+        "signature": "(self, direction: 'str' = 'received', start: 'int' = 0, count: 'int' = 50) -> 'dict[str, Any]'"
+      },
       "get_my_profile": {
         "coroutine": true,
         "signature": "(self, sections: 'set[str] | None' = None, callbacks: 'ProgressCallback | None' = None, max_scrolls: 'int | None' = None) -> 'dict[str, Any]'"
@@ -105,6 +109,7 @@
       "get_conversation",
       "get_conversations",
       "get_inbox",
+      "get_invitations",
       "get_my_profile",
       "get_saved_jobs",
       "get_sidebar_profiles",
@@ -329,6 +334,33 @@
               "description": "Number of posts to fetch (1-50, default 10).\n       Posts are loaded in batches of ~5 as the page scrolls,\n       so the actual count may slightly exceed the target.",
               "maximum": 50,
               "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "output": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "get_invitations": {
+        "input": {
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "default": 50,
+              "description": "how many to ask for. `at_end` is measured against this.",
+              "type": "integer"
+            },
+            "direction": {
+              "default": "received",
+              "description": "\"received\" for invitations sent TO you, \"sent\" for ones\nyou sent. They are different endpoints rather than two values\nof one filter, and they carry the counterparty under different\nkeys, so pick the board you actually mean.",
+              "type": "string"
+            },
+            "start": {
+              "default": 0,
+              "description": "0-based offset into the board. Paging is the caller's loop,\nbecause only the caller knows when to stop.",
               "type": "integer"
             }
           },

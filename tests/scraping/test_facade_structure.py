@@ -36,6 +36,7 @@ PUBLIC_SIGNATURES = {
     "extract_page": "(self, url: 'str', section_name: 'str', max_scrolls: 'int | None' = None) -> 'ExtractedSection'",
     "get_company_employees": "(self, company_name: 'str', keywords: 'str | None' = None) -> 'dict[str, Any]'",
     "get_conversations": "(self, cursor: 'str | None' = None, category: 'str | None' = None) -> 'dict[str, Any]'",
+    "get_invitations": "(self, direction: 'str' = 'received', start: 'int' = 0, count: 'int' = 50) -> 'dict[str, Any]'",
     "get_conversation": "(self, linkedin_username: 'str | None' = None, thread_id: 'str | None' = None, index: 'int' = 0) -> 'dict[str, Any]'",
     "get_inbox": "(self, limit: 'int' = 20) -> 'dict[str, Any]'",
     "get_my_profile": "(self, sections: 'set[str] | None' = None, callbacks: 'ProgressCallback | None' = None, max_scrolls: 'int | None' = None) -> 'dict[str, Any]'",
@@ -60,6 +61,7 @@ DELEGATES = {
     "extract_page": ("_capture", "extract_page"),
     "get_company_employees": ("_company", "get_company_employees"),
     "get_conversations": ("_voyager_messaging", "get_conversations"),
+    "get_invitations": ("_voyager_invitations", "get_invitations"),
     "get_conversation": ("_conversations", "get_conversation"),
     "get_inbox": ("_conversations", "get_inbox"),
     "get_my_profile": ("_person", "get_my_profile"),
@@ -83,6 +85,7 @@ DELEGATE_CALLS = {
     "extract_feed": "self._feed.extract_feed(num_posts)",
     "extract_page": "self._capture.extract_page(url, section_name, max_scrolls)",
     "get_conversations": "self._voyager_messaging.get_conversations(cursor=cursor, category=category)",
+    "get_invitations": "self._voyager_invitations.get_invitations(direction=direction, start=start, count=count)",
     "get_company_employees": "self._company.get_company_employees(company_name, keywords)",
     "get_conversation": "self._conversations.get_conversation(linkedin_username, thread_id, index)",
     "get_inbox": "self._conversations.get_inbox(limit)",
@@ -113,6 +116,7 @@ FACADE_STATE = {
     "_person",
     "_posts",
     "_voyager_messaging",
+    "_voyager_invitations",
 }
 
 PERMANENT_ALIASES = {

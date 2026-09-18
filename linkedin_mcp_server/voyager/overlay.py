@@ -180,3 +180,84 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "get_conversations")
         except Exception as e:
             raise_tool_error(e, "get_conversations")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Invitations",
+        # Reads the relationships API. Nothing is clicked and no invitation is
+        # accepted, ignored or withdrawn -- this only reports what is pending.
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"invitations", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_invitations(
+        ctx: Context,
+        direction: str = "received",
+        start: int = 0,
+        count: int = 50,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read ONE page of the invitation manager from LinkedIn's own API.
+
+        Nothing upstream covers this surface, so the alternative is driving a
+        browser to the invitation manager and reading a lazy-loading list out
+        of the DOM. This asks the endpoint that page calls: no rendering, no
+        scrolling, and no dependence on markup.
+
+        Args:
+            ctx: FastMCP context for progress reporting
+            direction: "received" for invitations sent TO you, "sent" for ones
+                you sent. They are different endpoints rather than two values
+                of one filter, and they carry the counterparty under different
+                keys, so pick the board you actually mean.
+            start: 0-based offset into the board. Paging is the caller's loop,
+                because only the caller knows when to stop.
+            count: how many to ask for. `at_end` is measured against this.
+
+        Returns:
+            Dict with url and sections (the standard scraping-tool shape), plus
+            invitations, count, page_size, start, direction, at_end and
+            zero_reason.
+
+            Each invitation carries name, headline, profile_slug, state,
+            sent_at_iso, and both `has_note` and the raw `has_note_flag`.
+            **`customMessage` is a boolean flag, not the note** -- the text is
+            in `note`, and both are reported so a disagreement is visible
+            rather than silently resolved.
+
+            **at_end is measured, not inferred**: True means fewer came back
+            than were asked for, so there is no more. False means a full page.
+            **None means an empty page, which proves nothing either way.**
+
+            **The board's own `paging.total` is deliberately not consulted.** It
+            has read 0 against a full board on every run it was checked, so the
+            only honest count is how many rows actually parsed.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_invitations"
+            )
+            logger.info("Reading %s invitations (start=%s)", direction, start)
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Reading invitations"
+            )
+
+            result = await extractor.get_invitations(
+                direction=direction,
+                start=start,
+                count=count,
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_invitations")
+        except Exception as e:
+            raise_tool_error(e, "get_invitations")  # NoReturn

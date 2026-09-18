@@ -56,6 +56,8 @@ SOURCE_ROOT = "linkedin_mcp_server/"
 #: diverging for any other reason still fails this.
 TEST_INVENTORY_EXEMPTIONS = {
     "tests/scraping/test_facade_contracts.py": "counts tools and facade delegates",
+    "tests/scraping/test_policy_traces.py": "counts served tool schemas",
+    "tests/test_daemon_election.py": "asserts the exact served tool inventory",
     "tests/fixtures/scraping-policy/v1/facade-contract.json": (
         "generated: records every served tool's schema, so superseding one "
         "necessarily removes its entry"

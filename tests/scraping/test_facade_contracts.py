@@ -46,6 +46,7 @@ TOOL_DELEGATES = {
     "get_company_posts": "extract_page",
     "get_company_profile": "scrape_company",
     "get_conversations": "get_conversations",
+    "get_invitations": "get_invitations",
     "get_conversation": "get_conversation",
     "get_feed": "extract_feed",
     "get_inbox": "get_inbox",
@@ -99,6 +100,7 @@ async def test_constructor_export_and_dependency_use_the_same_facade(monkeypatch
         "_person",
         "_posts",
         "_voyager_messaging",
+        "_voyager_invitations",
     }
     assert set(vars(extractor)) == expected_state
     assert type(constructed) is LinkedInExtractor
@@ -121,7 +123,7 @@ async def test_registered_tools_and_extractor_delegates_are_counted_separately()
     tools = await create_mcp_server().list_tools()
     tool_names = {tool.name for tool in tools}
 
-    assert len(tool_names) == 19
+    assert len(tool_names) == 20
     # The overlay supersedes get_inbox, so the tool is no longer served while
     # the extractor delegate behind it stays exactly as upstream wrote it --
     # superseding is done by not registering a tool, never by deleting their
@@ -131,7 +133,7 @@ async def test_registered_tools_and_extractor_delegates_are_counted_separately()
     assert "get_inbox" in TOOL_DELEGATES
     assert "get_inbox" not in tool_names
     assert tool_names == {*TOOL_DELEGATES, "close_session"} - {"get_inbox"}
-    assert len(TOOL_DELEGATES) == 19
+    assert len(TOOL_DELEGATES) == 20
     assert set(TOOL_DELEGATES.values()) == TOOL_FACADE_METHODS
     assert "close_session" not in TOOL_DELEGATES
 
@@ -507,7 +509,7 @@ def test_facade_methods_are_exactly_the_frozen_coroutine_surface():
     }
 
     assert actual == expected
-    assert len(TOOL_FACADE_METHODS) == 19
+    assert len(TOOL_FACADE_METHODS) == 20
     assert len(COMPATIBILITY_METHODS) == 2
 
 

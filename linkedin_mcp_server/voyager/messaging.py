@@ -20,7 +20,6 @@ credential is handled here, and there is no second auth path to keep in sync.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 import re
@@ -28,6 +27,7 @@ from typing import Any
 
 from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 
+from linkedin_mcp_server.voyager.client import VoyagerReader
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
     LinkedInScraperException,
@@ -186,12 +186,16 @@ def _handle(profile_url: str) -> str:
     return "" if _OBFUSCATED_ID.match(candidate) else candidate
 
 
-class VoyagerMessagingReader:
-    """Page the full conversation list without touching the DOM."""
+class VoyagerMessagingReader(VoyagerReader):
+    """Page the full conversation list without touching the DOM.
 
-    def __init__(self, session: Any, navigator: Any):
-        self._session = session
-        self._navigator = navigator
+    Construction, the authenticated fetch and the failure typing come from
+    :class:`~linkedin_mcp_server.voyager.client.VoyagerReader`; what is left
+    here is what is specific to conversations -- discovering the query the
+    messaging page issues, stripping its cursor, and normalizing rows.
+    """
+
+    surface = "conversations"
 
     # ------------------------------------------------------------------ #
     # Query discovery
@@ -345,42 +349,6 @@ class VoyagerMessagingReader:
     # ------------------------------------------------------------------ #
     # Fetching
     # ------------------------------------------------------------------ #
-    async def _fetch(self, url: str) -> dict[str, Any]:
-        """Issue one Voyager GET from inside the authenticated page."""
-        raw = await self._session.page.evaluate(
-            """async (target) => {
-                const m = document.cookie.match(/JSESSIONID="?([^";]+)/);
-                if (!m) return {error: 'no JSESSIONID cookie in page context'};
-                const r = await fetch(target, {
-                    credentials: 'include',
-                    headers: {
-                        'csrf-token': m[1],
-                        'accept': 'application/vnd.linkedin.normalized+json+2.1',
-                    },
-                });
-                if (r.status !== 200) return {error: 'HTTP ' + r.status, status: r.status};
-                return {body: await r.text()};
-            }""",
-            url,
-        )
-        if not isinstance(raw, dict) or raw.get("error"):
-            detail = (raw or {}).get("error", "unknown")
-            status = (raw or {}).get("status")
-            # Auth and rate-limit failures keep their own types so a caller can
-            # tell "sign in again" and "slow down" apart from "this broke", and
-            # so neither is retried as though it were transient noise.
-            if status in (401, 403):
-                raise AuthenticationError(
-                    f"Voyager conversations request rejected: {detail}"
-                )
-            if status == 429:
-                raise RateLimitError(
-                    f"Voyager conversations request rate limited: {detail}"
-                )
-            raise LinkedInScraperException(
-                f"Voyager conversations request failed: {detail}"
-            )
-        return json.loads(raw["body"])
 
     @staticmethod
     def _conversations(payload: dict[str, Any]) -> list[dict[str, Any]]:

@@ -79,6 +79,7 @@ a page-owning collaborator.
 - `get_conversation`
 - `get_conversations`
 - `get_inbox`
+- `get_invitations`
 - `get_my_profile`
 - `get_page_text`
 - `get_saved_jobs`
@@ -105,6 +106,7 @@ a page-owning collaborator.
 - `_message_sender`
 - `_person`
 - `_posts`
+- `_voyager_invitations`
 - `_voyager_messaging`
 
 ## Dependency-direction violations

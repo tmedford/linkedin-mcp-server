@@ -5106,8 +5106,9 @@ class TestRealOwner:
             # not. Asserted by name in both directions, because a count alone
             # would pass just as happily if the swap had not happened at all.
             assert "get_conversations" in names, sorted(names)
+            assert "get_invitations" in names, sorted(names)
             assert "get_inbox" not in names, sorted(names)
-            assert len(names) == 19, sorted(names)
+            assert len(names) == 20, sorted(names)
         finally:
             _stop(result.get("pid"))
 
