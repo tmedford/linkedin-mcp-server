@@ -47,6 +47,24 @@ _VOYAGER = "/voyager/api"
 # single capture looking "full".
 _SETTLE_MS = 20000
 
+# MEASURED 2026-09-18, and it rules the window OUT as the explanation for the
+# view analytics. profile-views was captured at 20000ms and again at 55000ms and
+# the two runs were byte-identical: thirteen queryIds, all of them app shell
+# (global nav, lego, messaging, premium), and not one analytics or WVMP call.
+#
+# That inverts the reading above. Identical captures from two DIFFERENT surfaces
+# mean the window closed too early; identical captures from the SAME surface at
+# two very different windows mean waiting longer is not the missing ingredient.
+# So the viewer data does not arrive through a client-side Voyager call on load:
+# it is either embedded in the document the server returns, or it is fetched
+# only once something is interacted with.
+#
+# Left as a finding rather than a fix. The next step for views is to capture
+# with interaction (scroll the list, change the range control) or to look in the
+# page payload -- NOT to guess an endpoint, because a guessed address that
+# returns HTTP 400 looks exactly like an outage and has already cost a run once.
+
+
 
 def classify(url: str) -> str:
     """REST, GraphQL or neither - the only distinction this module exists for."""
