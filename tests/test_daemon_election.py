@@ -4955,11 +4955,31 @@ class TestRealOwner:
         # the descriptor it had already rejected rather than taking the lock the
         # departing owner had just freed.
         #
-        # The running owner is made to *claim* an old version by rewriting the
-        # published descriptor. `package_version` is covered by neither the token
-        # digest nor the configuration fingerprint, so the file stays valid in
-        # every other respect and the process behind it is genuinely serving.
+        # The running owner is made to *claim* older code by rewriting the
+        # published descriptor. Neither `source_revision` nor `package_version`
+        # is covered by the token digest or the configuration fingerprint, so
+        # the file stays valid in every other respect and the process behind it
+        # is genuinely serving.
+        #
+        # It claims an older **commit** rather than an older version, because
+        # that is now the deciding term for this fork: served from a working
+        # tree, package_version is the same string on every commit, and an owner
+        # publishing this checkout's HEAD is by definition running this code.
+        # Rewriting only the version used to be enough and no longer is, which
+        # is the behaviour change this asserts. The version is deliberately left
+        # untouched so that a turnover here can only have come from the commit.
         import json
+        import subprocess
+
+        parent = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD~1"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).resolve().parent.parent,
+        )
+        if parent.returncode != 0 or not parent.stdout.strip():
+            pytest.skip("no parent commit to pose as an older owner")
+        older_commit = parent.stdout.strip()
 
         profile = real_state_root
         auth_root = profile.parent
@@ -4970,7 +4990,10 @@ class TestRealOwner:
 
         descriptor_file = daemon_descriptor_module.descriptor_path(auth_root)
         published = json.loads(descriptor_file.read_text())
-        published["package_version"] = "1.0.0"
+        assert published.get("source_revision"), (
+            "the owner published no commit, so this cannot test the commit path"
+        )
+        published["source_revision"] = older_commit
         descriptor_file.write_text(json.dumps(published, indent=2, sort_keys=True))
 
         started = time.monotonic()
