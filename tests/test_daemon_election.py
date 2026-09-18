@@ -30,7 +30,6 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -42,7 +41,6 @@ import linkedin_mcp_server.daemon_config as daemon_config
 import linkedin_mcp_server.daemon_descriptor as daemon_descriptor_module
 import linkedin_mcp_server.daemon_election as election_module
 import linkedin_mcp_server.daemon_owner as daemon_owner
-from linkedin_mcp_server import source_revision
 from linkedin_mcp_server import __version__, process_control
 from linkedin_mcp_server.config.schema import AppConfig
 from linkedin_mcp_server.daemon import Attachment, OwnerLookup, OwnerState
@@ -159,20 +157,11 @@ def _publish_stale_owner(
     config: AppConfig,
     *,
     package_version: str = __version__,
-    source_revision: str | None = None,
 ) -> str:
     """Publish a descriptor for an owner that is not running.
 
     Exactly what a crash after publishing leaves behind: every field is valid,
     the token matches, and nothing is listening.
-
-    ``source_revision`` overrides the commit :func:`build` stamps from *this*
-    process. Needed because a version-skew case is only reachable when the two
-    sides do not both publish a commit: a descriptor carrying this checkout's
-    HEAD next to a package_version of "1.0.0" is not a state that can occur,
-    since the commit says the owner is running exactly this code. Pass "" for
-    an owner old enough to predate the field, which is what a genuinely
-    months-old owner looks like.
     """
     token = new_token()
     descriptor = build(
@@ -187,8 +176,6 @@ def _publish_stale_owner(
         config=config,
         log_path=auth_root / "daemon.log",
     )
-    if source_revision is not None:
-        descriptor = replace(descriptor, source_revision=source_revision)
     publish(auth_root, descriptor, token)
     return descriptor.instance_id
 
@@ -4955,31 +4942,11 @@ class TestRealOwner:
         # the descriptor it had already rejected rather than taking the lock the
         # departing owner had just freed.
         #
-        # The running owner is made to *claim* older code by rewriting the
-        # published descriptor. Neither `source_revision` nor `package_version`
-        # is covered by the token digest or the configuration fingerprint, so
-        # the file stays valid in every other respect and the process behind it
-        # is genuinely serving.
-        #
-        # It claims an older **commit** rather than an older version, because
-        # that is now the deciding term for this fork: served from a working
-        # tree, package_version is the same string on every commit, and an owner
-        # publishing this checkout's HEAD is by definition running this code.
-        # Rewriting only the version used to be enough and no longer is, which
-        # is the behaviour change this asserts. The version is deliberately left
-        # untouched so that a turnover here can only have come from the commit.
+        # The running owner is made to *claim* an old version by rewriting the
+        # published descriptor. `package_version` is covered by neither the token
+        # digest nor the configuration fingerprint, so the file stays valid in
+        # every other respect and the process behind it is genuinely serving.
         import json
-        import subprocess
-
-        parent = subprocess.run(
-            ["git", "rev-parse", "--short=12", "HEAD~1"],
-            capture_output=True,
-            text=True,
-            cwd=Path(__file__).resolve().parent.parent,
-        )
-        if parent.returncode != 0 or not parent.stdout.strip():
-            pytest.skip("no parent commit to pose as an older owner")
-        older_commit = parent.stdout.strip()
 
         profile = real_state_root
         auth_root = profile.parent
@@ -4990,10 +4957,7 @@ class TestRealOwner:
 
         descriptor_file = daemon_descriptor_module.descriptor_path(auth_root)
         published = json.loads(descriptor_file.read_text())
-        assert published.get("source_revision"), (
-            "the owner published no commit, so this cannot test the commit path"
-        )
-        published["source_revision"] = older_commit
+        published["package_version"] = "1.0.0"
         descriptor_file.write_text(json.dumps(published, indent=2, sort_keys=True))
 
         started = time.monotonic()
@@ -5307,9 +5271,7 @@ class TestVersionSkew:
         profile = _profile(tmp_path)
         config = _config(profile)
         auth_root = profile.parent
-        _publish_stale_owner(
-            auth_root, profile, config, package_version="1.0.0", source_revision=""
-        )
+        _publish_stale_owner(auth_root, profile, config, package_version="1.0.0")
 
         asked: list[object] = []
         monkeypatch.setattr(
@@ -5339,9 +5301,7 @@ class TestVersionSkew:
         profile = _profile(tmp_path)
         config = _config(profile)
         auth_root = profile.parent
-        _publish_stale_owner(
-            auth_root, profile, config, package_version="99.0.0", source_revision=""
-        )
+        _publish_stale_owner(auth_root, profile, config, package_version="99.0.0")
 
         asked: list[object] = []
         monkeypatch.setattr(
@@ -5369,11 +5329,7 @@ class TestVersionSkew:
         config = _config(profile)
         auth_root = profile.parent
         _publish_stale_owner(
-            auth_root,
-            profile,
-            config,
-            package_version="not-a-version",
-            source_revision="",
+            auth_root, profile, config, package_version="not-a-version"
         )
 
         asked: list[object] = []
@@ -5391,46 +5347,6 @@ class TestVersionSkew:
 
         assert not asked
         assert outcome.worth_connecting
-
-    def test_an_owner_at_this_commit_is_kept_whatever_its_version_says(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """The commit settles it, so a version label cannot force a turnover.
-
-        This fork is served out of a working tree, where package_version is the
-        same string on every commit and the commit is the only thing that says
-        what an owner is actually running. An owner publishing *this* commit is
-        running exactly this code, so there is nothing to upgrade to and taking
-        its browser away would cost a restart to change nothing.
-        """
-        profile = _profile(tmp_path)
-        config = _config(profile)
-        auth_root = profile.parent
-        # Deliberately the version the older-owner test uses to force a
-        # turnover. The only difference is that this owner publishes a commit,
-        # which is what makes the version stop being the deciding term.
-        _publish_stale_owner(
-            auth_root,
-            profile,
-            config,
-            package_version="1.0.0",
-            source_revision=source_revision.current_revision(),
-        )
-
-        asked: list[object] = []
-        monkeypatch.setattr(
-            election_module, "_ask_to_stand_down", lambda attachment: asked.append(1)
-        )
-
-        obtain_owner(
-            auth_root,
-            profile,
-            config,
-            deadline_seconds=0,
-            connect=lambda attachment: Reach.ANSWERED,
-        )
-
-        assert not asked, "an owner running this very commit was evicted anyway"
 
     def test_a_stand_down_request_needs_the_token(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
