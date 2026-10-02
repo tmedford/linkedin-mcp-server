@@ -94,6 +94,7 @@ SUPERSEDED: dict[str, str] = {
     "send_message": "send_message",
     "get_person_profile": "get_person_profile",
     "search_people": "search_people",
+    "connect_with_person": "connect_with_person",
 }
 
 #: The section names upstream's get_person_profile accepts.
@@ -1228,3 +1229,89 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "get_recruiter_views")
         except Exception as e:
             raise_tool_error(e, "get_recruiter_views")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Connect With Person",
+        annotations={"destructiveHint": True, "openWorldHint": True},
+        tags={"person", "actions"},
+        exclude_args=["extractor"],
+    )
+    async def connect_with_person(
+        linkedin_username: str,
+        ctx: Context,
+        note: str | None = None,
+        dry_run: bool = False,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Send a LinkedIn connection request.
+
+        Without a note, the request is sent with LinkedIn's own Connect action
+        and the relationship is read back from the API to confirm it: no
+        page is opened. With a note, the custom-invite page is used, because
+        a note is not part of that action.
+
+        The tool is annotated with destructiveHint so MCP clients will
+        prompt for user confirmation before execution.
+
+        Args:
+            linkedin_username: LinkedIn username (e.g., "stickerdaniel", "williamhgates"). A full profile URL is accepted too and is reduced to the username.
+            ctx: FastMCP context for progress reporting
+            note: Optional note to include with the invitation
+            dry_run: True reads the relationship and returns the request
+                that would be sent, without sending it. No note only.
+
+        Returns:
+            Dict with url, status, message, and note_sent.
+            Without a note: status is pending (sent, and confirmed by reading
+            the relationship back, or already pending), already_connected,
+            connect_unavailable, send_failed, send_unconfirmed (LinkedIn
+            answered 200 but the relationship did not change: check sent
+            invitations before retrying) or dry_run. relationship_before and
+            relationship_after name the states read: not_invited,
+            invited_by_me, invited_by_them, connected or self. An incoming
+            invitation is reported, not accepted.
+            With a note: upstream's statuses, including
+            custom_note_limit_reached when the free note quota is used up.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="connect_with_person"
+            )
+            logger.info(
+                "Connecting with person: %s (note=%s, dry_run=%s)",
+                linkedin_username,
+                note is not None,
+                dry_run,
+            )
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Sending connection request"
+            )
+
+            if note:
+                if dry_run:
+                    raise ValueError(
+                        "dry_run covers the request without a note; a note is "
+                        "sent through the custom-invite page, which has no dry run."
+                    )
+                result = await extractor.connect_with_person(
+                    linkedin_username, note=note
+                )
+            else:
+                result = await extractor.invite_person(
+                    linkedin_username, dry_run=dry_run
+                )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "connect_with_person")
+        except Exception as e:
+            raise_tool_error(e, "connect_with_person")  # NoReturn

@@ -91,6 +91,7 @@ a page-owning collaborator.
 - `get_saved_jobs`
 - `get_sidebar_profiles`
 - `get_thread`
+- `invite_person`
 - `message_person`
 - `reply_to_thread`
 - `scrape_company`
@@ -121,6 +122,7 @@ a page-owning collaborator.
 - `_profile_views`
 - `_recruiter_views`
 - `_thread_reply`
+- `_voyager_connect`
 - `_voyager_invitations`
 - `_voyager_messaging`
 - `_voyager_person`

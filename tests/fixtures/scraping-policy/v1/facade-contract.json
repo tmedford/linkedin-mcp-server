@@ -92,6 +92,10 @@
         "coroutine": true,
         "signature": "(self, thread_id: 'str | None' = None, linkedin_username: 'str | None' = None, index: 'int' = 0) -> 'dict[str, Any]'"
       },
+      "invite_person": {
+        "coroutine": true,
+        "signature": "(self, linkedin_username: 'str', *, dry_run: 'bool' = False) -> 'dict[str, Any]'"
+      },
       "message_person": {
         "coroutine": true,
         "signature": "(self, linkedin_username: 'str', message: 'str', *, confirm_send: 'bool', profile_urn: 'str | None' = None) -> 'dict[str, Any]'"
@@ -160,6 +164,7 @@
       "get_saved_jobs",
       "get_sidebar_profiles",
       "get_thread",
+      "invite_person",
       "message_person",
       "reply_to_thread",
       "scrape_company",
@@ -189,6 +194,11 @@
         "input": {
           "additionalProperties": false,
           "properties": {
+            "dry_run": {
+              "default": false,
+              "description": "True reads the relationship and returns the request\nthat would be sent, without sending it. No note only.",
+              "type": "boolean"
+            },
             "linkedin_username": {
               "description": "LinkedIn username (e.g., \"stickerdaniel\", \"williamhgates\"). A full profile URL is accepted too and is reduced to the username.",
               "type": "string"

@@ -24,6 +24,7 @@ from linkedin_mcp_server.voyager.message_search import VoyagerMessageSearch
 from linkedin_mcp_server.voyager.people_search import VoyagerPeopleSearch
 from linkedin_mcp_server.voyager.person import VoyagerPersonReader
 from linkedin_mcp_server.voyager.person_message import VoyagerPersonMessage
+from linkedin_mcp_server.voyager.connect import VoyagerConnect
 from linkedin_mcp_server.voyager.profile_views import (
     VoyagerProfileViews,
     VoyagerRecruiterViews,
@@ -94,6 +95,7 @@ class LinkedInExtractor:
         self._people_search = VoyagerPeopleSearch(session, navigator)
         self._profile_views = VoyagerProfileViews(session, navigator)
         self._recruiter_views = VoyagerRecruiterViews(session, navigator)
+        self._voyager_connect = VoyagerConnect(session, navigator)
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -421,3 +423,11 @@ class LinkedInExtractor:
     async def get_recruiter_views(self, days: int | None = None) -> dict[str, Any]:
         """Read which recruiters viewed the signed-in member's profile."""
         return await self._recruiter_views.get_recruiter_views(days=days)
+
+    async def invite_person(
+        self, linkedin_username: str, *, dry_run: bool = False
+    ) -> dict[str, Any]:
+        """Send a connection request without a note, through LinkedIn's action."""
+        return await self._voyager_connect.connect_with_person(
+            linkedin_username, dry_run=dry_run
+        )

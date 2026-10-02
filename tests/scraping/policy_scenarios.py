@@ -1397,6 +1397,52 @@ async def _recruiter_views_scenario() -> dict[str, Any]:
     )
 
 
+async def _invite_person_scenario() -> dict[str, Any]:
+    """Record what `invite_person` does to the page on a dry run.
+
+    Two evaluates (the member, then the relationship) and nothing else: no
+    navigation, no click, no write. The send itself is one POST and one more
+    read, covered by the reader's unit tests; a trace that sent would pin a
+    write into a fixture for no gain.
+    """
+    recorder = TraceRecorder("invite_person__dry_run", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    urn = "urn:li:fsd_profile:ACoAA-ada"
+    profile = {
+        "$type": "com.linkedin.voyager.dash.identity.profile.Profile",
+        "entityUrn": urn,
+        "objectUrn": "urn:li:member:4242",
+        "firstName": "Ada",
+        "lastName": "Lovelace",
+        "publicIdentifier": "ada-lovelace",
+    }
+    relationship = {
+        "$type": "com.linkedin.voyager.dash.relationships.MemberRelationship",
+        "entityUrn": "urn:li:fsd_memberRelationship:ACoAA-ada",
+        "memberRelationshipUnion": {
+            "noConnection": {"invitationUnion": {"noInvitation": {}}}
+        },
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps({"data": {"*elements": [urn]}, "included": [profile]})},
+        {"body": json.dumps({"included": [profile, relationship]})},
+    )
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("invite_person", "connect"):
+            result = await extractor.invite_person("ada-lovelace", dry_run=True)
+    page.assert_clean()
+    return recorder.trace(
+        {
+            "method": "invite_person",
+            "arguments": {"linkedin_username": "ada-lovelace", "dry_run": True},
+        },
+        result,
+    )
+
+
 async def _people_search_scenario() -> dict[str, Any]:
     """Record what the API people search does to the page.
 
@@ -1757,6 +1803,7 @@ TOOL_FACADE_METHODS = {
     "find_people",
     "get_profile_views",
     "get_recruiter_views",
+    "invite_person",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1838,6 +1885,7 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "people-search.json": await _people_search_scenario(),
         "profile-views.json": await _profile_views_scenario(),
         "recruiter-views.json": await _recruiter_views_scenario(),
+        "invite-person.json": await _invite_person_scenario(),
         "person-mutual.json": await _person_extra_scenario("get_mutual_connections"),
         "person-posts.json": await _person_extra_scenario("get_person_posts"),
         "message-search.json": await _message_search_scenario(),
