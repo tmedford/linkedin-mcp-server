@@ -53,9 +53,10 @@ def _message(sender: str | None, at: int, text: str) -> dict[str, Any]:
 
 
 def _thread(*messages: dict[str, Any], container: bool = True) -> dict[str, Any]:
-    data: dict[str, Any] = {"other": {"k": 1}}
+    # The WRAPPED shape LinkedIn actually returns: data.data, not data.
+    data: dict[str, Any] = {"data": {"other": {"k": 1}}}
     if container:
-        data = {"messengerMessagesBySyncToken": {"*elements": []}}
+        data = {"data": {"messengerMessagesBySyncToken": {"*elements": []}}}
     included = [
         _participant(ME_PARTICIPANT, "Taylor", "M"),
         _participant(ADA_PARTICIPANT, "Ada", "Lovelace"),

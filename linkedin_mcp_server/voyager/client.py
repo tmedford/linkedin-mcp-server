@@ -193,6 +193,20 @@ class VoyagerReader:
         )
 
     @staticmethod
+    def _has_rows_key(container: Any) -> bool:
+        """Whether a collection container is there, populated or not.
+
+        Measured on 2026-10-02: a populated collection carries ``*elements``
+        (URN pointers into ``included``) and an EMPTY one carries ``elements:
+        []`` instead. Looking for the first alone reads a real "no results" as
+        a container that was never found, and the zero guard then raises on
+        every empty answer.
+        """
+        return isinstance(container, dict) and (
+            "*elements" in container or "elements" in container
+        )
+
+    @staticmethod
     def _by_urn(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
         """Index ``included`` entities by their URN, for resolving pointers."""
         return {

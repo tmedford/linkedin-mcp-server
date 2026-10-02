@@ -42,7 +42,7 @@
   ],
   "result": {
     "http_status": 400,
-    "message": "LinkedIn refused the reply (HTTP 400). Nothing was sent.",
+    "message": "LinkedIn refused the message (HTTP 400). Nothing was sent.",
     "recipient_selected": false,
     "response_excerpt": "{\"status\":400}",
     "retry_safe": true,

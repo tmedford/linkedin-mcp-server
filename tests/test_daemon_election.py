@@ -5111,7 +5111,10 @@ class TestRealOwner:
             assert "reply_to_thread" in names, sorted(names)
             assert "get_thread" in names, sorted(names)
             assert "get_conversation" not in names, sorted(names)
-            assert len(names) == 21, sorted(names)
+            assert "search_messages" in names, sorted(names)
+            assert "search_conversations" not in names, sorted(names)
+            assert "message_person" in names, sorted(names)
+            assert len(names) == 22, sorted(names)
         finally:
             _stop(result.get("pid"))
 

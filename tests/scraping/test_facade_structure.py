@@ -52,6 +52,8 @@ PUBLIC_SIGNATURES = {
     "search_people": "(self, keywords: 'str', location: 'str | None' = None, network: 'list[str] | None' = None, current_company: 'str | None' = None) -> 'dict[str, Any]'",
     "search_posts": "(self, keywords: 'str', date_posted: 'str | None' = None, max_pages: 'int' = 3) -> 'dict[str, Any]'",
     "get_thread": "(self, thread_id: 'str') -> 'dict[str, Any]'",
+    "search_messages": "(self, keywords: 'str', cursor: 'str | None' = None) -> 'dict[str, Any]'",
+    "message_person": "(self, linkedin_username: 'str', message: 'str', *, confirm_send: 'bool') -> 'dict[str, Any]'",
     "reply_to_thread": "(self, thread_id: 'str', message: 'str', *, confirm_send: 'bool') -> 'dict[str, Any]'",
     "send_message": "(self, linkedin_username: 'str', message: 'str', *, confirm_send: 'bool', profile_urn: 'str | None' = None) -> 'dict[str, Any]'",
 }
@@ -79,6 +81,8 @@ DELEGATES = {
     "search_people": ("_person", "search_people"),
     "search_posts": ("_posts", "search_posts"),
     "get_thread": ("_voyager_thread", "get_thread"),
+    "search_messages": ("_voyager_search", "search_messages"),
+    "message_person": ("_person_message", "message_person"),
     "reply_to_thread": ("_thread_reply", "reply_to_thread"),
     "send_message": ("_message_sender", "send_message"),
 }
@@ -106,6 +110,8 @@ DELEGATE_CALLS = {
     "search_people": "self._person.search_people(keywords, location=location, network=network, current_company=current_company)",
     "search_posts": "self._posts.search_posts(keywords, date_posted=date_posted, max_pages=max_pages)",
     "get_thread": "self._voyager_thread.get_thread(thread_id)",
+    "search_messages": "self._voyager_search.search_messages(keywords, cursor=cursor)",
+    "message_person": "self._person_message.message_person(linkedin_username, message, confirm_send=confirm_send)",
     "reply_to_thread": "self._thread_reply.reply_to_thread(thread_id, message, confirm_send=confirm_send)",
     "send_message": "self._message_sender.send_message(linkedin_username, message, confirm_send=confirm_send, profile_urn=profile_urn)",
 }
@@ -125,6 +131,8 @@ FACADE_STATE = {
     "_voyager_invitations",
     "_thread_reply",
     "_voyager_thread",
+    "_voyager_search",
+    "_person_message",
 }
 
 PERMANENT_ALIASES = {

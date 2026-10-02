@@ -237,7 +237,39 @@ class VoyagerThreadReply(VoyagerReader):
             "trackingId": _tracking_id(),
             "dedupeByClientGeneratedToken": False,
         }
+        outcome = await self._create_message(body)
+        landed_in = outcome.pop("conversation_urn", None)
+        if outcome["status"] == "sent" and landed_in not in (None, conversation_urn):
+            # Delivered, and not where it was asked to go. Never reported as a
+            # plain success: the caller has to know where it went.
+            return _thread_reply_result(
+                url,
+                thread_id,
+                "sent_to_other_thread",
+                "LinkedIn delivered the reply to a different conversation than "
+                "the one requested.",
+                sent=True,
+                retry_safe=False,
+                message_urn=outcome["message_urn"],
+                delivered_to=landed_in,
+            )
+        return _thread_reply_result(
+            url,
+            thread_id,
+            outcome.pop("status"),
+            outcome.pop("message"),
+            thread_verified=outcome["sent"],
+            **outcome,
+        )
 
+    async def _create_message(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Issue the write and say what the server's answer means.
+
+        Returns ``status``, ``message``, ``sent`` and ``retry_safe``, plus
+        whatever the answer carried. Shared by every sender so a status is
+        read one way: a refusal is retryable, an answer that does not name the
+        created message is unconfirmed, and only a named message is sent.
+        """
         try:
             status, text = await self._post(_CREATE_MESSAGE, body)
         except AuthenticationError:
@@ -245,15 +277,14 @@ class VoyagerThreadReply(VoyagerReader):
             raise
         except Exception:
             # The request may have left before the round trip failed.
-            logger.debug("Reply request did not complete", exc_info=True)
-            return _thread_reply_result(
-                url,
-                thread_id,
-                "send_unconfirmed",
-                "The reply request was interrupted and LinkedIn's answer was "
-                f"lost. {_RETRY_WARNING}",
-                retry_safe=False,
-            )
+            logger.debug("Message request did not complete", exc_info=True)
+            return {
+                "status": "send_unconfirmed",
+                "message": "The request was interrupted and LinkedIn's answer "
+                f"was lost. {_RETRY_WARNING}",
+                "sent": False,
+                "retry_safe": False,
+            }
 
         if status in (401, 403):
             raise AuthenticationError(
@@ -266,24 +297,24 @@ class VoyagerThreadReply(VoyagerReader):
         if 400 <= status < 500:
             # The server understood the request and refused it, so nothing was
             # delivered and the same call can be made again once corrected.
-            return _thread_reply_result(
-                url,
-                thread_id,
-                "send_rejected",
-                f"LinkedIn refused the reply (HTTP {status}). Nothing was sent.",
-                http_status=status,
-                response_excerpt=text[:300],
-            )
+            return {
+                "status": "send_rejected",
+                "message": f"LinkedIn refused the message (HTTP {status}). "
+                "Nothing was sent.",
+                "sent": False,
+                "retry_safe": True,
+                "http_status": status,
+                "response_excerpt": text[:300],
+            }
         if not 200 <= status < 300:
-            return _thread_reply_result(
-                url,
-                thread_id,
-                "send_unconfirmed",
-                f"LinkedIn answered HTTP {status}, which does not say whether "
-                f"the reply was delivered. {_RETRY_WARNING}",
-                retry_safe=False,
-                http_status=status,
-            )
+            return {
+                "status": "send_unconfirmed",
+                "message": f"LinkedIn answered HTTP {status}, which does not say "
+                f"whether the message was delivered. {_RETRY_WARNING}",
+                "sent": False,
+                "retry_safe": False,
+                "http_status": status,
+            }
 
         try:
             created = (json.loads(text) or {}).get("value") or {}
@@ -291,38 +322,21 @@ class VoyagerThreadReply(VoyagerReader):
             created = {}
         message_urn = created.get("entityUrn")
         if not isinstance(message_urn, str) or not message_urn:
-            return _thread_reply_result(
-                url,
-                thread_id,
-                "send_unconfirmed",
-                f"LinkedIn accepted the request (HTTP {status}) but did not "
-                f"return the message it created. {_RETRY_WARNING}",
-                retry_safe=False,
-                http_status=status,
-            )
+            return {
+                "status": "send_unconfirmed",
+                "message": f"LinkedIn accepted the request (HTTP {status}) but "
+                f"did not return the message it created. {_RETRY_WARNING}",
+                "sent": False,
+                "retry_safe": False,
+                "http_status": status,
+            }
         landed_in = created.get("conversationUrn")
-        if isinstance(landed_in, str) and landed_in != conversation_urn:
-            # Delivered, and not where it was asked to go. Never reported as a
-            # plain success: the caller has to know where it went.
-            return _thread_reply_result(
-                url,
-                thread_id,
-                "sent_to_other_thread",
-                "LinkedIn delivered the reply to a different conversation than "
-                "the one requested.",
-                sent=True,
-                retry_safe=False,
-                message_urn=message_urn,
-                delivered_to=landed_in,
-            )
-        return _thread_reply_result(
-            url,
-            thread_id,
-            "sent",
-            "Reply delivered; LinkedIn returned the message it created.",
-            thread_verified=True,
-            sent=True,
-            retry_safe=False,
-            message_urn=message_urn,
-            delivered_at=iso(created.get("deliveredAt")),
-        )
+        return {
+            "status": "sent",
+            "message": "Delivered; LinkedIn returned the message it created.",
+            "sent": True,
+            "retry_safe": False,
+            "message_urn": message_urn,
+            "delivered_at": iso(created.get("deliveredAt")),
+            "conversation_urn": landed_in if isinstance(landed_in, str) else None,
+        }

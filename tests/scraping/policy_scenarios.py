@@ -1193,7 +1193,9 @@ async def _thread_scenario() -> dict[str, Any]:
     me = "urn:li:fsd_profile:ACoAA-me"
     other = "urn:li:msg_messagingParticipant:urn:li:fsd_profile:ACoAA-ada"
     payload = {
-        "data": {"messengerMessagesBySyncToken": {"*elements": ["urn:li:msg:1"]}},
+        "data": {
+            "data": {"messengerMessagesBySyncToken": {"*elements": ["urn:li:msg:1"]}}
+        },
         "included": [
             {
                 "$type": "com.linkedin.messenger.MessagingParticipant",
@@ -1228,6 +1230,126 @@ async def _thread_scenario() -> dict[str, Any]:
             result = await extractor.get_thread("2-policy-thread==")
     page.assert_clean()
     return recorder.trace({"method": "get_thread", "arguments": arguments}, result)
+
+
+async def _message_search_scenario() -> dict[str, Any]:
+    """Record what `search_messages` does to the page.
+
+    Two evaluates and no navigation. The tool it replaces typed into the
+    search box and opened the first match, which marked it read.
+    """
+    recorder = TraceRecorder("search_messages__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    me = "urn:li:fsd_profile:ACoAA-me"
+    ada = "urn:li:msg_messagingParticipant:urn:li:fsd_profile:ACoAA-ada"
+    conversation = f"urn:li:msg_conversation:({me},2-policy-thread==)"
+    payload = {
+        "data": {
+            "data": {
+                "messengerConversationsBySearchCriteria": {
+                    "metadata": {"nextCursor": None},
+                    "*elements": [conversation],
+                }
+            }
+        },
+        "included": [
+            {
+                "$type": "com.linkedin.messenger.MessagingParticipant",
+                "entityUrn": ada,
+                "hostIdentityUrn": "urn:li:fsd_profile:ACoAA-ada",
+                "participantType": {
+                    "member": {
+                        "firstName": {"text": "Ada"},
+                        "lastName": {"text": "Lovelace"},
+                    }
+                },
+            },
+            {
+                "$type": "com.linkedin.messenger.Conversation",
+                "entityUrn": conversation,
+                "conversationUrl": _MESSAGE_ROUTE,
+                "*conversationParticipants": [ada],
+                "lastActivityAt": 1_700_000_000_000,
+            },
+            {
+                "$type": "com.linkedin.messenger.Message",
+                "*conversation": conversation,
+                "*sender": ada,
+                "deliveredAt": 1_700_000_000_000,
+                "body": {"text": "About the engine"},
+            },
+        ],
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
+        {"body": json.dumps(payload)},
+    )
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("search_messages", "search"):
+            arguments = {"keywords": "engine"}
+            result = await extractor.search_messages("engine")
+    page.assert_clean()
+    return recorder.trace({"method": "search_messages", "arguments": arguments}, result)
+
+
+async def _person_message_scenario(confirm_send: bool) -> dict[str, Any]:
+    """Record what `message_person` does to the page.
+
+    A dry run is two reads: who the recipient is and who is signed in. A
+    confirmed message adds one write. No profile is opened and nothing is
+    typed, where `send_message` navigates twice and drives a composer.
+    """
+    outcome = "sent" if confirm_send else "dry_run"
+    recorder = TraceRecorder(f"message_person__{outcome}", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    me = "urn:li:fsd_profile:ACoAA-me"
+    ada = "urn:li:fsd_profile:ACoAA-policy"
+    answers: list[dict[str, Any]] = [
+        {
+            "body": json.dumps(
+                {
+                    "data": {"*elements": [ada]},
+                    "included": [
+                        {"entityUrn": ada, "firstName": "Ada", "lastName": "Lovelace"}
+                    ],
+                }
+            )
+        },
+        {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
+    ]
+    if confirm_send:
+        created = {
+            "value": {
+                "entityUrn": f"urn:li:msg_message:({me},2-new)",
+                "conversationUrn": f"urn:li:msg_conversation:({me},2-policy-thread==)",
+                "deliveredAt": 1_700_000_100_000,
+            }
+        }
+        answers.append({"status": 200, "body": json.dumps(created)})
+    page.script("evaluate:voyager_conversations_fetch", *answers)
+
+    extractor = _extractor(page)
+    with (
+        patch.object(thread_reply, "_origin_token", return_value="policy-origin-token"),
+        patch.object(thread_reply, "_tracking_id", return_value="policy-tracking-id"),
+    ):
+        async with boundaries(recorder, clock):
+            with recorder.context("message_person", "message"):
+                result = await extractor.message_person(
+                    "ada-lovelace", "New text", confirm_send=confirm_send
+                )
+    page.assert_clean()
+    return recorder.trace(
+        {
+            "method": "message_person",
+            "arguments": {"confirm_send": confirm_send, "outcome": outcome},
+        },
+        result,
+    )
 
 
 class _ScriptedRequest:
@@ -1328,6 +1450,8 @@ TOOL_FACADE_METHODS = {
     "send_message",
     "reply_to_thread",
     "get_thread",
+    "search_messages",
+    "message_person",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1405,6 +1529,9 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "conversations-page.json": await _conversations_page_scenario(),
         "invitations.json": await _invitations_scenario(),
         "thread.json": await _thread_scenario(),
+        "message-search.json": await _message_search_scenario(),
+        "person-message-dry-run.json": await _person_message_scenario(False),
+        "person-message-sent.json": await _person_message_scenario(True),
         "thread-reply-dry-run.json": await _thread_reply_scenario("dry_run"),
         "thread-reply-rejected.json": await _thread_reply_scenario("rejected"),
         "thread-reply-sent.json": await _thread_reply_scenario("sent"),

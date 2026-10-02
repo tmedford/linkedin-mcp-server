@@ -12,7 +12,7 @@ request returns each message as a record: who sent it, when, and its text.
 **Measured on 2026-10-02, one account.** Reading a thread this way left it
 unread: a thread with one unread message was read twice and was still unread
 in the conversation list afterwards. The rows are at
-``data.messengerMessagesBySyncToken['*elements']`` with the entities in
+``data.data.messengerMessagesBySyncToken['*elements']`` with the entities in
 ``included``, and sender names come from ``MessagingParticipant`` entities in
 the same payload.
 
@@ -63,7 +63,7 @@ _THREAD_ID_RE = re.compile(r"[A-Za-z0-9_=-]+")
 _QUERY_ID_RE = re.compile(r"[?&]queryId=(messengerMessages\.[0-9a-f]+)")
 
 #: Where the rows live, named because getting it wrong returns a clean zero.
-_ELEMENTS_PATH = "data.messengerMessagesBySyncToken['*elements']"
+_ELEMENTS_PATH = "data.data.messengerMessagesBySyncToken['*elements']"
 
 # A discovered id outlives one tool call and not one browser, for the reason
 # given beside `_QUERY_CACHE` in `messaging.py`: a reader is built per call, and
@@ -138,8 +138,12 @@ def parse_thread(
     The third value is whether the row container exists at all, which is what
     separates an empty thread from a response whose shape has moved.
     """
-    container = (payload.get("data") or {}).get("messengerMessagesBySyncToken")
-    found = isinstance(container, dict) and "*elements" in container
+    # WRAPPED, like every GraphQL answer here: data.data, not data. Reading one
+    # level short finds no container, and on an empty thread that turned a real
+    # zero into a "changed shape" error. Caught against a saved live payload.
+    inner = (payload.get("data") or {}).get("data") or {}
+    container = inner.get("messengerMessagesBySyncToken")
+    found = VoyagerReader._has_rows_key(container)
     included = [e for e in payload.get("included") or [] if isinstance(e, dict)]
 
     people: dict[str, dict[str, Any]] = {}

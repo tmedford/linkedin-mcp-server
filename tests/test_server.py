@@ -925,6 +925,10 @@ class TestWhatTheToolsPromise:
         # reads the API without opening the thread. Applied as a line of its own
         # so upstream's set above stays as they wrote it.
         marks_things_read = marks_things_read - {"get_conversation"}
+        # Likewise search_conversations, replaced by search_messages. With both
+        # gone no tool this fork serves reads by clicking, which is the state
+        # this test exists to protect.
+        marks_things_read = marks_things_read - {"search_conversations"}
         claiming = set()
         for name in marks_things_read:
             tool = await mcp.get_tool(name)

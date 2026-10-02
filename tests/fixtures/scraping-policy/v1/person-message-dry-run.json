@@ -1,0 +1,39 @@
+{
+  "call": {
+    "arguments": {
+      "confirm_send": false,
+      "outcome": "dry_run"
+    },
+    "method": "message_person"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ada-lovelace",
+      "call": "message_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "message"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/me",
+      "call": "message_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "message"
+    }
+  ],
+  "result": {
+    "message": "Set confirm_send=true to send the message.",
+    "recipient_name": "Ada Lovelace",
+    "recipient_selected": true,
+    "recipient_urn": "urn:li:fsd_profile:ACoAA-policy",
+    "retry_safe": true,
+    "sent": false,
+    "status": "confirmation_required",
+    "url": "https://www.linkedin.com/in/ada-lovelace/"
+  },
+  "scenario": "message_person__dry_run",
+  "schema_version": 1
+}

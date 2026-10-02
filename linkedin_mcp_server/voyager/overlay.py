@@ -31,6 +31,7 @@ from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
 from linkedin_mcp_server.core.exceptions import AuthenticationError
 from linkedin_mcp_server.dependencies import get_ready_extractor, handle_auth_error
 from linkedin_mcp_server.error_handler import raise_tool_error
+from linkedin_mcp_server.voyager.person_message import refuse_an_invalid_person_message
 from linkedin_mcp_server.voyager.thread_reply import refuse_an_invalid_reply
 
 logger = logging.getLogger(__name__)
@@ -55,9 +56,19 @@ class OverlayError(RuntimeError):
 #: lookup by username, which upstream did by clicking sidebar rows;
 #: ``get_conversations`` returns every thread's ``thread_url`` beside its
 #: participants, and that is the way from a person to a thread here.
+#:
+#: ``search_conversations`` types into the messaging search box and reads the
+#: render, which opens the first match and so marks it read. ``search_messages``
+#: issues the keyword query that page loads its results from.
+#:
+#: ``send_message`` is NOT here yet, on purpose. ``message_person`` is served
+#: beside it until one live send has proved the person-addressed write; see
+#: ``person_message.py``. Superseding it first would leave no way to start a
+#: conversation if that body turns out to be wrong.
 SUPERSEDED: dict[str, str] = {
     "get_inbox": "get_conversations",
     "get_conversation": "get_thread",
+    "search_conversations": "search_messages",
 }
 
 
@@ -432,3 +443,146 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "reply_to_thread")
         except Exception as e:
             raise_tool_error(e, "reply_to_thread")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Search Messages",
+        # Reads the messaging API. Nothing is typed into the search box and no
+        # result is opened, so no thread is marked read.
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"messaging", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def search_messages(
+        keywords: str,
+        ctx: Context,
+        cursor: str | None = None,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Find conversations by keyword, ONE page (up to 20) from the messaging API.
+
+        Searches the inbox, archive and spam together, the way the messaging
+        page's own search does. No result is opened, so nothing is marked read.
+
+        Args:
+            keywords: The word or phrase to search for.
+            ctx: FastMCP context for progress reporting
+            cursor: next_cursor from a previous call. OMIT for the first page.
+
+        Returns:
+            Dict with url and sections (the standard scraping-tool shape), plus
+            keywords, conversations, count, page_size, next_cursor, at_end,
+            zero_reason and query_id_renewed.
+
+            Each conversation has the same fields as a get_conversations row,
+            including participants and thread_url; pass thread_url to
+            get_thread to read it. **The last_message_* fields are a message
+            from that conversation, not necessarily the one that matched.**
+
+            at_end is measured from the row count: True means fewer than
+            page_size came back. **A next_cursor is not evidence of more** -- a
+            two-match search was observed returning one. None means an empty
+            page; zero_reason then says "no-matches" or "after-cursor".
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="search_messages"
+            )
+            logger.info("Searching messages (cursor=%s)", bool(cursor))
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Searching messages"
+            )
+
+            result = await extractor.search_messages(keywords, cursor=cursor)
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "search_messages")
+        except Exception as e:
+            raise_tool_error(e, "search_messages")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Message Person",
+        annotations={"destructiveHint": True, "openWorldHint": True},
+        tags={"messaging", "actions"},
+        exclude_args=["extractor"],
+    )
+    async def message_person(
+        linkedin_username: str,
+        message: str,
+        confirm_send: bool,
+        ctx: Context,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Send a message to a person through LinkedIn's messaging API.
+
+        Use this to write to someone by their profile, including when no
+        conversation with them exists yet. When you already have the thread,
+        prefer reply_to_thread, which is pinned to that exact conversation.
+
+        Args:
+            linkedin_username: The recipient's /in/ public identifier, or
+                their profile URL.
+            message: Message text. Line breaks (LF) are kept. Other C0 control
+                characters and DEL are rejected, including CR and tab.
+            confirm_send: Must be True to send. False is a dry run: the
+                recipient is resolved and reported, and nothing is written.
+            ctx: FastMCP context for progress reporting
+
+        Returns:
+            Dict with url, status, message, recipient_selected, sent and
+            retry_safe, plus recipient_urn and recipient_name once the member
+            is resolved.
+
+            `sent` is true only when LinkedIn answered the write with the
+            message it created. A sent result adds message_urn, delivered_at,
+            thread_urn, thread_id and thread_url: the conversation the server
+            says the message landed in, which is what reply_to_thread and
+            get_thread take. `retry_safe` is false whenever the message was or
+            may have been delivered. `send_rejected` means LinkedIn refused the
+            request and nothing was sent.
+        """
+        try:
+            # Answered before a session is acquired; inside the `try` because
+            # an unusable username raises.
+            refusal = refuse_an_invalid_person_message(linkedin_username, message)
+            if refusal is not None:
+                return refusal
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="message_person"
+            )
+            logger.info(
+                "Messaging %s (confirm_send=%s)", linkedin_username, confirm_send
+            )
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Resolving recipient"
+            )
+
+            result = await extractor.message_person(
+                linkedin_username,
+                message,
+                confirm_send=confirm_send,
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "message_person")
+        except Exception as e:
+            raise_tool_error(e, "message_person")  # NoReturn
