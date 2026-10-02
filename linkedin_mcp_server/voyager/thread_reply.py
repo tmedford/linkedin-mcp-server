@@ -46,23 +46,25 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import quote
 
-import linkedin_mcp_server.scraping.contracts as contracts
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
     LinkedInScraperException,
     RateLimitError,
 )
-from linkedin_mcp_server.scraping.identifiers import normalize_thread_id
-from linkedin_mcp_server.scraping.message_sender import _MESSAGE_THREAD_PATH_RE
 from linkedin_mcp_server.voyager.client import VoyagerReader
+from linkedin_mcp_server.voyager.thread import (
+    conversation_urn as build_conversation_urn,
+    is_thread_id,
+    iso,
+    messages_query_url,
+    normalize_thread_reference,
+    parse_thread,
+    thread_url,
+)
 
 logger = logging.getLogger(__name__)
-
-_ME = "https://www.linkedin.com/voyager/api/me"
 
 #: The write. A plain REST action, so unlike a GraphQL query there is no hash
 #: to rotate.
@@ -70,16 +72,6 @@ _CREATE_MESSAGE = (
     "https://www.linkedin.com/voyager/api/"
     "voyagerMessagingDashMessengerMessages?action=createMessage"
 )
-
-#: The thread page's own read of one thread. The hash is the one observed on
-#: 2026-10-02 and will rotate; see the module docstring for why that is allowed.
-_MESSAGES_QUERY = (
-    "https://www.linkedin.com/voyager/api/voyagerMessagingGraphQL/graphql"
-    "?queryId=messengerMessages.5846eeb71c981f11e0134cb6626cc314"
-    "&variables=(conversationUrn:{urn})"
-)
-
-_PROFILE_URN_PREFIX = "urn:li:fsd_profile:"
 
 _RETRY_WARNING = (
     "Check the conversation before retrying; retrying may deliver the reply twice."
@@ -96,20 +88,6 @@ def _tracking_id() -> str:
     return os.urandom(16).decode("latin-1")
 
 
-def _thread_url(thread_id: str) -> str:
-    """The thread's address, with base64 padding kept literal as LinkedIn writes it."""
-    return f"https://www.linkedin.com/messaging/thread/{quote(thread_id, safe='=')}/"
-
-
-def _iso(milliseconds: Any) -> str | None:
-    """LinkedIn epoch milliseconds to ISO 8601 UTC, or None if unusable."""
-    if not isinstance(milliseconds, (int, float)) or milliseconds <= 0:
-        return None
-    return datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc).isoformat(
-        timespec="seconds"
-    )
-
-
 def _thread_reply_result(
     url: str,
     thread_id: str,
@@ -122,15 +100,16 @@ def _thread_reply_result(
     **extra: Any,
 ) -> dict[str, Any]:
     """``send_message``'s result shape, plus the thread it was pinned to."""
+    # The keys of upstream's `contracts.message_action_result`, spelled out
+    # rather than called: `scraping` imports this package to build the facade,
+    # so importing it back from here is a cycle.
     return {
-        **contracts.message_action_result(
-            url,
-            status,
-            message,
-            recipient_selected=thread_verified,
-            sent=sent,
-            retry_safe=retry_safe,
-        ),
+        "url": url,
+        "status": status,
+        "message": message,
+        "recipient_selected": thread_verified,
+        "sent": sent,
+        "retry_safe": retry_safe,
         "thread_id": thread_id,
         **extra,
     }
@@ -142,10 +121,10 @@ def refuse_an_invalid_reply(thread_id: str, message: str) -> dict[str, Any] | No
     Raises ``InvalidReferenceError`` for a ``thread_id`` that is not an id at
     all, the way every other id argument does.
     """
-    thread_id = normalize_thread_id(thread_id)
+    thread_id = normalize_thread_reference(thread_id)
     status = "invalid_message"
     reason = None
-    if not _MESSAGE_THREAD_PATH_RE.fullmatch(f"/messaging/thread/{thread_id}/"):
+    if not is_thread_id(thread_id):
         # A thread URN passes the generic id check and is not an id. Built into
         # a conversation URN it would name a conversation that does not exist.
         status = "invalid_thread"
@@ -165,7 +144,7 @@ def refuse_an_invalid_reply(thread_id: str, message: str) -> dict[str, Any] | No
         reason = "Message must not contain control characters other than line breaks."
     if reason is None:
         return None
-    return _thread_reply_result(_thread_url(thread_id), thread_id, status, reason)
+    return _thread_reply_result(thread_url(thread_id), thread_id, status, reason)
 
 
 class VoyagerThreadReply(VoyagerReader):
@@ -173,58 +152,23 @@ class VoyagerThreadReply(VoyagerReader):
 
     surface = "thread-reply"
 
-    async def _mailbox_urn(self) -> str:
-        """The signed-in member's profile URN, which every conversation hangs off."""
-        payload = await self._fetch(_ME)
-        urns = [
-            entity.get("dashEntityUrn")
-            for entity in payload.get("included") or []
-            if isinstance(entity, dict)
-        ]
-        urns = [urn for urn in urns if isinstance(urn, str) and urn]
-        # Exactly one, or the reply would be addressed from a guess.
-        if len(urns) != 1 or not urns[0].startswith(_PROFILE_URN_PREFIX):
-            raise LinkedInScraperException(
-                "Voyager thread-reply could not identify the signed-in member: "
-                f"expected one profile URN in /me, found {len(urns)}."
-            )
-        return urns[0]
-
     async def _thread_preview(self, conversation_urn: str) -> dict[str, Any]:
         """What the thread currently holds, so a dry run shows its target.
 
         Best effort by design: the query id rotates, and a dry run that raised
         on a stale hash would block replies the write itself can still make.
         """
-        url = _MESSAGES_QUERY.format(urn=quote(conversation_urn, safe=""))
+        page = self._session.page
         try:
-            payload = await self._fetch(url)
+            payload = await self._fetch(messages_query_url(page, conversation_urn))
         except (AuthenticationError, RateLimitError):
             raise
         except LinkedInScraperException as exc:
             logger.info("Thread preview unavailable: %s", exc)
             return {"thread_readable": None}
 
-        included = [e for e in payload.get("included") or [] if isinstance(e, dict)]
-        messages = sorted(
-            (e for e in included if str(e.get("$type", "")).endswith(".Message")),
-            key=lambda e: e.get("deliveredAt") or 0,
-        )
-        participants = []
-        for entity in included:
-            if not str(entity.get("$type", "")).endswith(".MessagingParticipant"):
-                continue
-            member = (entity.get("participantType") or {}).get("member") or {}
-            name = " ".join(
-                part
-                for part in (
-                    (member.get("firstName") or {}).get("text"),
-                    (member.get("lastName") or {}).get("text"),
-                )
-                if part
-            )
-            if name:
-                participants.append(name)
+        mailbox_urn = conversation_urn[len("urn:li:msg_conversation:(") :].split(",")[0]
+        messages, participants, _found = parse_thread(payload, mailbox_urn)
         if not messages:
             # A conversation URN that names nothing still answers 200. That is
             # the thread not existing for this mailbox, and it is said so.
@@ -232,9 +176,9 @@ class VoyagerThreadReply(VoyagerReader):
         last = messages[-1]
         return {
             "thread_readable": True,
-            "participants": participants,
-            "last_message_text": (last.get("body") or {}).get("text"),
-            "last_message_at": _iso(last.get("deliveredAt")),
+            "participants": [person["name"] for person in participants],
+            "last_message_text": last["text"],
+            "last_message_at": last["delivered_at_iso"],
         }
 
     async def reply_to_thread(
@@ -253,11 +197,11 @@ class VoyagerThreadReply(VoyagerReader):
         refusal = refuse_an_invalid_reply(thread_id, message)
         if refusal is not None:
             return refusal
-        thread_id = normalize_thread_id(thread_id)
-        url = _thread_url(thread_id)
+        thread_id = normalize_thread_reference(thread_id)
+        url = thread_url(thread_id)
 
         mailbox_urn = await self._mailbox_urn()
-        conversation_urn = f"urn:li:msg_conversation:({mailbox_urn},{thread_id})"
+        conversation_urn = build_conversation_urn(mailbox_urn, thread_id)
 
         if not confirm_send:
             preview = await self._thread_preview(conversation_urn)
@@ -380,5 +324,5 @@ class VoyagerThreadReply(VoyagerReader):
             sent=True,
             retry_safe=False,
             message_urn=message_urn,
-            delivered_at=_iso(created.get("deliveredAt")),
+            delivered_at=iso(created.get("deliveredAt")),
         )

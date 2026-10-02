@@ -62,6 +62,7 @@ TOOL_DELEGATES = {
     "search_posts": "search_posts",
     "send_message": "send_message",
     "reply_to_thread": "reply_to_thread",
+    "get_thread": "get_thread",
 }
 
 
@@ -103,6 +104,7 @@ async def test_constructor_export_and_dependency_use_the_same_facade(monkeypatch
         "_voyager_messaging",
         "_voyager_invitations",
         "_thread_reply",
+        "_voyager_thread",
     }
     assert set(vars(extractor)) == expected_state
     assert type(constructed) is LinkedInExtractor
@@ -134,8 +136,13 @@ async def test_registered_tools_and_extractor_delegates_are_counted_separately()
     # served set must not.
     assert "get_inbox" in TOOL_DELEGATES
     assert "get_inbox" not in tool_names
-    assert tool_names == {*TOOL_DELEGATES, "close_session"} - {"get_inbox"}
-    assert len(TOOL_DELEGATES) == 21
+    assert "get_conversation" in TOOL_DELEGATES
+    assert "get_conversation" not in tool_names
+    assert tool_names == {*TOOL_DELEGATES, "close_session"} - {
+        "get_inbox",
+        "get_conversation",
+    }
+    assert len(TOOL_DELEGATES) == 22
     assert set(TOOL_DELEGATES.values()) == TOOL_FACADE_METHODS
     assert "close_session" not in TOOL_DELEGATES
 
@@ -511,7 +518,7 @@ def test_facade_methods_are_exactly_the_frozen_coroutine_surface():
     }
 
     assert actual == expected
-    assert len(TOOL_FACADE_METHODS) == 21
+    assert len(TOOL_FACADE_METHODS) == 22
     assert len(COMPATIBILITY_METHODS) == 2
 
 

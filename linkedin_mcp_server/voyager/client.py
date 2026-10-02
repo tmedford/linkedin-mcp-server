@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 #: references rather than reading nested objects.
 _ACCEPT = "application/vnd.linkedin.normalized+json+2.1"
 
+_ME = "https://www.linkedin.com/voyager/api/me"
+_PROFILE_URN_PREFIX = "urn:li:fsd_profile:"
+
 _FETCH_JS = (
     """async (target) => {
     const m = document.cookie.match(/JSESSIONID="?([^";]+)/);
@@ -112,6 +115,27 @@ class VoyagerReader:
                 f"Voyager {self.surface} request failed: {detail}"
             )
         return json.loads(raw["body"])
+
+    async def _mailbox_urn(self) -> str:
+        """The signed-in member's profile URN, which every conversation hangs off.
+
+        Measured on 2026-10-02: ``/voyager/api/me`` carries it as
+        ``included[].dashEntityUrn``.
+        """
+        payload = await self._fetch(_ME)
+        urns = [
+            entity.get("dashEntityUrn")
+            for entity in payload.get("included") or []
+            if isinstance(entity, dict)
+        ]
+        urns = [urn for urn in urns if isinstance(urn, str) and urn]
+        # Exactly one, or a thread would be addressed from a guess.
+        if len(urns) != 1 or not urns[0].startswith(_PROFILE_URN_PREFIX):
+            raise LinkedInScraperException(
+                f"Voyager {self.surface} could not identify the signed-in member: "
+                f"expected one profile URN in /me, found {len(urns)}."
+            )
+        return urns[0]
 
     async def _post(self, url: str, body: dict[str, Any]) -> tuple[int, str]:
         """Issue one Voyager POST from inside the authenticated page.

@@ -1179,6 +1179,57 @@ async def _thread_reply_scenario(outcome: str) -> dict[str, Any]:
     )
 
 
+async def _thread_scenario() -> dict[str, Any]:
+    """Record what `get_thread` does to the page.
+
+    Two evaluates and nothing else: who is signed in, then the thread. No
+    navigation, which is the claim, because navigating to a thread is what
+    marks it read.
+    """
+    name = "get_thread__baseline"
+    recorder = TraceRecorder(name, _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    me = "urn:li:fsd_profile:ACoAA-me"
+    other = "urn:li:msg_messagingParticipant:urn:li:fsd_profile:ACoAA-ada"
+    payload = {
+        "data": {"messengerMessagesBySyncToken": {"*elements": ["urn:li:msg:1"]}},
+        "included": [
+            {
+                "$type": "com.linkedin.messenger.MessagingParticipant",
+                "entityUrn": other,
+                "hostIdentityUrn": "urn:li:fsd_profile:ACoAA-ada",
+                "participantType": {
+                    "member": {
+                        "firstName": {"text": "Ada"},
+                        "lastName": {"text": "Lovelace"},
+                        "profileUrl": "https://www.linkedin.com/in/ada-lovelace",
+                    }
+                },
+            },
+            {
+                "$type": "com.linkedin.messenger.Message",
+                "entityUrn": "urn:li:msg_message:1",
+                "*sender": other,
+                "deliveredAt": 1_700_000_000_000,
+                "body": {"text": "Earlier message"},
+            },
+        ],
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
+        {"body": json.dumps(payload)},
+    )
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("get_thread", "thread"):
+            arguments = {"thread_id": "2-policy-thread=="}
+            result = await extractor.get_thread("2-policy-thread==")
+    page.assert_clean()
+    return recorder.trace({"method": "get_thread", "arguments": arguments}, result)
+
+
 class _ScriptedRequest:
     """The one Request attribute discovery reads."""
 
@@ -1276,6 +1327,7 @@ TOOL_FACADE_METHODS = {
     "search_posts",
     "send_message",
     "reply_to_thread",
+    "get_thread",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1352,6 +1404,7 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "conversation.json": await _conversation_scenario("get_conversation"),
         "conversations-page.json": await _conversations_page_scenario(),
         "invitations.json": await _invitations_scenario(),
+        "thread.json": await _thread_scenario(),
         "thread-reply-dry-run.json": await _thread_reply_scenario("dry_run"),
         "thread-reply-rejected.json": await _thread_reply_scenario("rejected"),
         "thread-reply-sent.json": await _thread_reply_scenario("sent"),

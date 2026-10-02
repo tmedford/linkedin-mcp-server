@@ -1656,6 +1656,11 @@ class TestToolTimeouts:
         tool_names = tuple(n for n in tool_names if n != "get_inbox") + (
             "get_conversations",
         )
+        tool_names = tuple(n for n in tool_names if n != "get_conversation") + (
+            "get_thread",
+            "reply_to_thread",
+            "get_invitations",
+        )
 
         for name in tool_names:
             tool = await mcp.get_tool(name)
@@ -1696,6 +1701,11 @@ class TestToolTimeouts:
         # an addition merges cleanly and says plainly what it does.
         tool_names = tuple(n for n in tool_names if n != "get_inbox") + (
             "get_conversations",
+        )
+        tool_names = tuple(n for n in tool_names if n != "get_conversation") + (
+            "get_thread",
+            "reply_to_thread",
+            "get_invitations",
         )
 
         for name in tool_names:

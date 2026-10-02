@@ -1,0 +1,56 @@
+{
+  "call": {
+    "arguments": {
+      "thread_id": "2-policy-thread=="
+    },
+    "method": "get_thread"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/me",
+      "call": "get_thread",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "thread"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/voyagerMessagingGraphQL/graphql?queryId=messengerMessages.5846eeb71c981f11e0134cb6626cc314&variables=(conversationUrn:urn%3Ali%3Amsg_conversation%3A%28urn%3Ali%3Afsd_profile%3AACoAA-me%2C2-policy-thread%3D%3D%29)",
+      "call": "get_thread",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "thread"
+    }
+  ],
+  "result": {
+    "count": 1,
+    "messages": [
+      {
+        "delivered_at": 1700000000000,
+        "delivered_at_iso": "2023-11-14T22:13:20+00:00",
+        "from_me": false,
+        "message_urn": "urn:li:msg_message:1",
+        "sender_name": "Ada Lovelace",
+        "subject": null,
+        "text": "Earlier message"
+      }
+    ],
+    "participants": [
+      {
+        "name": "Ada Lovelace",
+        "profile_url": "https://www.linkedin.com/in/ada-lovelace",
+        "profile_urn": "urn:li:fsd_profile:ACoAA-ada"
+      }
+    ],
+    "query_id_renewed": false,
+    "sections": {
+      "thread": "Ada Lovelace - 2023-11-14T22:13:20+00:00\nEarlier message"
+    },
+    "thread_id": "2-policy-thread==",
+    "thread_urn": "urn:li:msg_conversation:(urn:li:fsd_profile:ACoAA-me,2-policy-thread==)",
+    "url": "https://www.linkedin.com/messaging/thread/2-policy-thread==/"
+  },
+  "scenario": "get_thread__baseline",
+  "schema_version": 1
+}

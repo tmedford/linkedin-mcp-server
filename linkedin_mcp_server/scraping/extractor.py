@@ -20,6 +20,7 @@ from linkedin_mcp_server.scraping.contracts import (
 from linkedin_mcp_server.scraping.conversations import ConversationReader
 from linkedin_mcp_server.voyager.invitations import VoyagerInvitationsReader
 from linkedin_mcp_server.voyager.messaging import VoyagerMessagingReader
+from linkedin_mcp_server.voyager.thread import VoyagerThreadReader
 from linkedin_mcp_server.voyager.thread_reply import VoyagerThreadReply
 from linkedin_mcp_server.scraping.feed import FeedScraper
 from linkedin_mcp_server.scraping.job_pages import JobPageReader
@@ -78,6 +79,7 @@ class LinkedInExtractor:
         self._voyager_messaging = VoyagerMessagingReader(session, navigator)
         self._voyager_invitations = VoyagerInvitationsReader(session, navigator)
         self._thread_reply = VoyagerThreadReply(session, navigator)
+        self._voyager_thread = VoyagerThreadReader(session, navigator)
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -304,3 +306,7 @@ class LinkedInExtractor:
             message,
             confirm_send=confirm_send,
         )
+
+    async def get_thread(self, thread_id: str) -> dict[str, Any]:
+        """Read one thread's recent messages from the messaging API."""
+        return await self._voyager_thread.get_thread(thread_id)

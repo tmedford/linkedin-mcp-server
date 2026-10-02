@@ -47,8 +47,17 @@ class OverlayError(RuntimeError):
 #: by click-visiting the row, so asking it a question about the mailbox costs
 #: unread state. ``get_conversations`` reads the API the web client itself
 #: calls: any page of the mailbox, one request, nothing clicked.
+#:
+#: ``get_conversation`` opens the thread and reads the rendered page, which
+#: marks the thread read and returns one block of text with the page's chrome
+#: in it. ``get_thread`` issues the query the thread page itself loads from:
+#: each message as a record, and the thread left unread. What is given up is
+#: lookup by username, which upstream did by clicking sidebar rows;
+#: ``get_conversations`` returns every thread's ``thread_url`` beside its
+#: participants, and that is the way from a person to a thread here.
 SUPERSEDED: dict[str, str] = {
     "get_inbox": "get_conversations",
+    "get_conversation": "get_thread",
 }
 
 
@@ -265,6 +274,76 @@ def install_voyager_overlay(
 
     @mcp.tool(
         timeout=tool_timeout,
+        title="Get Thread",
+        # Reads the messaging API. The thread asked about is never opened.
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"messaging", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_thread(
+        thread_id: str,
+        ctx: Context,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read the recent messages of ONE LinkedIn messaging thread from the API.
+
+        Use this to see what was said in a conversation before replying. It
+        issues the request the thread page itself loads from, so the thread is
+        not opened and stays unread.
+
+        To find a thread for a person, call get_conversations: each row carries
+        the participants and a `thread_url` to pass here.
+
+        Args:
+            thread_id: The thread to read. Pass the `thread_url` that
+                get_conversations returned, a `/messaging/thread/{id}/`
+                reference, or the bare thread id.
+            ctx: FastMCP context for progress reporting
+
+        Returns:
+            Dict with url and sections (the standard scraping-tool shape), plus
+            thread_id, thread_urn, participants, messages, count and
+            query_id_renewed.
+
+            `messages` is oldest first. Each carries message_urn, sender_name,
+            from_me, delivered_at, delivered_at_iso, subject and text. from_me
+            is None when the payload does not name the sender.
+
+            **This is the recent tail of the thread, not its whole history.**
+            It is the query the page issues on load; older messages come from a
+            different query that has not been built yet, so `count` is how many
+            came back and not how many exist.
+
+            `query_id_renewed` is normally False. LinkedIn rotates the id of
+            this query, and when the known one stops working the new one is
+            learned by loading the messaging page once, the same page
+            get_conversations loads. That call reports query_id_renewed: True.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_thread"
+            )
+            logger.info("Reading thread %s", thread_id)
+
+            await ctx.report_progress(progress=0, total=100, message="Reading thread")
+
+            result = await extractor.get_thread(thread_id)
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_thread")
+        except Exception as e:
+            raise_tool_error(e, "get_thread")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
         title="Reply to Thread",
         # A write through the messaging API. Unlike the two readers above it
         # sends, so it carries send_message's hints rather than theirs.
@@ -292,7 +371,7 @@ def install_voyager_overlay(
         Args:
             thread_id: The thread to reply in. Pass the `thread_url` that
                 get_conversations returned, a `/messaging/thread/{id}/`
-                reference from get_conversation, or the bare thread id.
+                reference, or the bare thread id.
             message: Reply text. Line breaks (LF) are kept, so a greeting can
                 sit on its own line. Other C0 control characters and DEL are
                 rejected, including CR and tab.

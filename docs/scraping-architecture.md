@@ -84,6 +84,7 @@ a page-owning collaborator.
 - `get_page_text`
 - `get_saved_jobs`
 - `get_sidebar_profiles`
+- `get_thread`
 - `reply_to_thread`
 - `scrape_company`
 - `scrape_job`
@@ -110,6 +111,7 @@ a page-owning collaborator.
 - `_thread_reply`
 - `_voyager_invitations`
 - `_voyager_messaging`
+- `_voyager_thread`
 
 ## Dependency-direction violations
 

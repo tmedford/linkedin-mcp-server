@@ -349,3 +349,15 @@ async def test_the_tool_names_an_unusable_thread_instead_of_masking_it(
 
     with pytest.raises(ToolError, match="thread_id"):
         await reply("../../feed", "hello", True, mock_context)
+
+
+def test_the_result_carries_exactly_upstreams_message_result_keys():
+    # The shape is spelled out in the sender to avoid an import cycle, so this
+    # is what notices upstream adding a key to it.
+    from linkedin_mcp_server.scraping import contracts
+
+    upstream = contracts.message_action_result("u", "s", "m")
+    ours = refuse_an_invalid_reply(THREAD_ID, "")
+
+    assert ours is not None
+    assert set(ours) == {*upstream, "thread_id"}

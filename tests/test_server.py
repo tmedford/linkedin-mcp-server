@@ -921,6 +921,10 @@ class TestWhatTheToolsPromise:
         """
         mcp = create_mcp_server()
         marks_things_read = {"get_conversation", "search_conversations"}
+        # This fork does not serve get_conversation: get_thread replaces it and
+        # reads the API without opening the thread. Applied as a line of its own
+        # so upstream's set above stays as they wrote it.
+        marks_things_read = marks_things_read - {"get_conversation"}
         claiming = set()
         for name in marks_things_read:
             tool = await mcp.get_tool(name)
