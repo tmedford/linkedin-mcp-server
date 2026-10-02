@@ -1044,6 +1044,7 @@ def install_voyager_overlay(
     async def get_profile_views(
         ctx: Context,
         full: bool = True,
+        days: int | None = None,
         extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
@@ -1057,6 +1058,9 @@ def install_voyager_overlay(
             full: True (the default) reads the whole list. False asks only the
                 quick JSON endpoint, which returns the six most recent viewers
                 plus LinkedIn's highlighted groups, in a second or two.
+            days: The period the list covers: 7, 14, 28, 90 or 365. OMIT for
+                LinkedIn's default. Needs full=True. A longer period is a
+                longer list and takes longer to read.
 
         Returns:
             Dict with url and sections (the standard scraping-tool shape), plus:
@@ -1072,7 +1076,11 @@ def install_voyager_overlay(
             aggregates: LinkedIn's roll-ups, such as "133 recruiters viewed
                 your profile".
             groups: how LinkedIn grouped the highlights, with view counts.
-            count, returned, complete.
+            count, returned, complete, days and period_applied.
+
+            **Check period_applied when you pass days.** True means LinkedIn's
+            page asked for that period. False means it did not, and the list
+            is the default period whatever was requested.
 
             **Most view times are approximate.** LinkedIn's list says "1w ago",
             so viewed_at_iso is computed from that and the row carries
@@ -1099,7 +1107,7 @@ def install_voyager_overlay(
                 progress=0, total=100, message="Reading profile views"
             )
 
-            result = await extractor.get_profile_views(full=full)
+            result = await extractor.get_profile_views(full=full, days=days)
 
             await ctx.report_progress(progress=100, total=100, message="Complete")
 

@@ -21,6 +21,7 @@
     "change_percent": 0,
     "complete": null,
     "count": 1,
+    "days": null,
     "groups": [
       {
         "identified": [
@@ -31,6 +32,7 @@
         "views": 12
       }
     ],
+    "period_applied": null,
     "returned": 1,
     "sections": {
       "profile_views": "Profile viewers: 12 (LAST_90_DAYS)\n\nAda Lovelace • 2nd - viewed 2023-11-14T22:13+00:00"

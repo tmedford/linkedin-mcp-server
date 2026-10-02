@@ -49,6 +49,10 @@ and 95 private ones against 529 counted views, the remainder being repeat
 views and the recruiters LinkedIn reports only as a number. The session was
 still valid afterwards.
 
+With ``days=365`` chosen through the page's filter, the same walk returned 296
+named viewers and 193 private ones reaching back eleven months, the page's
+request carried the 365-day value, and the session was again valid afterwards.
+
 The recruiter-views page is a different surface and is not read here.
 """
 
@@ -60,6 +64,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from linkedin_mcp_server.core.exceptions import LinkedInScraperException
 from linkedin_mcp_server.voyager.client import VoyagerReader
 
 logger = logging.getLogger(__name__)
@@ -82,8 +87,10 @@ _TEE_JS = """(() => {
             const target = args[0];
             const url = String((target && target.url) || target || '');
             if (url.includes('/rsc-action/')) {
+                const sent = args[1] && typeof args[1].body === 'string'
+                    ? args[1].body : '';
                 response.clone().text().then(text => {
-                    window.__liMcpRsc.push({url, text});
+                    window.__liMcpRsc.push({url, text, sent});
                 }).catch(() => {});
             }
         } catch (error) {}
@@ -92,8 +99,67 @@ _TEE_JS = """(() => {
 })()"""
 
 _READ_TEE_JS = """() => (window.__liMcpRsc || []).map(entry => ({
-    url: entry.url, text: entry.text,
+    url: entry.url, text: entry.text, sent: entry.sent || '',
 }))"""
+
+#: Chooses a period in the page's own date filter, by POSITION.
+#:
+#: Measured in a live page on 2026-10-02. The filter is the first checkbox
+#: pill in ``main``. Opening it shows a popover holding exactly five radios,
+#: in the order of ``TIME_RANGES`` (the fourth, 90 days, is checked by
+#: default), and two buttons: reset first, apply last. The radios carry no
+#: value and their labels are words, so the option is taken by its index and
+#: nothing here reads a label. Anything other than exactly five radios is a
+#: layout this does not know, and it answers False rather than clicking a
+#: guess. The copies are emptied just before applying, so every answer kept
+#: afterwards belongs to the chosen period.
+_APPLY_PERIOD_JS = """async (index) => {
+    const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const pill = document.querySelector('main input[type="checkbox"]');
+    if (!pill) return 'no-filter';
+    (document.querySelector('label[for="' + pill.id + '"]') || pill).click();
+    let options = [];
+    for (let attempt = 0; attempt < 20 && options.length !== 5; attempt++) {
+        await pause(150);
+        options = Array.from(document.querySelectorAll('input[type="radio"]'))
+            .filter(radio => !radio.closest('main'));
+    }
+    if (options.length !== 5) return 'unknown-layout';
+    const container = options[0].closest('[role="dialog"], [popover]');
+    if (!container || !options.every(radio => container.contains(radio))) {
+        return 'unknown-layout';
+    }
+    const option = options[index];
+    (document.querySelector('label[for="' + option.id + '"]') || option).click();
+    await pause(200);
+    if (!option.checked) return 'not-selected';
+    const buttons = Array.from(container.querySelectorAll('button'));
+    if (buttons.length < 2) return 'unknown-layout';
+    return 'ready';
+}"""
+
+_SUBMIT_PERIOD_JS = """() => {
+    const options = Array.from(document.querySelectorAll('input[type="radio"]'))
+        .filter(radio => !radio.closest('main'));
+    const container = options.length === 5
+        ? options[0].closest('[role="dialog"], [popover]') : null;
+    const buttons = container ? Array.from(container.querySelectorAll('button')) : [];
+    if (buttons.length < 2) return false;
+    buttons[buttons.length - 1].click();
+    return true;
+}"""
+
+_CLEAR_TEE_JS = "() => { window.__liMcpRsc = []; return true; }"
+
+#: The periods LinkedIn's own filter offers, by their length in days. The
+#: names are the page's, taken from a request it sent.
+TIME_RANGES = {
+    7: "WvmpSearchFilterTimeRange_LAST_7_DAYS",
+    14: "WvmpSearchFilterTimeRange_LAST_14_DAYS",
+    28: "WvmpSearchFilterTimeRange_LAST_28_DAYS",
+    90: "WvmpSearchFilterTimeRange_LAST_90_DAYS",
+    365: "WvmpSearchFilterTimeRange_LAST_365_DAYS",
+}
 
 _SCROLL_JS = """() => {
     const root = document.scrollingElement || document.documentElement;
@@ -416,18 +482,38 @@ class VoyagerProfileViews(VoyagerReader):
 
     surface = "profile-views"
 
-    async def _page_rows(self, max_rounds: int) -> tuple[list[dict[str, Any]], bool]:
+    async def _page_rows(
+        self, max_rounds: int, days: int | None = None
+    ) -> tuple[list[dict[str, Any]], bool, bool | None]:
         """Every row the analytics page loads for itself, and whether it ended.
 
         Sends nothing. The page is opened and scrolled; the answers it fetches
         are copied as they arrive and parsed. The second value is True when
         scrolling stopped producing answers, False when the round limit cut
-        the walk short.
+        the walk short. The third says whether the page asked for the period
+        requested: True, False, or None when no period was requested.
+
+        The period is chosen in the page's own date filter, so the page
+        issues the request itself. Putting it in the address
+        (``?timeRange=``, the form the recruiter-views page is linked with)
+        was tried first and is ignored here: a live run asking for 365 days
+        that way got the default list back. Whether the page asked for the
+        period is read from the request it sent rather than assumed, which is
+        what caught that.
         """
         page = self._session.page
         await page.add_init_script(_TEE_JS)
         await self._navigator._navigate_to_page(PAGE_URL)
         await self._session.check_rate_limit()
+
+        if days is not None:
+            await self._session.delay(3.0)
+            index = list(TIME_RANGES).index(days)
+            state = await page.evaluate(_APPLY_PERIOD_JS, index)
+            logger.info("Period filter for %s days: %s", days, state)
+            if state == "ready":
+                await page.evaluate(_CLEAR_TEE_JS, isolated_context=False)
+                await page.evaluate(_SUBMIT_PERIOD_JS)
 
         # The copies live in the page's own world, where its fetch was
         # wrapped. Patchright evaluates in an isolated world by default, which
@@ -471,14 +557,41 @@ class VoyagerProfileViews(VoyagerReader):
                 if key not in keys:
                     keys.add(key)
                     rows.append(row)
-        return rows, ended
+        applied: bool | None = None
+        if days is not None:
+            # The selected period is the VALUE of the date-range state. Its
+            # name also appears in the request as one of the options offered,
+            # so only the selected-value form counts.
+            wanted = f'"value":["{TIME_RANGES[days]}"]'
+            requests = [
+                entry.get("sent") or ""
+                for entry in (captured if isinstance(captured, list) else [])
+                if isinstance(entry, dict)
+                and "WvmpEntityList" in (entry.get("url") or "")
+            ]
+            applied = any(wanted in sent for sent in requests) if requests else False
+        return rows, ended, applied
 
-    async def get_profile_views(self, full: bool = True) -> dict[str, Any]:
+    async def get_profile_views(
+        self, full: bool = True, days: int | None = None
+    ) -> dict[str, Any]:
         """Read who viewed the profile: the JSON highlights, and the full list.
 
         With ``full`` the analytics page is also opened and its own list read
-        to the end; without it only the JSON endpoint is asked.
+        to the end; without it only the JSON endpoint is asked. ``days``
+        chooses the period the list covers and needs ``full``.
         """
+        if days is not None and days not in TIME_RANGES:
+            raise LinkedInScraperException(
+                f"days was {days!r}. LinkedIn offers these periods: "
+                f"{', '.join(str(d) for d in TIME_RANGES)}. Omit it for "
+                "LinkedIn's default."
+            )
+        if days is not None and not full:
+            raise LinkedInScraperException(
+                "days needs the full list (full=True). The quick read has no "
+                "period to choose: it returns LinkedIn's highlights as they are."
+            )
         payload = await self._fetch(_CARDS)
         views = parse_views(payload)
         self._refuse_unexplained_zero(
@@ -495,8 +608,9 @@ class VoyagerProfileViews(VoyagerReader):
                 "groups": [],
             }
         list_ended: bool | None = None
+        period_applied: bool | None = None
         if full:
-            rows, list_ended = await self._page_rows(MAX_ROUNDS)
+            rows, list_ended, period_applied = await self._page_rows(MAX_ROUNDS, days)
             exact = {v.get("public_identifier"): v for v in views["viewers"]}
             merged: dict[str, dict[str, Any]] = {}
             anonymous: list[dict[str, Any]] = []
@@ -544,4 +658,8 @@ class VoyagerProfileViews(VoyagerReader):
             # Whether the page's list was read to its end. None when the list
             # was not read at all; False when the walk was cut short.
             "complete": list_ended,
+            "days": days,
+            # Whether the page asked LinkedIn for that period. False means the
+            # list is LinkedIn's default period, whatever was requested.
+            "period_applied": period_applied,
         }

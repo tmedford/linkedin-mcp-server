@@ -74,7 +74,7 @@
       },
       "get_profile_views": {
         "coroutine": true,
-        "signature": "(self, full: 'bool' = True) -> 'dict[str, Any]'"
+        "signature": "(self, full: 'bool' = True, days: 'int | None' = None) -> 'dict[str, Any]'"
       },
       "get_saved_jobs": {
         "coroutine": true,
@@ -589,6 +589,18 @@
         "input": {
           "additionalProperties": false,
           "properties": {
+            "days": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The period the list covers: 7, 14, 28, 90 or 365. OMIT for\nLinkedIn's default. Needs full=True. A longer period is a\nlonger list and takes longer to read."
+            },
             "full": {
               "default": true,
               "description": "True (the default) reads the whole list. False asks only the\nquick JSON endpoint, which returns the six most recent viewers\nplus LinkedIn's highlighted groups, in a second or two.",

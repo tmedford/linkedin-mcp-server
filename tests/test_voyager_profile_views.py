@@ -131,7 +131,17 @@ def _payload(*, card: bool = True) -> dict[str, Any]:
 class _Page:
     """Answers the JSON read, then plays the part of a page that loads rows."""
 
-    def __init__(self, payload: dict[str, Any], batches: list[list[str]] | None):
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        batches: list[list[str]] | None,
+        sent: str = "",
+    ):
+        self.sent = sent
+        self.cleared = 0
+        self.submitted = 0
+        self.period_index: Any = None
+        self.period_state = "ready"
         self.payload = payload
         self.batches = list(batches or [])
         self.captured: list[dict[str, str]] = []
@@ -146,6 +156,16 @@ class _Page:
     async def evaluate(
         self, program: str, argument: Any = None, *, isolated_context: bool = True
     ) -> Any:
+        if "window.__liMcpRsc = []" in program:
+            self.cleared += 1
+            self.captured = []
+            return True
+        if "main input" in program and "index" in program:
+            self.period_index = argument
+            return self.period_state
+        if "buttons[buttons.length - 1].click()" in program:
+            self.submitted += 1
+            return True
         if "__liMcpRsc" in program:
             # What the page's world holds is invisible from the isolated one.
             if isolated_context:
@@ -156,7 +176,11 @@ class _Page:
             self.scrolls += 1
             if self.batches:
                 self.captured += [
-                    {"url": "/rsc-action/x", "text": text}
+                    {
+                        "url": "/rsc-action/actions/server-request?sduiid=WvmpEntityList",
+                        "text": text,
+                        "sent": self.sent,
+                    }
                     for text in self.batches.pop(0)
                 ]
             return 0
@@ -165,9 +189,11 @@ class _Page:
 
 
 def _reader(
-    payload: dict[str, Any], batches: list[list[str]] | None = None
+    payload: dict[str, Any],
+    batches: list[list[str]] | None = None,
+    sent: str = "",
 ) -> tuple[VoyagerProfileViews, Any]:
-    page = _Page(payload, batches)
+    page = _Page(payload, batches, sent)
     session = MagicMock()
     session.page = page
     session.check_rate_limit = AsyncMock()
@@ -388,3 +414,80 @@ async def test_the_same_row_delivered_twice_is_one_viewer():
     viewers = (await reader.get_profile_views())["viewers"]
 
     assert sum(v.get("public_identifier") == "newcomer" for v in viewers) == 1
+
+
+YEAR = "WvmpSearchFilterTimeRange_LAST_365_DAYS"
+
+
+async def test_a_period_is_chosen_in_the_pages_own_filter_and_read_back():
+    row = _row("newcomer", "New Comer", "Viewed 5mo ago")
+    reader, _ = _reader(_payload(), batches=[[row]], sent=f'{{"value":["{YEAR}"]}}')
+
+    result = await reader.get_profile_views(days=365)
+
+    page = getattr(reader, "test_page")
+    # The address is the plain page: LinkedIn ignores a period put in it.
+    getattr(reader, "test_navigator")._navigate_to_page.assert_awaited_once_with(
+        "https://www.linkedin.com/analytics/profile-views/"
+    )
+    # Chosen by position in the page's own filter: 365 days is the fifth.
+    assert page.period_index == 4
+    assert page.submitted == 1
+    # Emptied before applying, so default-period answers are not kept.
+    assert page.cleared == 1
+    assert result["days"] == 365
+    assert result["period_applied"] is True
+
+
+async def test_a_period_the_page_did_not_ask_for_is_reported_as_not_applied():
+    # The option's NAME is in every request, as one of the choices offered.
+    # Only the selected VALUE counts, or an ignored parameter reads as applied.
+    offered = f"SearchFilterValue(isSelected=false, item={YEAR})"
+    row = _row("newcomer", "New Comer", "Viewed 2w ago")
+    reader, _ = _reader(_payload(), batches=[[row]], sent=offered)
+
+    result = await reader.get_profile_views(days=365)
+
+    assert result["period_applied"] is False
+
+
+async def test_no_period_requested_is_neither_applied_nor_not():
+    reader, _ = _reader(_payload(), batches=[[_row("x", "X Y", "Viewed 1d ago")]])
+
+    result = await reader.get_profile_views()
+
+    assert result["days"] is None
+    assert result["period_applied"] is None
+    getattr(reader, "test_navigator")._navigate_to_page.assert_awaited_once_with(
+        "https://www.linkedin.com/analytics/profile-views/"
+    )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"days": 30}, "7, 14, 28, 90, 365"),
+        ({"days": 90, "full": False}, "needs the full list"),
+    ],
+)
+async def test_an_unusable_period_is_refused_before_any_request(arguments, message):
+    reader, requests = _reader(_payload())
+
+    with pytest.raises(LinkedInScraperException, match=message):
+        await reader.get_profile_views(**arguments)
+
+    assert requests == []
+
+
+async def test_a_filter_layout_it_does_not_know_is_not_clicked_through():
+    row = _row("newcomer", "New Comer", "Viewed 2w ago")
+    reader, _ = _reader(_payload(), batches=[[row]])
+    page = getattr(reader, "test_page")
+    page.period_state = "unknown-layout"
+
+    result = await reader.get_profile_views(days=7)
+
+    assert page.period_index == 0
+    assert page.submitted == 0
+    assert page.cleared == 0
+    assert result["period_applied"] is False
