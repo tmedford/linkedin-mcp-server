@@ -1287,6 +1287,56 @@ _POLICY_MUTUAL = {
 }
 
 
+async def _people_search_scenario() -> dict[str, Any]:
+    """Record what the API people search does to the page.
+
+    Two evaluates and no navigation: a place name is resolved to a geo, then
+    one page of results is read. The tool it replaces loads the results page.
+    """
+    recorder = TraceRecorder("find_people__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    result_urn = "urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACoAA-ada,SEARCH_SRP,DEFAULT)"
+    geo = {
+        "data": {
+            "elements": [
+                {
+                    "trackingUrn": "urn:li:geo:101165590",
+                    "title": {"text": "United Kingdom"},
+                }
+            ]
+        }
+    }
+    results = {
+        "data": {
+            "elements": [{"items": [{"itemUnion": {"*entityResult": result_urn}}]}],
+            "paging": {"total": 150},
+        },
+        "included": [
+            {
+                "entityUrn": result_urn,
+                "title": {"text": "Ada Lovelace"},
+                "primarySubtitle": {"text": "Engineer at Analytical Engine"},
+                "secondarySubtitle": {"text": "London"},
+                "navigationUrl": "https://www.linkedin.com/in/ada-lovelace?x=1",
+                "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
+            }
+        ],
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps(geo)},
+        {"body": json.dumps(results)},
+    )
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("find_people", "search"):
+            arguments = {"keywords": "engineer", "location": "United Kingdom"}
+            result = await extractor.find_people("engineer", location="United Kingdom")
+    page.assert_clean()
+    return recorder.trace({"method": "find_people", "arguments": arguments}, result)
+
+
 async def _person_extra_scenario(method: str) -> dict[str, Any]:
     """Record what the two paged person reads do to the page.
 
@@ -1594,6 +1644,7 @@ TOOL_FACADE_METHODS = {
     "get_person",
     "get_mutual_connections",
     "get_person_posts",
+    "find_people",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1672,6 +1723,7 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "invitations.json": await _invitations_scenario(),
         "thread.json": await _thread_scenario(),
         "person.json": await _person_scenario(),
+        "people-search.json": await _people_search_scenario(),
         "person-mutual.json": await _person_extra_scenario("get_mutual_connections"),
         "person-posts.json": await _person_extra_scenario("get_person_posts"),
         "message-search.json": await _message_search_scenario(),

@@ -75,6 +75,7 @@ a page-owning collaborator.
 - `connect_with_person`
 - `extract_feed`
 - `extract_page`
+- `find_people`
 - `get_company_employees`
 - `get_conversation`
 - `get_conversations`
@@ -111,6 +112,7 @@ a page-owning collaborator.
 - `_feed`
 - `_jobs`
 - `_message_sender`
+- `_people_search`
 - `_person`
 - `_person_message`
 - `_posts`

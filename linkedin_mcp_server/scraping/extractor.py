@@ -21,6 +21,7 @@ from linkedin_mcp_server.scraping.conversations import ConversationReader
 from linkedin_mcp_server.voyager.invitations import VoyagerInvitationsReader
 from linkedin_mcp_server.voyager.messaging import VoyagerMessagingReader
 from linkedin_mcp_server.voyager.message_search import VoyagerMessageSearch
+from linkedin_mcp_server.voyager.people_search import VoyagerPeopleSearch
 from linkedin_mcp_server.voyager.person import VoyagerPersonReader
 from linkedin_mcp_server.voyager.person_message import VoyagerPersonMessage
 from linkedin_mcp_server.voyager.thread import VoyagerThreadReader
@@ -86,6 +87,7 @@ class LinkedInExtractor:
         self._voyager_search = VoyagerMessageSearch(session, navigator)
         self._person_message = VoyagerPersonMessage(session, navigator)
         self._voyager_person = VoyagerPersonReader(session, navigator)
+        self._people_search = VoyagerPeopleSearch(session, navigator)
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -368,4 +370,23 @@ class LinkedInExtractor:
         """Read one page of a member's posts and reposts from the API."""
         return await self._voyager_person.get_person_posts(
             linkedin_username, count=count, cursor=cursor
+        )
+
+    async def find_people(
+        self,
+        keywords: str,
+        location: str | None = None,
+        network: list[str] | None = None,
+        current_company: str | None = None,
+        start: int = 0,
+        count: int = 10,
+    ) -> dict[str, Any]:
+        """Read one page of a people search from the search API."""
+        return await self._people_search.find_people(
+            keywords,
+            location=location,
+            network=network,
+            current_company=current_company,
+            start=start,
+            count=count,
         )

@@ -26,6 +26,7 @@ import logging
 from typing import Any
 
 from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
 
 from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
 from linkedin_mcp_server.core.exceptions import (
@@ -34,6 +35,8 @@ from linkedin_mcp_server.core.exceptions import (
 )
 from linkedin_mcp_server.dependencies import get_ready_extractor, handle_auth_error
 from linkedin_mcp_server.error_handler import raise_tool_error
+from linkedin_mcp_server.scraping.contracts import FilterValidationError
+from linkedin_mcp_server.tools.person import StrList
 from linkedin_mcp_server.voyager.person_message import refuse_an_invalid_person_message
 from linkedin_mcp_server.voyager.thread_reply import refuse_an_invalid_reply
 
@@ -74,7 +77,11 @@ class OverlayError(RuntimeError):
 #: records, with contact info, mutual connections and what the profile shares
 #: with the signed-in member's own.
 #:
-#: **A replacement keeps the name it replaces.** Four of the five below are
+#: ``search_people`` loads the results page and returns its text, ten at a
+#: time. Ours asks the search service and returns each person as a record with
+#: their identifier, up to fifty a page.
+#:
+#: **A replacement keeps the name it replaces.** Five of the six below are
 #: registered under upstream's own tool name and accept upstream's arguments,
 #: so nothing that calls the tool has to change when its implementation does.
 #: ``get_inbox`` is the exception and predates the rule: its replacement pages
@@ -86,6 +93,7 @@ SUPERSEDED: dict[str, str] = {
     "search_conversations": "search_conversations",
     "send_message": "send_message",
     "get_person_profile": "get_person_profile",
+    "search_people": "search_people",
 }
 
 #: The section names upstream's get_person_profile accepts.
@@ -922,3 +930,106 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "get_person_posts")
         except Exception as e:
             raise_tool_error(e, "get_person_posts")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Search People",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "search"},
+        exclude_args=["extractor"],
+    )
+    async def search_people(
+        keywords: str,
+        ctx: Context,
+        location: str | None = None,
+        network: StrList | None = None,
+        current_company: str | None = None,
+        start: int = 0,
+        count: int = 10,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Search for people on LinkedIn, ONE page from LinkedIn's search API.
+
+        Each person comes back as a record with their public identifier, so a
+        result can be passed straight to get_person_profile.
+
+        Args:
+            keywords: Search keywords (e.g., "software engineer", "recruiter").
+            ctx: FastMCP context for progress reporting
+            location: Optional place name (e.g., "New York", "Germany"), or a
+                numeric LinkedIn geo id. A name is resolved to LinkedIn's best
+                matching place, which is reported back as location_resolved
+                with the runners-up in location_candidates. **Check it**: "New
+                York" resolves to the state before the city. A name LinkedIn
+                does not recognise as a place is refused, not ignored.
+            network: Optional connection-degree filter. Each element is one of
+                "F" (1st-degree), "S" (2nd-degree), "O" (3rd-degree and beyond).
+                A single
+                token ("F") or a comma-separated string ("F,S") is also
+                accepted, for clients that cannot transmit an array.
+            current_company: Optional current-employer filter, as the numeric
+                company id (e.g. "1115" for SAP). A company name is refused,
+                because LinkedIn ignores one and returns everyone.
+            start: 0-based offset. Paging is the caller's loop.
+            count: how many to ask for, 1 to 50. Defaults to 10.
+
+        Returns:
+            Dict with url, sections (search_results -> text) and references
+            (the standard shape), plus people, count, start, page_size,
+            total_reported and at_end.
+
+            Each person has name, headline, location, public_identifier,
+            profile_url, profile_urn, distance (LinkedIn's DISTANCE_1/2/3) and
+            degree ("1st"/"2nd"/"3rd"), plus insight (such as mutual
+            connections) and summary where LinkedIn returned them.
+
+            at_end is True when fewer than `count` came back, False for a full
+            page, None for an empty one. **total_reported is not a count of
+            matches**: it read 150 for every query tried, so nothing should be
+            concluded from it.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="search_people"
+            )
+            logger.info(
+                "Searching people: keywords='%s', location='%s', network=%s, "
+                "current_company='%s', start=%s",
+                keywords,
+                location,
+                network,
+                current_company,
+                start,
+            )
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Starting people search"
+            )
+
+            try:
+                result = await extractor.find_people(
+                    keywords,
+                    location,
+                    network=network,
+                    current_company=current_company,
+                    start=start,
+                    count=count,
+                )
+            except FilterValidationError as e:
+                # Carries the correction; surfaced whole rather than masked.
+                raise ToolError(str(e)) from e
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except ToolError:
+            raise
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "search_people")
+        except Exception as e:
+            raise_tool_error(e, "search_people")  # NoReturn

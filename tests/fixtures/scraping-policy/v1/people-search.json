@@ -1,0 +1,72 @@
+{
+  "call": {
+    "arguments": {
+      "keywords": "engineer",
+      "location": "United Kingdom"
+    },
+    "method": "find_people"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/voyagerSearchDashReusableTypeahead?decorationId=com.linkedin.voyager.dash.deco.search.typeahead.ReusableTypeaheadCollection-27&keywords=United%20Kingdom&q=type&query=(typeaheadFilterQuery:(geoSearchTypes:List(MARKET_AREA,COUNTRY_REGION,ADMIN_DIVISION_1,CITY)))&type=GEO",
+      "call": "find_people",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "search"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/search/dash/clusters?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175&origin=GLOBAL_SEARCH_HEADER&q=all&query=(keywords:engineer,flagshipSearchIntent:SEARCH_SRP,queryParameters:(resultType:List(PEOPLE),geoUrn:List(101165590)),includeFiltersInResponse:false)&start=0&count=10",
+      "call": "find_people",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "search"
+    }
+  ],
+  "result": {
+    "at_end": true,
+    "count": 1,
+    "location_candidates": [
+      {
+        "geo_id": "101165590",
+        "name": "United Kingdom"
+      }
+    ],
+    "location_resolved": {
+      "geo_id": "101165590",
+      "name": "United Kingdom"
+    },
+    "page_size": 10,
+    "people": [
+      {
+        "degree": "2nd",
+        "distance": "DISTANCE_2",
+        "headline": "Engineer at Analytical Engine",
+        "location": "London",
+        "name": "Ada Lovelace",
+        "profile_url": "/in/ada-lovelace/",
+        "profile_urn": "urn:li:fsd_profile:ACoAA-ada",
+        "public_identifier": "ada-lovelace"
+      }
+    ],
+    "references": {
+      "search_results": [
+        {
+          "context": "search result",
+          "kind": "person",
+          "text": "Ada Lovelace",
+          "url": "/in/ada-lovelace/"
+        }
+      ]
+    },
+    "sections": {
+      "search_results": "Ada Lovelace • 2nd\n    Engineer at Analytical Engine\n    London"
+    },
+    "start": 0,
+    "total_reported": 150,
+    "url": "https://www.linkedin.com/search/results/people/?keywords=engineer&location=United+Kingdom"
+  },
+  "scenario": "find_people__baseline",
+  "schema_version": 1
+}

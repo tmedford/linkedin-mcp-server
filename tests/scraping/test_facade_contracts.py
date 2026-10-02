@@ -68,6 +68,7 @@ TOOL_DELEGATES = {
     "get_person": "get_person",
     "get_mutual_connections": "get_mutual_connections",
     "get_person_posts": "get_person_posts",
+    "find_people": "find_people",
 }
 
 
@@ -113,6 +114,7 @@ async def test_constructor_export_and_dependency_use_the_same_facade(monkeypatch
         "_voyager_search",
         "_person_message",
         "_voyager_person",
+        "_people_search",
     }
     assert set(vars(extractor)) == expected_state
     assert type(constructed) is LinkedInExtractor
@@ -149,15 +151,16 @@ async def test_registered_tools_and_extractor_delegates_are_counted_separately()
     # this fork's API readers under upstream's own names. So those names are
     # tools, and the facade methods behind our versions (get_thread,
     # search_messages, message_person, get_person) are delegates that no tool
-    # is named after.
+    # is named after. find_people is the same again, behind search_people.
     assert tool_names == {*TOOL_DELEGATES, "close_session"} - {
         "get_inbox",
         "get_thread",
         "search_messages",
         "message_person",
         "get_person",
+        "find_people",
     }
-    assert len(TOOL_DELEGATES) == 27
+    assert len(TOOL_DELEGATES) == 28
     assert set(TOOL_DELEGATES.values()) == TOOL_FACADE_METHODS
     assert "close_session" not in TOOL_DELEGATES
 
@@ -533,7 +536,7 @@ def test_facade_methods_are_exactly_the_frozen_coroutine_surface():
     }
 
     assert actual == expected
-    assert len(TOOL_FACADE_METHODS) == 27
+    assert len(TOOL_FACADE_METHODS) == 28
     assert len(COMPATIBILITY_METHODS) == 2
 
 
