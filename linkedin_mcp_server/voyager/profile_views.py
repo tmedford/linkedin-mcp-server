@@ -83,6 +83,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
@@ -162,6 +163,24 @@ TIME_RANGES = {
     90: "WvmpSearchFilterTimeRange_LAST_90_DAYS",
     365: "WvmpSearchFilterTimeRange_LAST_365_DAYS",
 }
+
+#: LinkedIn's "interesting viewers" filter, by the name a caller passes.
+INTERESTING = {
+    "can_help_you_get_a_job": "InterestingViewerType_CAN_HELP_YOU_GET_A_JOB",
+    "senior_leader_in_your_industry": (
+        "InterestingViewerType_SENIOR_LEADER_IN_YOUR_INDUSTRY"
+    ),
+    "senior_leader_with_your_job_function": (
+        "InterestingViewerType_SENIOR_LEADER_WITH_YOUR_JOB_FUNCTION"
+    ),
+    "has_verifications": "InterestingViewerType_HAS_VERIFICATIONS",
+}
+
+# A private viewer's row links to a people search for others like them, and
+# that link is where their employer is named by id.
+_SEARCH_LINK = re.compile(
+    r'"url":"(https://www\.linkedin\.com/search/results/people/\?[^"]+)"'
+)
 
 _ROW_MARKER = '"viewName":"viewer-list-item"'
 _INLINE_TEXT = re.compile(
@@ -451,8 +470,31 @@ def parse_stream_rows(text: str, now: datetime | None = None) -> list[dict[str, 
                 "extra": rest[1:] or None,
             }
         elif viewed:
+            # LinkedIn hides who this was but not where they work: the row
+            # links to a search carrying the title and the employer's id, an
+            # industry and place when it withholds the employer too, or only
+            # a school's name. Measured 2026-10-02 over 28 days: 17, 5 and 2
+            # of 24 private rows.
+            search = _SEARCH_LINK.search(chunk)
+            query = parse_qs(urlparse(search.group(1)).query) if search else {}
+            title = (query.get("keywords") or [None])[0]
+            description = texts[0]
+            company = None
+            if title and query.get("currentCompany") and description.startswith(title):
+                # "<title> at <company>": the joining word is dropped by
+                # position, not by spelling.
+                rest = description[len(title) :].strip().split(" ", 1)
+                company = rest[1] if len(rest) == 2 else None
             row = {
-                "description": texts[0],
+                "description": description,
+                "title": title,
+                "company": company,
+                "company_id": (query.get("currentCompany") or [None])[0],
+                "industry_id": (query.get("industry") or [None])[0],
+                "geo_id": (query.get("geoUrn") or [None])[0],
+                # "Someone at <school>": named in words, with no id at all.
+                "school": (query.get("school") or [None])[0],
+                "search_url": search.group(1) if search else None,
                 "viewed_text": viewed,
                 "viewed_at_iso": _approximate(viewed, now),
                 "viewed_at_approximate": True,
@@ -463,15 +505,26 @@ def parse_stream_rows(text: str, now: datetime | None = None) -> list[dict[str, 
     return rows
 
 
-def _paging_body(start: int, count: int, period: str) -> str:
-    """The paging request, as the page sends it, for one window of the list."""
+def _paging_body(
+    start: int,
+    count: int,
+    period: str,
+    selections: dict[str, list[str]] | None = None,
+    sort: str = "ProfileViewSortType_TIME_DESCENDING",
+) -> str:
+    """The paging request, as the page sends it, for one window of the list.
+
+    ``selections`` maps a filter name from ``_FILTERS`` to its selected
+    values; the date range is always the period.
+    """
+    chosen = {**(selections or {}), "DATE_RANGE": [period]}
 
     def key(name: str) -> str:
         return f"entityListQueryFilterPrefixWvmpSearchFilterType_{name}"
 
     state_keys = [{"key": {"value": {"$case": "id", "id": key(n)}}} for n in _FILTERS]
     payload: dict[str, Any] = {
-        "sortType": "ProfileViewSortType_TIME_DESCENDING",
+        "sortType": sort,
         "start": start,
         "count": count,
         "filterTypeList": [f"WvmpSearchFilterType_{n}" for n in _FILTERS],
@@ -491,8 +544,7 @@ def _paging_body(start: int, count: int, period: str) -> str:
         {
             "key": key(name),
             "namespace": "MemoryNamespace",
-            # Only the date range is ever selected; the others stay empty.
-            "value": [period] if name == "DATE_RANGE" else [],
+            "value": list(chosen.get(name) or []),
             "originalProtoCase": "stringListValue",
             "protoKey": {
                 "$type": "proto.sdui.Key",
@@ -577,7 +629,11 @@ class VoyagerProfileViews(VoyagerReader):
         return headers
 
     async def _list_window(
-        self, start: int, count: int, period: str
+        self,
+        start: int,
+        count: int,
+        period: str,
+        selections: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
         """One window of the viewer list, straight from the paging endpoint."""
         answer = await self._session.page.evaluate(
@@ -585,7 +641,7 @@ class VoyagerProfileViews(VoyagerReader):
             {
                 "url": _PAGINATION,
                 "headers": await self._page_headers(),
-                "body": _paging_body(start, count, period),
+                "body": _paging_body(start, count, period, selections),
             },
         )
         status = answer.get("status") if isinstance(answer, dict) else None
@@ -611,14 +667,18 @@ class VoyagerProfileViews(VoyagerReader):
             )
         return rows
 
-    async def _all_rows(self, period: str) -> tuple[list[dict[str, Any]], bool]:
+    async def _all_rows(
+        self, period: str, selections: dict[str, list[str]] | None = None
+    ) -> tuple[list[dict[str, Any]], bool]:
         """The whole list for a period, and whether its end was reached."""
         rows: list[dict[str, Any]] = []
         keys: set[str] = set()
         for index in range(MAX_PAGES):
             if index:
                 await self._session.delay(PAGE_DELAY)
-            window = await self._list_window(index * PAGE_SIZE, PAGE_SIZE, period)
+            window = await self._list_window(
+                index * PAGE_SIZE, PAGE_SIZE, period, selections
+            )
             viewers = [row for row in window if "aggregate" not in row]
             for row in window:
                 key = json.dumps(
@@ -638,7 +698,13 @@ class VoyagerProfileViews(VoyagerReader):
         return rows, False
 
     async def get_profile_views(
-        self, full: bool = True, days: int | None = None
+        self,
+        full: bool = True,
+        days: int | None = None,
+        interesting: str | None = None,
+        company_id: str | None = None,
+        industry_id: str | None = None,
+        geo_id: str | None = None,
     ) -> dict[str, Any]:
         """Read who viewed the profile: the JSON highlights, and the full list.
 
@@ -651,6 +717,34 @@ class VoyagerProfileViews(VoyagerReader):
                 f"days was {days!r}. LinkedIn offers these periods: "
                 f"{', '.join(str(d) for d in TIME_RANGES)}. Omit it for "
                 "LinkedIn's default."
+            )
+        selections: dict[str, list[str]] = {}
+        if interesting is not None:
+            if interesting not in INTERESTING:
+                raise LinkedInScraperException(
+                    f"interesting was {interesting!r}. Pass one of: "
+                    f"{', '.join(INTERESTING)}."
+                )
+            selections["INTERESTING_VIEWER"] = [INTERESTING[interesting]]
+        for name, value, filter_name in (
+            ("company_id", company_id, "ORGANIZATION"),
+            ("industry_id", industry_id, "INDUSTRY"),
+            ("geo_id", geo_id, "LOCATION"),
+        ):
+            if value is None:
+                continue
+            # Measured: the bare number filters; a URN in its place answers
+            # HTTP 500. Refused here so the mistake names its own correction.
+            if not str(value).strip().isdigit():
+                raise LinkedInScraperException(
+                    f"{name} was {value!r}. Pass LinkedIn's numeric id on its "
+                    "own, not a URN or a name."
+                )
+            selections[filter_name] = [str(value).strip()]
+        if selections and not full:
+            raise LinkedInScraperException(
+                "Filters need the full list (full=True). The quick read "
+                "returns LinkedIn's highlights as they are."
             )
         if days is not None and not full:
             raise LinkedInScraperException(
@@ -675,7 +769,7 @@ class VoyagerProfileViews(VoyagerReader):
         list_ended: bool | None = None
         period_applied: bool | None = None
         if full:
-            rows, list_ended = await self._all_rows(TIME_RANGES[days or 90])
+            rows, list_ended = await self._all_rows(TIME_RANGES[days or 90], selections)
             if days is not None:
                 # A row older than the period means the period was ignored.
                 # Nothing older proves little for a long period, so this can
@@ -684,7 +778,11 @@ class VoyagerProfileViews(VoyagerReader):
                 period_applied = not any(
                     (_seconds(row.get("viewed_text")) or 0) > limit for row in rows
                 )
+            # With a filter on, the JSON highlights are not part of the
+            # answer: they are unfiltered and would put back people the
+            # filter removed. They still lend exact times to rows that match.
             exact = {v.get("public_identifier"): v for v in views["viewers"]}
+            keep_highlights = not selections
             merged: dict[str, dict[str, Any]] = {}
             anonymous: list[dict[str, Any]] = []
             aggregates = list(views["aggregates"])
@@ -710,9 +808,10 @@ class VoyagerProfileViews(VoyagerReader):
                     row["aggregate"] == a.get("description") for a in aggregates
                 ):
                     aggregates.append({"description": row["aggregate"]})
-            for slug, known in exact.items():
-                merged.setdefault(slug or known.get("name") or "", known)
-            if rows:
+            if keep_highlights:
+                for slug, known in exact.items():
+                    merged.setdefault(slug or known.get("name") or "", known)
+            if rows or selections:
                 views["viewers"] = sorted(
                     merged.values(),
                     key=lambda v: v.get("viewed_at_iso") or "",
@@ -732,6 +831,16 @@ class VoyagerProfileViews(VoyagerReader):
             # read at all; False when the page limit cut the walk short.
             "complete": list_ended,
             "days": days,
+            "filters": {
+                key: value
+                for key, value in (
+                    ("interesting", interesting),
+                    ("company_id", company_id),
+                    ("industry_id", industry_id),
+                    ("geo_id", geo_id),
+                )
+                if value is not None
+            },
             # False when a returned row is older than the period allows, which
             # means LinkedIn ignored it. True means nothing contradicted it.
             "period_applied": period_applied,

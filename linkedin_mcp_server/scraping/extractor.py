@@ -394,7 +394,20 @@ class LinkedInExtractor:
         )
 
     async def get_profile_views(
-        self, full: bool = True, days: int | None = None
+        self,
+        full: bool = True,
+        days: int | None = None,
+        interesting: str | None = None,
+        company_id: str | None = None,
+        industry_id: str | None = None,
+        geo_id: str | None = None,
     ) -> dict[str, Any]:
         """Read who viewed the signed-in member's profile."""
-        return await self._profile_views.get_profile_views(full=full, days=days)
+        return await self._profile_views.get_profile_views(
+            full=full,
+            days=days,
+            interesting=interesting,
+            company_id=company_id,
+            industry_id=industry_id,
+            geo_id=geo_id,
+        )

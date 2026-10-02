@@ -74,7 +74,7 @@
       },
       "get_profile_views": {
         "coroutine": true,
-        "signature": "(self, full: 'bool' = True, days: 'int | None' = None) -> 'dict[str, Any]'"
+        "signature": "(self, full: 'bool' = True, days: 'int | None' = None, interesting: 'str | None' = None, company_id: 'str | None' = None, industry_id: 'str | None' = None, geo_id: 'str | None' = None) -> 'dict[str, Any]'"
       },
       "get_saved_jobs": {
         "coroutine": true,
@@ -589,6 +589,18 @@
         "input": {
           "additionalProperties": false,
           "properties": {
+            "company_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Only viewers at this company, by LinkedIn's numeric\ncompany id (e.g. \"229978\"). A URN or a name is refused."
+            },
             "days": {
               "anyOf": [
                 {
@@ -605,6 +617,42 @@
               "default": true,
               "description": "True (the default) reads the whole list. False asks only the\nquick JSON endpoint, which returns the six most recent viewers\nplus LinkedIn's highlighted groups, in a second or two.",
               "type": "boolean"
+            },
+            "geo_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Only viewers in this place, by numeric geo id (the\ngeo_id search_people reports in location_resolved)."
+            },
+            "industry_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Only viewers in this industry, by numeric id."
+            },
+            "interesting": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Only LinkedIn's \"interesting viewers\" of one kind:\n\"can_help_you_get_a_job\", \"senior_leader_in_your_industry\",\n\"senior_leader_with_your_job_function\" or \"has_verifications\"."
             }
           },
           "type": "object"

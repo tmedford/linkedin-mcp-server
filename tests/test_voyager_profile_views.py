@@ -321,6 +321,13 @@ def test_real_stream_rows_parse_into_people_private_viewers_and_rollups():
 
     assert rows[0] == {
         "description": "Salesperson at Example Co",
+        "title": "Salesperson",
+        "company": "Example Co",
+        "company_id": "1",
+        "search_url": (
+            "https://www.linkedin.com/search/results/people/"
+            "?keywords=Salesperson&origin=WHO_VIEWED_ME&currentCompany=1"
+        ),
         "viewed_text": "Viewed 3h ago",
         "viewed_at_iso": "2026-10-02T18:00+00:00",
         "viewed_at_approximate": True,
@@ -503,3 +510,91 @@ async def test_an_unusable_period_is_refused_before_any_request(arguments, messa
         await reader.get_profile_views(**arguments)
 
     assert requests == []
+
+
+def _private_row(description: str, query: str) -> str:
+    """A private viewer's row: a description and LinkedIn's search for them."""
+    return (
+        '1:["$","div",null,{"viewTrackingSpecs":{"viewName":"viewer-list-item"},'
+        f'"url":"https://www.linkedin.com/search/results/people/?{query}",'
+        f'"a":{{"children":["{description}"]}},'
+        '"c":{"children":["Viewed 2d ago"]}}]'
+    )
+
+
+def test_a_private_viewer_without_an_employer_keeps_their_industry_and_place():
+    row = parse_stream_rows(
+        _private_row(
+            "Founder in the Staffing and Recruiting industry from Greater Boston",
+            "keywords=Founder&origin=WHO_VIEWED_ME&industry=104&geoUrn=90000512",
+        )
+    )[0]
+
+    assert (row["title"], row["industry_id"], row["geo_id"]) == (
+        "Founder",
+        "104",
+        "90000512",
+    )
+    # No employer id means the words after the title are not an employer.
+    assert "company" not in row and "company_id" not in row
+
+
+async def test_filters_are_sent_as_the_values_linkedin_accepts():
+    reader, _ = _reader(_payload(), [_row("p1", "Person 1", "Viewed 2d ago")])
+
+    result = await reader.get_profile_views(
+        interesting="senior_leader_in_your_industry",
+        company_id="229978",
+        industry_id="4",
+        geo_id="90000070",
+    )
+
+    body = getattr(reader, "test_page").windows[0]["body"]
+    assert [s["value"] for s in body["clientArguments"]["states"]] == [
+        ["WvmpSearchFilterTimeRange_LAST_90_DAYS"],
+        ["InterestingViewerType_SENIOR_LEADER_IN_YOUR_INDUSTRY"],
+        ["229978"],
+        ["4"],
+        ["90000070"],
+    ]
+    assert result["filters"]["company_id"] == "229978"
+    # The unfiltered highlights are not put back into a filtered answer.
+    assert [v["public_identifier"] for v in result["viewers"]] == ["p1"]
+
+
+async def test_a_filter_that_matches_nobody_is_an_empty_list_not_the_highlights():
+    reader, _ = _reader(_payload(), [])
+
+    result = await reader.get_profile_views(company_id="229978")
+
+    assert result["viewers"] == []
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"company_id": "urn:li:fsd_company:229978"}, "numeric id"),
+        ({"geo_id": "New York"}, "numeric id"),
+        ({"interesting": "recruiters"}, "senior_leader_in_your_industry"),
+        ({"company_id": "229978", "full": False}, "Filters need the full list"),
+    ],
+)
+async def test_an_unusable_filter_is_refused_before_any_request(arguments, message):
+    reader, requests = _reader(_payload())
+
+    with pytest.raises(LinkedInScraperException, match=message):
+        await reader.get_profile_views(**arguments)
+
+    assert requests == []
+
+
+def test_a_private_viewer_known_only_by_school_keeps_the_school():
+    row = parse_stream_rows(
+        _private_row(
+            "Someone at Example University",
+            "keywords=&origin=WHO_VIEWED_ME&school=Example+University",
+        )
+    )[0]
+
+    assert row["school"] == "Example University"
+    assert "title" not in row and "company_id" not in row

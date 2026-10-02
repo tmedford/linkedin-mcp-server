@@ -1045,6 +1045,10 @@ def install_voyager_overlay(
         ctx: Context,
         full: bool = True,
         days: int | None = None,
+        interesting: str | None = None,
+        company_id: str | None = None,
+        industry_id: str | None = None,
+        geo_id: str | None = None,
         extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
@@ -1061,6 +1065,18 @@ def install_voyager_overlay(
             days: The period the list covers: 7, 14, 28, 90 or 365. OMIT for
                 LinkedIn's default. Needs full=True. A longer period is a
                 longer list and takes longer to read.
+            interesting: Only LinkedIn's "interesting viewers" of one kind:
+                "can_help_you_get_a_job", "senior_leader_in_your_industry",
+                "senior_leader_with_your_job_function" or "has_verifications".
+            company_id: Only viewers at this company, by LinkedIn's numeric
+                company id (e.g. "229978"). A URN or a name is refused.
+            industry_id: Only viewers in this industry, by numeric id.
+            geo_id: Only viewers in this place, by numeric geo id (the
+                geo_id search_people reports in location_resolved).
+
+            The filters combine, and all need full=True. A private viewer's
+            row carries company_id, industry_id and geo_id where LinkedIn
+            shows them, which is where to find the ids to filter on.
 
         Returns:
             Dict with url and sections (the standard scraping-tool shape), plus:
@@ -1072,11 +1088,19 @@ def install_voyager_overlay(
                 ago") and viewed_at_iso. Pass public_identifier to
                 get_person_profile.
             anonymous_viewers: private-mode viewers, as LinkedIn describes
-                them ("Recruiter at DualEntry").
+                them ("Recruiter at DualEntry"). LinkedIn hides who they are
+                but usually not where they work: each has title, and company
+                and company_id when it names the employer, or industry_id and
+                geo_id when it gives only an industry and place, or school
+                when a school is all it names. search_url is
+                LinkedIn's own search for people matching that description.
             aggregates: LinkedIn's roll-ups, such as "133 recruiters viewed
                 your profile".
             groups: how LinkedIn grouped the highlights, with view counts.
-            count, returned, complete, days and period_applied.
+            count, returned, complete, days, filters and period_applied.
+
+            With a filter on, the result is the filtered list only; the
+            highlighted groups are still reported but are unfiltered.
 
             **Check period_applied when you pass days.** False means a row
             came back older than the period allows, so LinkedIn ignored it.
@@ -1107,7 +1131,14 @@ def install_voyager_overlay(
                 progress=0, total=100, message="Reading profile views"
             )
 
-            result = await extractor.get_profile_views(full=full, days=days)
+            result = await extractor.get_profile_views(
+                full=full,
+                days=days,
+                interesting=interesting,
+                company_id=company_id,
+                industry_id=industry_id,
+                geo_id=geo_id,
+            )
 
             await ctx.report_progress(progress=100, total=100, message="Complete")
 
