@@ -892,3 +892,414 @@ class VoyagerProfileViews(VoyagerReader):
             # means LinkedIn ignored it. True means nothing contradicted it.
             "period_applied": period_applied,
         }
+
+
+# --- Recruiter views ------------------------------------------------------
+#
+# ``/analytics/recruiter-views/`` lists the recruiters who viewed the profile,
+# by company, with whether the member "would be a top applicant" for that
+# company's open roles. Measured on 2026-10-02, one Premium account:
+#
+# - The page loads its list from the same paging action as the viewer list,
+#   under its own pager, ``com.linkedin.sdui.pagers.premium.wvmp.recruiterList``.
+#   The body carries ``start``, ``count``, ``timeRange`` and the company ids
+#   already shown, plus those with jobs once there are any.
+# - ``count`` is honoured at 40 and ``timeRange`` is honoured (7 days returned
+#   8 rows where 365 returned a full page). Sent with no ids seen, a window
+#   came back the same as the page's own; the ids are sent anyway, as the
+#   page sends them.
+# - Each recruiter is rendered twice (two layouts) between two separators, so
+#   a row is the first of a run of list items that carry text.
+# - The answer can hold an RSC text row (``id:T<hex length>,``) which is
+#   length-prefixed and not ended by a newline, so the stream is read by
+#   length rather than split into lines.
+
+RECRUITER_PAGE_URL = "https://www.linkedin.com/analytics/recruiter-views/"
+_RECRUITER_PAGER_ID = "com.linkedin.sdui.pagers.premium.wvmp.recruiterList"
+_RECRUITER_PAGINATION = (
+    "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination"
+    f"?sduiid={_RECRUITER_PAGER_ID}"
+)
+_RECRUITER_SCREEN = "com.linkedin.sdui.flagshipnav.premium.wvmp.RecruiterViews"
+_LIST_ITEM_KEY = '{"threadlineDecoration"'
+_REFERENCE = re.compile(r"\$L?([0-9a-f]+)")
+_JOBS_LINK = re.compile(r"https://www\.linkedin\.com/jobs/search-results/\?[^\s\"]*")
+_COMPANY_INSIGHTS = re.compile(r"https://www\.linkedin\.com/company/(\d+)/insights/?")
+
+
+def _read_stream(text: str) -> dict[str, Any]:
+    """Every row of a component stream by id, decoded where it is JSON.
+
+    A text row (``id:T<hex>,<bytes>``) is length-prefixed in UTF-8 bytes and
+    is not followed by a newline, so the next row starts right after it.
+    """
+    data = text.encode()
+    rows: dict[str, Any] = {}
+    position = 0
+    while position < len(data):
+        colon = data.find(b":", position)
+        newline = data.find(b"\n", position)
+        if colon < 0:
+            break
+        if 0 <= newline < colon:
+            position = newline + 1
+            continue
+        ident = data[position:colon].decode(errors="replace")
+        if data[colon + 1 : colon + 2] == b"T":
+            comma = data.find(b",", colon)
+            try:
+                length = int(data[colon + 2 : comma], 16)
+            except ValueError:
+                length = -1
+            if comma > 0 and length >= 0:
+                rows[ident] = data[comma + 1 : comma + 1 + length].decode(
+                    errors="replace"
+                )
+                position = comma + 1 + length
+                continue
+        end = data.find(b"\n", colon)
+        end = len(data) if end < 0 else end
+        body = data[colon + 1 : end].decode(errors="replace")
+        try:
+            rows[ident] = json.loads(body)
+        except ValueError:
+            rows[ident] = body
+        position = end + 1
+    return rows
+
+
+def _resolve(
+    node: Any, rows: dict[str, Any], visiting: frozenset[str] = frozenset()
+) -> Any:
+    """``node`` with every reference to another stream row replaced by it."""
+    if isinstance(node, str):
+        match = _REFERENCE.fullmatch(node)
+        if match and match.group(1) in rows and match.group(1) not in visiting:
+            ident = match.group(1)
+            return _resolve(rows[ident], rows, visiting | {ident})
+        return node
+    if isinstance(node, list):
+        return [_resolve(item, rows, visiting) for item in node]
+    if isinstance(node, dict):
+        return {key: _resolve(value, rows, visiting) for key, value in node.items()}
+    return node
+
+
+def _rendered_texts(node: Any, out: list[str]) -> list[str]:
+    """The texts a component renders as content, in order; button labels
+    (``buttonProps.text``) are not content and are left out."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if (
+                key == "children"
+                and isinstance(value, list)
+                and value
+                and all(isinstance(part, str) for part in value)
+            ):
+                if not value[0].startswith("$") and value[0] not in (
+                    "div",
+                    "span",
+                    "p",
+                ):
+                    out.append("".join(value))
+                    continue
+            if (
+                key == "children"
+                and isinstance(value, str)
+                and not value.startswith("$")
+            ):
+                out.append(value)
+                continue
+            _rendered_texts(value, out)
+    elif isinstance(node, list):
+        for item in node:
+            _rendered_texts(item, out)
+    return out
+
+
+def _strings_under(node: Any, wanted: str, out: list[str]) -> list[str]:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == wanted and isinstance(value, str):
+                out.append(value)
+            else:
+                _strings_under(value, wanted, out)
+    elif isinstance(node, list):
+        for item in node:
+            _strings_under(item, wanted, out)
+    return out
+
+
+def _list_items(node: Any, out: list[Any]) -> list[Any]:
+    """Elements of rendered lists, in order: ``[key-json, element]`` pairs."""
+    if isinstance(node, list):
+        if (
+            len(node) == 2
+            and isinstance(node[0], str)
+            and node[0].startswith(_LIST_ITEM_KEY)
+        ):
+            out.append(node[1])
+            return out
+        for item in node:
+            _list_items(item, out)
+    elif isinstance(node, dict):
+        for value in node.values():
+            _list_items(value, out)
+    return out
+
+
+def parse_recruiter_rows(
+    text: str, now: datetime | None = None
+) -> list[dict[str, Any]]:
+    """Recruiter rows from one answer of the recruiter-list pager, in order."""
+    now = now or datetime.now(timezone.utc)
+    rows = _read_stream(text)
+    # The list sits in whichever row holds its items; each item's content is
+    # in other rows it references, so only the items are resolved.
+    items = [
+        _resolve(item, rows)
+        for value in rows.values()
+        if isinstance(value, (list, dict))
+        for item in _list_items(value, [])
+    ]
+    runs: list[Any] = []
+    in_run = False
+    for item in items:
+        if _rendered_texts(item, []):
+            if not in_run:
+                runs.append(item)  # the first layout of this recruiter
+            in_run = True
+        else:
+            in_run = False
+    recruiters = []
+    for item in runs:
+        texts = _rendered_texts(item, [])
+        viewed_at = next(
+            (
+                index
+                for index, value in enumerate(texts)
+                if _RELATIVE.search(value) and len(value) < 24
+            ),
+            None,
+        )
+        urls = _strings_under(item, "url", [])
+        jobs = next((u for u in urls if _JOBS_LINK.fullmatch(u)), None)
+        insights = next((u for u in urls if _COMPANY_INSIGHTS.fullmatch(u)), None)
+        query = parse_qs(urlparse(jobs).query) if jobs else {}
+        insight_match = _COMPANY_INSIGHTS.fullmatch(insights) if insights else None
+        company_id = (query.get("f_C") or [None])[0] or (
+            insight_match.group(1) if insight_match else None
+        )
+        if viewed_at is None and not company_id:
+            # "38 other recruiters": a rollup closing the list, told apart by
+            # what it lacks (a company and a time), not by its wording.
+            recruiters.append({"aggregate": " - ".join(texts)})
+            continue
+        viewed = texts[viewed_at] if viewed_at is not None else None
+        recruiters.append(
+            _clean(
+                {
+                    "description": texts[0] if texts else None,
+                    # The logo's accessible name is the company, unparsed.
+                    "company": next(iter(_strings_under(item, "a11yText", [])), None),
+                    "company_id": company_id,
+                    "industry": (
+                        texts[1] if viewed_at is not None and viewed_at > 1 else None
+                    ),
+                    "viewed_text": viewed,
+                    "viewed_at_iso": _approximate(viewed, now),
+                    "viewed_at_approximate": True if viewed else None,
+                    # "You'd be a top applicant for 6 roles", or "Multiple
+                    # recruiters from this company are engaging with your
+                    # profile": LinkedIn's words, kept as they are.
+                    "insight": (
+                        " / ".join(texts[viewed_at + 1 :]) or None
+                        if viewed_at is not None
+                        else None
+                    ),
+                    # Present when LinkedIn offers this company's jobs.
+                    "has_jobs": bool(jobs),
+                    "jobs_url": jobs,
+                    "job_id": (query.get("currentJobId") or [None])[0],
+                    "company_insights_url": insights,
+                }
+            )
+        )
+    return recruiters
+
+
+def _recruiter_body(
+    start: int, count: int, period: str, seen: list[str], seen_with_jobs: list[str]
+) -> str:
+    """The recruiter-list paging request, as the page sends it."""
+    payload: dict[str, Any] = {
+        "start": start,
+        "count": count,
+        "timeRange": period,
+        "seenCompanyIds": seen,
+    }
+    if seen_with_jobs:
+        payload["seenCompanyIdsWithJobs"] = seen_with_jobs
+    arguments = {
+        "$type": "proto.sdui.actions.requests.RequestedArguments",
+        "requestedStateKeys": [],
+        "payload": payload,
+        "requestMetadata": {"$type": "proto.sdui.common.RequestMetadata"},
+    }
+    return json.dumps(
+        {
+            "pagerId": _RECRUITER_PAGER_ID,
+            "clientArguments": {
+                **arguments,
+                "states": [],
+                "screenId": _RECRUITER_SCREEN,
+                "knownTemplateIds": [],
+            },
+            "paginationRequest": {
+                "$type": "proto.sdui.actions.requests.PaginationRequest",
+                "pagerId": _RECRUITER_PAGER_ID,
+                "trigger": {
+                    "$case": "itemDistanceTrigger",
+                    "itemDistanceTrigger": {
+                        "$type": "proto.sdui.actions.requests.ItemDistanceTrigger",
+                        "preloadDistance": 3,
+                        "preloadLength": 250,
+                    },
+                },
+                "retryCount": 2,
+                "requestedArguments": arguments,
+            },
+        }
+    )
+
+
+def render_recruiters(recruiters: list[dict[str, Any]]) -> str:
+    lines = []
+    for recruiter in recruiters:
+        if "aggregate" in recruiter:
+            lines.append(recruiter["aggregate"])
+            continue
+        detail = f" ({recruiter['industry']})" if recruiter.get("industry") else ""
+        lines.append(
+            f"{recruiter.get('description')}{detail} - {recruiter.get('viewed_text')}"
+        )
+        if recruiter.get("insight"):
+            lines.append(f"    {recruiter['insight']}")
+    return "\n".join(lines)
+
+
+class VoyagerRecruiterViews(VoyagerProfileViews):
+    """Read which recruiters viewed the profile, through the page's own pager."""
+
+    surface = "recruiter-views"
+
+    async def _recruiter_window(
+        self,
+        start: int,
+        count: int,
+        period: str,
+        seen: list[str],
+        seen_with_jobs: list[str],
+    ) -> list[dict[str, Any]]:
+        answer = await self._session.page.evaluate(
+            _POST_STREAM_JS,
+            {
+                "url": _RECRUITER_PAGINATION,
+                "headers": await self._page_headers(),
+                "body": _recruiter_body(start, count, period, seen, seen_with_jobs),
+            },
+        )
+        status = answer.get("status") if isinstance(answer, dict) else None
+        if status in (401, 403):
+            raise AuthenticationError(
+                f"Voyager {self.surface} list request rejected: HTTP {status}"
+            )
+        if status == 429:
+            raise RateLimitError(
+                f"Voyager {self.surface} list request rate limited: HTTP {status}"
+            )
+        if status != 200:
+            raise LinkedInScraperException(
+                f"Voyager {self.surface} list request failed: HTTP {status}"
+            )
+        text = answer.get("text") or ""
+        rows = parse_recruiter_rows(text)
+        if not rows and _ROW_MARKER in text:
+            raise LinkedInScraperException(
+                f"Voyager {self.surface} list changed shape: rows are marked "
+                "in the answer but none parsed. Refusing to report that as "
+                "the end of the list."
+            )
+        return rows
+
+    async def get_recruiter_views(self, days: int | None = None) -> dict[str, Any]:
+        """Every recruiter LinkedIn lists as having viewed the profile."""
+        if days is not None and days not in TIME_RANGES:
+            raise LinkedInScraperException(
+                f"days was {days!r}. LinkedIn offers these periods: "
+                f"{', '.join(str(d) for d in TIME_RANGES)}. Omit it for 90."
+            )
+        period = TIME_RANGES[days or 90]
+        recruiters: list[dict[str, Any]] = []
+        seen: list[str] = []
+        seen_with_jobs: list[str] = []
+        complete = False
+        keys: set[str] = set()
+        aggregates: list[str] = []
+        for index in range(MAX_PAGES):
+            if index:
+                await self._session.delay(PAGE_DELAY)
+            window = await self._recruiter_window(
+                index * PAGE_SIZE, PAGE_SIZE, period, seen, seen_with_jobs
+            )
+            fresh = [
+                row
+                for row in window
+                if json.dumps(
+                    [
+                        row.get("company_id"),
+                        row.get("description"),
+                        row.get("viewed_text"),
+                        row.get("insight"),
+                    ]
+                )
+                not in keys
+            ]
+            # Measured: a window of 40 came back with 39, so a short window
+            # is not the end here. The end is a window with nothing new.
+            if not fresh:
+                complete = True
+                break
+            for row in fresh:
+                keys.add(
+                    json.dumps(
+                        [
+                            row.get("company_id"),
+                            row.get("description"),
+                            row.get("viewed_text"),
+                            row.get("insight"),
+                        ]
+                    )
+                )
+                if "aggregate" in row:
+                    aggregates.append(row["aggregate"])
+                    continue
+                recruiters.append(row)
+                if row.get("company_id"):
+                    seen.append(row["company_id"])
+                    if row.get("has_jobs"):
+                        seen_with_jobs.append(row["company_id"])
+        return {
+            "url": f"{RECRUITER_PAGE_URL}?timeRange={period}",
+            "sections": {
+                "recruiter_views": render_recruiters(
+                    recruiters + [{"aggregate": a} for a in aggregates]
+                )
+            },
+            "recruiters": recruiters,
+            "count": len(recruiters),
+            "with_jobs": sum(1 for row in recruiters if row.get("has_jobs")),
+            "aggregates": aggregates,
+            "complete": complete,
+            "days": days or 90,
+        }

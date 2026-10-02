@@ -24,7 +24,10 @@ from linkedin_mcp_server.voyager.message_search import VoyagerMessageSearch
 from linkedin_mcp_server.voyager.people_search import VoyagerPeopleSearch
 from linkedin_mcp_server.voyager.person import VoyagerPersonReader
 from linkedin_mcp_server.voyager.person_message import VoyagerPersonMessage
-from linkedin_mcp_server.voyager.profile_views import VoyagerProfileViews
+from linkedin_mcp_server.voyager.profile_views import (
+    VoyagerProfileViews,
+    VoyagerRecruiterViews,
+)
 from linkedin_mcp_server.voyager.thread import VoyagerThreadReader
 from linkedin_mcp_server.voyager.thread_reply import VoyagerThreadReply
 from linkedin_mcp_server.scraping.feed import FeedScraper
@@ -90,6 +93,7 @@ class LinkedInExtractor:
         self._voyager_person = VoyagerPersonReader(session, navigator)
         self._people_search = VoyagerPeopleSearch(session, navigator)
         self._profile_views = VoyagerProfileViews(session, navigator)
+        self._recruiter_views = VoyagerRecruiterViews(session, navigator)
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -413,3 +417,7 @@ class LinkedInExtractor:
             geo_id=geo_id,
             sort=sort,
         )
+
+    async def get_recruiter_views(self, days: int | None = None) -> dict[str, Any]:
+        """Read which recruiters viewed the signed-in member's profile."""
+        return await self._recruiter_views.get_recruiter_views(days=days)

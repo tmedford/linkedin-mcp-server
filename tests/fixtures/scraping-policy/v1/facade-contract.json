@@ -76,6 +76,10 @@
         "coroutine": true,
         "signature": "(self, full: 'bool' = True, days: 'int | None' = None, interesting: 'str | None' = None, company_id: 'str | None' = None, industry_id: 'str | None' = None, geo_id: 'str | None' = None, sort: 'str' = 'recent') -> 'dict[str, Any]'"
       },
+      "get_recruiter_views": {
+        "coroutine": true,
+        "signature": "(self, days: 'int | None' = None) -> 'dict[str, Any]'"
+      },
       "get_saved_jobs": {
         "coroutine": true,
         "signature": "(self, max_pages: 'int' = 3) -> 'dict[str, Any]'"
@@ -152,6 +156,7 @@
       "get_person",
       "get_person_posts",
       "get_profile_views",
+      "get_recruiter_views",
       "get_saved_jobs",
       "get_sidebar_profiles",
       "get_thread",
@@ -658,6 +663,30 @@
               "default": "recent",
               "description": "\"recent\" (default, newest first) or \"relevant\", LinkedIn's\n\"Sort by most relevant\", kept in LinkedIn's order. Needs\nfull=True.",
               "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "output": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "get_recruiter_views": {
+        "input": {
+          "additionalProperties": false,
+          "properties": {
+            "days": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The period: 7, 14, 28, 90 or 365. Omit for 90."
             }
           },
           "type": "object"

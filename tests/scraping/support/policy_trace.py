@@ -626,6 +626,10 @@ def semantic_program_id(program: str) -> str:
     compact = " ".join(program.split())
     checks = (
         ("'csrf-token': m[1]", "voyager_conversations_fetch"),
+        (
+            "method: 'POST', credentials: 'include', headers, body,",
+            "voyager_stream_post",
+        ),
         ("performance.timeOrigin", "document_origin"),
         ("MAX_HEADING_CONTAINERS", "root_content"),
         ("SIDEBAR_SECTIONS", "sidebar_profiles"),

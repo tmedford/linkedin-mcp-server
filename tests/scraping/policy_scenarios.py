@@ -1349,6 +1349,54 @@ async def _profile_views_scenario() -> dict[str, Any]:
     )
 
 
+async def _recruiter_views_scenario() -> dict[str, Any]:
+    """Record what `get_recruiter_views` does to the page.
+
+    Posts to the page's own paging action and nothing else: no navigation,
+    no click. The page's headers are taken from a cache seeded here; taking
+    them opens the analytics page once per browser session, which the
+    reader's unit tests cover. Two windows: one row, then an empty answer,
+    which is the end of the list. The row has no "Viewed 1d ago": its time is
+    computed from the wall clock and would make this fixture drift daily.
+    """
+    from linkedin_mcp_server.voyager import profile_views as views_module
+
+    recorder = TraceRecorder("get_recruiter_views__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    item = json.dumps({"threadlineDecoration": None, "key": "k"})
+    row = [
+        "$",
+        "div",
+        None,
+        {
+            "children": [
+                ["$", "img", None, {"a11yText": "Acme"}],
+                ["$", "p", None, {"children": ["Recruiter at Acme"]}],
+                {"url": "https://www.linkedin.com/company/1001/insights/"},
+            ]
+        },
+    ]
+    stream = "0:" + json.dumps(["$", "div", None, {"children": [[item, row]]}])
+    page.script(
+        "evaluate:voyager_stream_post",
+        {"status": 200, "text": stream},
+        {"status": 200, "text": ""},
+    )
+    extractor = _extractor(page)
+    views_module._HEADER_CACHE = (page, {"x-li-track": "{}"})
+    try:
+        async with boundaries(recorder, clock):
+            with recorder.context("get_recruiter_views", "recruiters"):
+                result = await extractor.get_recruiter_views(days=7)
+    finally:
+        views_module.forget_cached_headers()
+    page.assert_clean()
+    return recorder.trace(
+        {"method": "get_recruiter_views", "arguments": {"days": 7}}, result
+    )
+
+
 async def _people_search_scenario() -> dict[str, Any]:
     """Record what the API people search does to the page.
 
@@ -1708,6 +1756,7 @@ TOOL_FACADE_METHODS = {
     "get_person_posts",
     "find_people",
     "get_profile_views",
+    "get_recruiter_views",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1788,6 +1837,7 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "person.json": await _person_scenario(),
         "people-search.json": await _people_search_scenario(),
         "profile-views.json": await _profile_views_scenario(),
+        "recruiter-views.json": await _recruiter_views_scenario(),
         "person-mutual.json": await _person_extra_scenario("get_mutual_connections"),
         "person-posts.json": await _person_extra_scenario("get_person_posts"),
         "message-search.json": await _message_search_scenario(),

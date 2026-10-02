@@ -5115,13 +5115,14 @@ class TestRealOwner:
                 "get_mutual_connections",
                 "get_person_posts",
                 "get_profile_views",
+                "get_recruiter_views",
                 "get_conversation",
                 "search_conversations",
                 "send_message",
                 "get_person_profile",
             ):
                 assert ours in names, sorted(names)
-            assert len(names) == 24, sorted(names)
+            assert len(names) == 25, sorted(names)
         finally:
             _stop(result.get("pid"))
 

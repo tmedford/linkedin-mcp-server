@@ -87,6 +87,7 @@ a page-owning collaborator.
 - `get_person`
 - `get_person_posts`
 - `get_profile_views`
+- `get_recruiter_views`
 - `get_saved_jobs`
 - `get_sidebar_profiles`
 - `get_thread`
@@ -118,6 +119,7 @@ a page-owning collaborator.
 - `_person_message`
 - `_posts`
 - `_profile_views`
+- `_recruiter_views`
 - `_thread_reply`
 - `_voyager_invitations`
 - `_voyager_messaging`

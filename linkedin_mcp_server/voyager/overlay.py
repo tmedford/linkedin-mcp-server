@@ -1124,7 +1124,7 @@ def install_voyager_overlay(
             viewers against 529 views, the rest being repeat views and the
             recruiters LinkedIn only reports as a number.
 
-            Recruiter views are a separate page and are not included.
+            Recruiter views are a separate page: use get_recruiter_views.
         """
         try:
             extractor = extractor or await get_ready_extractor(
@@ -1157,3 +1157,74 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "get_profile_views")
         except Exception as e:
             raise_tool_error(e, "get_profile_views")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Recruiter Views",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "jobs", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_recruiter_views(
+        ctx: Context,
+        days: int | None = None,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read which recruiters viewed YOUR profile, by company, newest first.
+
+        This is LinkedIn's Premium "Recruiter insights" list, a separate page
+        from get_profile_views. LinkedIn names the recruiter's company but not
+        the recruiter. Use it for job sourcing: a recruiter who looked at you
+        at a company with open roles is a warm lead, and LinkedIn flags where
+        you "would be a top applicant".
+
+        Args:
+            ctx: FastMCP context for progress reporting
+            days: The period: 7, 14, 28, 90 or 365. Omit for 90.
+
+        Returns:
+            Dict with url and sections (the standard scraping-tool shape), plus:
+
+            recruiters: one entry per view, newest first. Each has description
+                ("Recruiter at Rippling"), company and company_id, industry
+                when LinkedIn shows it, viewed_text and an approximate
+                viewed_at_iso, and insight: LinkedIn's note such as "You'd be a
+                top applicant for 6 roles" or "Multiple recruiters from this
+                company are engaging with your profile".
+                has_jobs is True when LinkedIn offers that company's jobs:
+                jobs_url opens them, and job_id is the role LinkedIn puts
+                first. Pass company_id to search_jobs-style tools or to
+                get_profile_views(company_id=...) to see who else from there
+                looked. Without jobs, company_insights_url is given instead.
+            aggregates: LinkedIn's rollups closing the list, such as "38 other
+                recruiters", for views it does not itemise.
+            count, with_jobs, complete (False only if the request limit cut
+                the list short) and days.
+
+            The same company appears once per view, so several rows for one
+            company mean several recruiters or visits.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_recruiter_views"
+            )
+            logger.info("Reading recruiter views")
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Reading recruiter views"
+            )
+
+            result = await extractor.get_recruiter_views(days=days)
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_recruiter_views")
+        except Exception as e:
+            raise_tool_error(e, "get_recruiter_views")  # NoReturn
