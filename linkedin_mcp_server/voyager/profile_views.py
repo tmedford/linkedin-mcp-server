@@ -435,23 +435,36 @@ def parse_stream_rows(text: str, now: datetime | None = None) -> list[dict[str, 
             return value[0]
         return None
 
-    rows = []
-    for chunk in text.split(_ROW_MARKER)[1:]:
-        # A chunk runs to the next row's marker, and the last one runs to the
-        # end of the stream; a row is over where its own line is.
-        chunk = chunk.split("\n", 1)[0]
-        texts: list[str] = []
-        for inline, reference in _INLINE_TEXT.findall(chunk):
+    def texts_in(span: str) -> list[str]:
+        found: list[str] = []
+        for inline, reference in _INLINE_TEXT.findall(span):
             if inline:
                 try:
-                    texts.append(json.loads(f'"{inline}"'))
+                    found.append(json.loads(f'"{inline}"'))
                 except ValueError:
                     continue
             else:
                 resolved = referenced(reference)
                 if resolved:
-                    texts.append(resolved)
+                    found.append(resolved)
+        return [t for t in found if not t.startswith("$")]
+
+    rows = []
+    pieces = text.split(_ROW_MARKER)
+    for index, chunk in enumerate(pieces[1:], start=1):
+        # A chunk runs to the next row's marker, and the last one runs to the
+        # end of the stream; a row is over where its own line is.
+        chunk = chunk.split("\n", 1)[0]
+        texts = texts_in(chunk)
         if not texts:
+            # The private-mode rollup ("86 LinkedIn members" / "These people
+            # viewed your profile in Private mode") renders its text BEFORE
+            # its marker and only a button after it. Measured 2026-10-02 as
+            # the last row of the relevance-sorted list; skipping it left a
+            # page with a marker and no rows, which reads as a changed shape.
+            before = pieces[index - 1].rsplit("\n", 1)[-1]
+            if before_texts := texts_in(before)[-2:]:
+                rows.append({"aggregate": " - ".join(before_texts)})
             continue
         link = _PROFILE_LINK.search(chunk)
         badge = next((t for t in texts if t.startswith("\u2022")), None)

@@ -649,3 +649,24 @@ async def test_an_unusable_sort_is_refused_before_any_request(arguments, message
         await reader.get_profile_views(**arguments)
 
     assert requests == []
+
+
+def test_a_rollup_whose_text_comes_before_its_marker_is_kept():
+    # The private-mode rollup closes the relevance-sorted list: its texts sit
+    # ahead of the marker on the same line, and after it only a button.
+    stream = (
+        '1:["$","div",null,{"children":[["$","p",null,'
+        '{"children":["86 LinkedIn members"]}],["$","$La",null,'
+        '{"children":["These people viewed your profile in Private mode"]}],'
+        '["$","$L4",null,{"viewTrackingSpecs":{"viewName":"viewer-list-item"},'
+        '"children":"$Lb"}]]}]\n'
+        '2:["$","$Ld",null,{"text":["Learn more"]}]'
+    )
+
+    assert parse_stream_rows(stream) == [
+        {
+            "aggregate": (
+                "86 LinkedIn members - These people viewed your profile in Private mode"
+            )
+        }
+    ]
