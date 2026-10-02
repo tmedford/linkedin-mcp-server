@@ -1043,17 +1043,20 @@ def install_voyager_overlay(
     )
     async def get_profile_views(
         ctx: Context,
+        full: bool = True,
         extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
-        Read who viewed YOUR profile, from LinkedIn's API. No browser page.
+        Read who viewed YOUR profile: every viewer LinkedIn lists, newest first.
 
-        Returns the viewers LinkedIn currently surfaces, with the exact time
-        each one viewed. Call it regularly: the most recent viewers are always
-        included, so each new viewer is seen as they arrive.
+        Runs in the server's own browser, not yours. Takes a minute or two,
+        because the full list is read by letting LinkedIn's page load it.
 
         Args:
             ctx: FastMCP context for progress reporting
+            full: True (the default) reads the whole list. False asks only the
+                quick JSON endpoint, which returns the six most recent viewers
+                plus LinkedIn's highlighted groups, in a second or two.
 
         Returns:
             Dict with url and sections (the standard scraping-tool shape), plus:
@@ -1061,23 +1064,30 @@ def install_voyager_overlay(
             total_views, time_frame, change_percent: LinkedIn's own count for
                 the period (e.g. 529 in LAST_90_DAYS) and its change.
             viewers: identified people, newest first. Each has name, headline,
-                public_identifier, profile_urn, distance and degree, viewed_at
-                and viewed_at_iso, plus referrer (where they came from),
-                pending_invite, notable_reason and seen_in where present. Pass
-                public_identifier to get_person_profile.
+                public_identifier and degree, plus viewed_text ("Viewed 1w
+                ago") and viewed_at_iso. Pass public_identifier to
+                get_person_profile.
             anonymous_viewers: private-mode viewers, as LinkedIn describes
-                them ("Recruiter at DualEntry"), with company and viewed_at.
-            aggregates: LinkedIn's roll-ups, such as "133 people with the job
-                title Recruiter".
-            groups: how LinkedIn grouped them (recent, notable, by company,
-                by title, by source), with each group's view count.
+                them ("Recruiter at DualEntry").
+            aggregates: LinkedIn's roll-ups, such as "133 recruiters viewed
+                your profile".
+            groups: how LinkedIn grouped the highlights, with view counts.
             count, returned, complete.
 
-            **This is NOT every viewer.** LinkedIn returns the six most recent
-            plus its highlighted groups, around 30 cards against hundreds of
-            views. `complete` says whether everything counted was returned,
-            and it is normally false. Recruiter views are a separate surface
-            and are not included.
+            **Most view times are approximate.** LinkedIn's list says "1w ago",
+            so viewed_at_iso is computed from that and the row carries
+            viewed_at_approximate: true. Viewers that the JSON endpoint also
+            returns have the exact time, and also referrer, pending_invite and
+            notable_reason. `extra` holds anything else on the row, such as
+            "2 mutual connections".
+
+            complete is True when the list was read to its end, False when the
+            walk was cut short, and None with full=False. **total_views counts
+            views, not people**: one run returned 117 named and 95 private
+            viewers against 529 views, the rest being repeat views and the
+            recruiters LinkedIn only reports as a number.
+
+            Recruiter views are a separate page and are not included.
         """
         try:
             extractor = extractor or await get_ready_extractor(
@@ -1089,7 +1099,7 @@ def install_voyager_overlay(
                 progress=0, total=100, message="Reading profile views"
             )
 
-            result = await extractor.get_profile_views()
+            result = await extractor.get_profile_views(full=full)
 
             await ctx.report_progress(progress=100, total=100, message="Complete")
 

@@ -1,6 +1,8 @@
 {
   "call": {
-    "arguments": {},
+    "arguments": {
+      "full": false
+    },
     "method": "get_profile_views"
   },
   "events": [
@@ -17,7 +19,7 @@
     "aggregates": [],
     "anonymous_viewers": [],
     "change_percent": 0,
-    "complete": false,
+    "complete": null,
     "count": 1,
     "groups": [
       {

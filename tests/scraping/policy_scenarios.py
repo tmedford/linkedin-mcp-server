@@ -1290,8 +1290,10 @@ _POLICY_MUTUAL = {
 async def _profile_views_scenario() -> dict[str, Any]:
     """Record what `get_profile_views` does to the page.
 
-    One evaluate and no navigation. The routine this serves has been opening
-    the member's own browser on the analytics page to read it.
+    With `full=False`: one evaluate and no navigation. The full list is read
+    by opening the analytics page in the server's own browser and is covered by
+    the reader's unit tests; the routine this serves had been opening the
+    member's own browser for it.
     """
     recorder = TraceRecorder("get_profile_views__baseline", _COMMON_ALLOWED)
     clock = FakeClock(recorder)
@@ -1340,9 +1342,11 @@ async def _profile_views_scenario() -> dict[str, Any]:
     extractor = _extractor(page)
     async with boundaries(recorder, clock):
         with recorder.context("get_profile_views", "views"):
-            result = await extractor.get_profile_views()
+            result = await extractor.get_profile_views(full=False)
     page.assert_clean()
-    return recorder.trace({"method": "get_profile_views", "arguments": {}}, result)
+    return recorder.trace(
+        {"method": "get_profile_views", "arguments": {"full": False}}, result
+    )
 
 
 async def _people_search_scenario() -> dict[str, Any]:

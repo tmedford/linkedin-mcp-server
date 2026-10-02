@@ -74,7 +74,7 @@
       },
       "get_profile_views": {
         "coroutine": true,
-        "signature": "(self) -> 'dict[str, Any]'"
+        "signature": "(self, full: 'bool' = True) -> 'dict[str, Any]'"
       },
       "get_saved_jobs": {
         "coroutine": true,
@@ -588,7 +588,13 @@
       "get_profile_views": {
         "input": {
           "additionalProperties": false,
-          "properties": {},
+          "properties": {
+            "full": {
+              "default": true,
+              "description": "True (the default) reads the whole list. False asks only the\nquick JSON endpoint, which returns the six most recent viewers\nplus LinkedIn's highlighted groups, in a second or two.",
+              "type": "boolean"
+            }
+          },
           "type": "object"
         },
         "output": {
