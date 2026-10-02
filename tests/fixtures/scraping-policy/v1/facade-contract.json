@@ -78,11 +78,11 @@
       },
       "get_thread": {
         "coroutine": true,
-        "signature": "(self, thread_id: 'str') -> 'dict[str, Any]'"
+        "signature": "(self, thread_id: 'str | None' = None, linkedin_username: 'str | None' = None, index: 'int' = 0) -> 'dict[str, Any]'"
       },
       "message_person": {
         "coroutine": true,
-        "signature": "(self, linkedin_username: 'str', message: 'str', *, confirm_send: 'bool') -> 'dict[str, Any]'"
+        "signature": "(self, linkedin_username: 'str', message: 'str', *, confirm_send: 'bool', profile_urn: 'str | None' = None) -> 'dict[str, Any]'"
       },
       "reply_to_thread": {
         "coroutine": true,
@@ -282,6 +282,47 @@
           "type": "object"
         }
       },
+      "get_conversation": {
+        "input": {
+          "additionalProperties": false,
+          "properties": {
+            "index": {
+              "default": 0,
+              "description": "0-based selector when the member is in several\nconversations with you. One-to-one threads come first, then\ngroup threads, each most recent first. Ignored when thread_id\nis provided.",
+              "type": "integer"
+            },
+            "linkedin_username": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The participant's /in/ public identifier or\nprofile URL. Used only when thread_id is not given."
+            },
+            "thread_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The thread to read: a `thread_url`, a\n`/messaging/thread/{id}/` reference, or the bare thread id."
+            }
+          },
+          "type": "object"
+        },
+        "output": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
       "get_conversations": {
         "input": {
           "additionalProperties": false,
@@ -450,30 +491,6 @@
           "type": "object"
         }
       },
-      "get_person": {
-        "input": {
-          "additionalProperties": false,
-          "properties": {
-            "compare_to_me": {
-              "default": true,
-              "description": "When true (the default), also reads your own profile\nonce and returns `common_ground`. Pass false to skip it.",
-              "type": "boolean"
-            },
-            "linkedin_username": {
-              "description": "The /in/ public identifier or a profile URL.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "linkedin_username"
-          ],
-          "type": "object"
-        },
-        "output": {
-          "additionalProperties": true,
-          "type": "object"
-        }
-      },
       "get_person_posts": {
         "input": {
           "additionalProperties": false,
@@ -514,15 +531,18 @@
         "input": {
           "additionalProperties": false,
           "properties": {
+            "compare_to_me": {
+              "default": true,
+              "description": "When true (the default), also reads your own profile\nonce and returns `common_ground`. Pass false to skip it.",
+              "type": "boolean"
+            },
             "linkedin_username": {
-              "description": "LinkedIn username (e.g., \"stickerdaniel\", \"williamhgates\"). A full profile URL is accepted too and is reduced to the username.",
+              "description": "The /in/ public identifier or a profile URL.",
               "type": "string"
             },
             "max_scrolls": {
               "anyOf": [
                 {
-                  "maximum": 50,
-                  "minimum": 1,
                   "type": "integer"
                 },
                 {
@@ -530,7 +550,7 @@
                 }
               ],
               "default": null,
-              "description": "Maximum pagination attempts per section to load more content.\nOn detail sections (experience, certifications, skills, etc.) this\nis the max number of \"Show more\" button clicks. On activity/posts\nit is the max scroll-to-bottom iterations. Applies to all sections\nin this call. Default (None) uses 5 for detail sections and 10 for\nposts. Increase when a profile has many items in a section\n(e.g., 30+ certifications, max_scrolls=20). To avoid slowing down\nother sections, request heavy sections in a separate call."
+              "description": "Kept for compatibility and ignored. Nothing is\nscrolled; sections arrive whole from the API."
             },
             "sections": {
               "anyOf": [
@@ -542,7 +562,7 @@
                 }
               ],
               "default": null,
-              "description": "Comma-separated list of extra sections to scrape.\nThe main profile page is always included.\nAvailable sections: experience, education, interests, honors, languages, certifications, skills, projects, contact_info, posts\nExamples: \"experience,education\", \"contact_info\", \"skills,projects\", \"honors,languages\", \"posts\"\nDefault (None) scrapes only the main profile page."
+              "description": "Comma-separated section names, kept for compatibility.\nEvery profile section (experience, education, interests,\nhonors, languages, certifications, skills, projects,\ncontact_info) is ALWAYS returned, so naming them changes\nnothing. Only \"posts\" adds something: the member's ten most\nrecent posts. Unrecognised names come back in\nunknown_sections."
             }
           },
           "required": [
@@ -593,54 +613,6 @@
           "type": "object"
         }
       },
-      "get_thread": {
-        "input": {
-          "additionalProperties": false,
-          "properties": {
-            "thread_id": {
-              "description": "The thread to read. Pass the `thread_url` that\nget_conversations returned, a `/messaging/thread/{id}/`\nreference, or the bare thread id.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "thread_id"
-          ],
-          "type": "object"
-        },
-        "output": {
-          "additionalProperties": true,
-          "type": "object"
-        }
-      },
-      "message_person": {
-        "input": {
-          "additionalProperties": false,
-          "properties": {
-            "confirm_send": {
-              "description": "Must be True to send. False is a dry run: the\nrecipient is resolved and reported, and nothing is written.",
-              "type": "boolean"
-            },
-            "linkedin_username": {
-              "description": "The recipient's /in/ public identifier, or\ntheir profile URL. Several separated by commas address one\ngroup conversation with all of them.",
-              "type": "string"
-            },
-            "message": {
-              "description": "Message text. Line breaks (LF) are kept. Other C0 control\ncharacters and DEL are rejected, including CR and tab.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "linkedin_username",
-            "message",
-            "confirm_send"
-          ],
-          "type": "object"
-        },
-        "output": {
-          "additionalProperties": true,
-          "type": "object"
-        }
-      },
       "reply_to_thread": {
         "input": {
           "additionalProperties": false,
@@ -677,6 +649,42 @@
             "keywords": {
               "description": "Search keywords (e.g., \"fintech\", \"anthropic\", \"electric vehicles\")",
               "type": "string"
+            }
+          },
+          "required": [
+            "keywords"
+          ],
+          "type": "object"
+        },
+        "output": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "search_conversations": {
+        "input": {
+          "additionalProperties": false,
+          "properties": {
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "next_cursor from a previous call. OMIT for the first page."
+            },
+            "keywords": {
+              "description": "The word or phrase to search for.",
+              "type": "string"
+            },
+            "limit": {
+              "default": 20,
+              "description": "Kept for compatibility and NOT applied. A page is whatever\nLinkedIn returns for it, up to 20; cutting it shorter while\nthe cursor moves on would silently skip the rest. Read\n`count` and page with `cursor`.",
+              "type": "integer"
             }
           },
           "required": [
@@ -792,37 +800,6 @@
           "type": "object"
         }
       },
-      "search_messages": {
-        "input": {
-          "additionalProperties": false,
-          "properties": {
-            "cursor": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "next_cursor from a previous call. OMIT for the first page."
-            },
-            "keywords": {
-              "description": "The word or phrase to search for.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "keywords"
-          ],
-          "type": "object"
-        },
-        "output": {
-          "additionalProperties": true,
-          "type": "object"
-        }
-      },
       "search_people": {
         "input": {
           "additionalProperties": false,
@@ -911,6 +888,47 @@
           },
           "required": [
             "keywords"
+          ],
+          "type": "object"
+        },
+        "output": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "send_message": {
+        "input": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm_send": {
+              "description": "Must be True to send. False is a dry run: the\nrecipient is resolved and reported, and nothing is written.",
+              "type": "boolean"
+            },
+            "linkedin_username": {
+              "description": "The recipient's /in/ public identifier, or\ntheir profile URL. Several separated by commas address one\ngroup conversation with all of them.",
+              "type": "string"
+            },
+            "message": {
+              "description": "Message text. Line breaks (LF) are kept. Other C0 control\ncharacters and DEL are rejected, including CR and tab.",
+              "type": "string"
+            },
+            "profile_urn": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional. The member's profile URN (ACoAAB...) if\nyou already know it; the send is refused unless it matches the\nmember that linkedin_username resolves to. It never bypasses\nthat lookup."
+            }
+          },
+          "required": [
+            "linkedin_username",
+            "message",
+            "confirm_send"
           ],
           "type": "object"
         },

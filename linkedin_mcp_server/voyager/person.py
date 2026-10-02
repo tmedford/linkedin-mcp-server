@@ -909,7 +909,9 @@ class VoyagerPersonReader(VoyagerReader):
             "url": person_profile_url(
                 profile["identity"].get("public_identifier") or identifier, "/"
             ),
-            "sections": {"profile": render_profile(profile)},
+            # Keyed as upstream keys it. The degree is in the text because
+            # consumers of the old tool read "1st" off the rendered page.
+            "sections": {"main_profile": render_profile(profile, relationship)},
             "relationship": relationship,
             # None when the read failed; {} when it worked and the member
             # shares nothing with this viewer. Those are different answers.
@@ -936,10 +938,12 @@ class VoyagerPersonReader(VoyagerReader):
         return result
 
 
-def render_profile(profile: dict[str, Any]) -> str:
+def render_profile(profile: dict[str, Any], relationship: str | None = None) -> str:
     """The profile as readable text, for consumers that read `sections`."""
     identity = profile.get("identity") or {}
     lines = [identity.get("name") or "Unknown"]
+    if relationship == "connection":
+        lines.append("1st degree connection")
     for key in ("headline", "location", "industry"):
         if identity.get(key):
             lines.append(identity[key])

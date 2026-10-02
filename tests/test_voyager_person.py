@@ -372,7 +372,9 @@ async def test_a_profile_comes_back_whole_with_common_ground_and_no_navigation()
     assert result["relationship"] == "connection"
     assert result["url"] == "https://www.linkedin.com/in/ada-lovelace/"
     assert len(result["common_ground"]["worked_together"]) == 1
-    assert "PM at Zuora (2015-01 to 2018-01)" in result["sections"]["profile"]
+    assert "PM at Zuora (2015-01 to 2018-01)" in result["sections"]["main_profile"]
+    # Consumers of the tool this replaces read the degree off the text.
+    assert "1st degree connection" in result["sections"]["main_profile"]
     assert result["incomplete_sections"] == []
     assert result["contact"] == {"websites": [{"url": "https://ada.example/"}]}
     assert result["mutual_connections"]["returned"] == 2
@@ -461,7 +463,7 @@ async def test_a_capped_section_is_named_in_incomplete_sections():
     result = await reader.get_person("ada-lovelace", compare_to_me=False)
 
     assert result["incomplete_sections"] == ["skills"]
-    assert "Skills (first 1 of 34)" in result["sections"]["profile"]
+    assert "Skills (first 1 of 34)" in result["sections"]["main_profile"]
 
 
 async def test_nobody_found_and_a_moved_shape_are_different_failures():

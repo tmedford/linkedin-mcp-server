@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
@@ -40,6 +41,7 @@ logger = logging.getLogger(__name__)
 _ACCEPT = "application/vnd.linkedin.normalized+json+2.1"
 
 _ME = "https://www.linkedin.com/voyager/api/me"
+_PROFILES = "https://www.linkedin.com/voyager/api/identity/dash/profiles"
 _PROFILE_URN_PREFIX = "urn:li:fsd_profile:"
 
 _FETCH_JS = (
@@ -136,6 +138,39 @@ class VoyagerReader:
                 f"expected one profile URN in /me, found {len(urns)}."
             )
         return urns[0]
+
+    async def _resolve_member(self, identifier: str) -> dict[str, Any]:
+        """One member's profile URN and name from a public identifier or id.
+
+        Measured on 2026-10-02: ``identity/dash/profiles?q=memberIdentity``
+        answers with exactly one profile URN at ``data['*elements']``. Exactly
+        one or it raises: a best guess among several would address the wrong
+        person.
+        """
+        payload = await self._fetch(
+            f"{_PROFILES}?q=memberIdentity&memberIdentity={quote(identifier, safe='')}"
+        )
+        data = payload.get("data") or {}
+        found = self._has_rows_key(data)
+        urns = [
+            urn
+            for urn in (data.get("*elements") or [] if found else [])
+            if isinstance(urn, str) and urn.startswith(_PROFILE_URN_PREFIX)
+        ]
+        self._refuse_unexplained_zero(
+            rows=urns, payload=payload, path="data['*elements']", container_found=found
+        )
+        if len(urns) != 1:
+            raise LinkedInScraperException(
+                f"Voyager {self.surface} found {len(urns)} members for "
+                f"{identifier!r}, not exactly one. Pass the /in/ public "
+                "identifier exactly as a profile URL shows it."
+            )
+        entity = self._by_urn(payload).get(urns[0]) or {}
+        name = " ".join(
+            part for part in (entity.get("firstName"), entity.get("lastName")) if part
+        )
+        return {"urn": urns[0], "name": name or None}
 
     async def _post(self, url: str, body: dict[str, Any]) -> tuple[int, str]:
         """Issue one Voyager POST from inside the authenticated page.

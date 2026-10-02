@@ -313,9 +313,16 @@ class LinkedInExtractor:
             confirm_send=confirm_send,
         )
 
-    async def get_thread(self, thread_id: str) -> dict[str, Any]:
+    async def get_thread(
+        self,
+        thread_id: str | None = None,
+        linkedin_username: str | None = None,
+        index: int = 0,
+    ) -> dict[str, Any]:
         """Read one thread's recent messages from the messaging API."""
-        return await self._voyager_thread.get_thread(thread_id)
+        return await self._voyager_thread.get_thread(
+            thread_id, linkedin_username=linkedin_username, index=index
+        )
 
     async def search_messages(
         self, keywords: str, cursor: str | None = None
@@ -329,12 +336,14 @@ class LinkedInExtractor:
         message: str,
         *,
         confirm_send: bool,
+        profile_urn: str | None = None,
     ) -> dict[str, Any]:
         """Message a person through the API with explicit confirmation gating."""
         return await self._person_message.message_person(
             linkedin_username,
             message,
             confirm_send=confirm_send,
+            profile_urn=profile_urn,
         )
 
     async def get_person(

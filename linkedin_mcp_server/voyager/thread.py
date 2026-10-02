@@ -225,13 +225,69 @@ class VoyagerThreadReader(VoyagerReader):
         _QUERY_ID_CACHE = (page, seen[-1])
         return seen[-1]
 
-    async def get_thread(self, thread_id: str) -> dict[str, Any]:
-        """Read the recent messages of one thread.
+    async def _threads_with(self, linkedin_username: str) -> list[dict[str, Any]]:
+        """The conversations shared with one member, most recent first.
+
+        There is no measured query from a member to their threads, so this
+        searches messages for the member's name and keeps the conversations
+        that member is actually in, matched by profile URN and not by the name
+        that was searched. One-to-one threads sort ahead of group threads,
+        because "my conversation with X" means the one with only X in it.
+        """
+        from linkedin_mcp_server.scraping.identifiers import (
+            normalize_person_identifier,
+        )
+        from linkedin_mcp_server.voyager.message_search import VoyagerMessageSearch
+
+        member = await self._resolve_member(
+            normalize_person_identifier(linkedin_username)
+        )
+        if not member["name"]:
+            return []
+        search = VoyagerMessageSearch(self._session, self._navigator)
+        found = await search.search_messages(member["name"])
+        rows = [
+            row
+            for row in found["conversations"]
+            if member["urn"] in (row.get("participant_urns") or [])
+        ]
+        return sorted(
+            rows,
+            key=lambda row: (
+                bool(row.get("group_chat")),
+                -(row.get("last_activity_at") or 0),
+            ),
+        )
+
+    async def get_thread(
+        self,
+        thread_id: str | None = None,
+        linkedin_username: str | None = None,
+        index: int = 0,
+    ) -> dict[str, Any]:
+        """Read the recent messages of one thread, named by id or by person.
 
         Returns ``url`` and ``sections`` for generic consumers, plus
         ``thread_id``, ``thread_urn``, ``participants``, ``messages`` (oldest
         first), ``count`` and ``query_id_renewed``.
         """
+        if not thread_id and not linkedin_username:
+            raise LinkedInScraperException(
+                "Provide at least one of linkedin_username or thread_id"
+            )
+        if not thread_id:
+            if index < 0:
+                raise LinkedInScraperException(f"index must be >= 0, got {index}.")
+            threads = await self._threads_with(linkedin_username or "")
+            if index >= len(threads):
+                raise LinkedInScraperException(
+                    f"Could not find a conversation for {linkedin_username} at "
+                    f"index {index}: a message search on their name found "
+                    f"{len(threads)} conversation(s) they are in. A thread the "
+                    "search does not surface can still exist; find it in "
+                    "get_conversations and pass its thread_url as thread_id."
+                )
+            thread_id = threads[index].get("thread_url") or ""
         thread_id = normalize_thread_reference(thread_id)
         if not is_thread_id(thread_id):
             raise LinkedInScraperException(
@@ -272,7 +328,9 @@ class VoyagerThreadReader(VoyagerReader):
             lines.append(f"{who} - {message['delivered_at_iso']}\n{message['text']}")
         return {
             "url": thread_url(thread_id),
-            "sections": {"thread": "\n\n".join(lines)},
+            # Keyed as upstream keys it, so a consumer reading the
+            # section by name keeps working.
+            "sections": {"conversation": "\n\n".join(lines)},
             "thread_id": thread_id,
             "thread_urn": urn,
             "participants": participants,

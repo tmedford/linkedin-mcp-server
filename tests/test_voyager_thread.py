@@ -124,7 +124,7 @@ async def test_messages_come_back_oldest_first_with_who_wrote_each():
     assert result["url"] == THREAD_URL
     assert result["thread_urn"] == f"urn:li:msg_conversation:({ME},{THREAD_ID})"
     assert [p["name"] for p in result["participants"]] == ["Ada Lovelace"]
-    assert "You - " in result["sections"]["thread"]
+    assert "You - " in result["sections"]["conversation"]
     # The whole point: no page is opened.
     assert result["query_id_renewed"] is False
     navigator._navigate_to_page.assert_not_awaited()
@@ -217,5 +217,101 @@ async def test_anything_but_a_thread_id_is_refused_before_any_request():
         await reader.get_thread("../../feed")
     with pytest.raises(LinkedInScraperException, match="not a messaging thread id"):
         await reader.get_thread(f"urn:li:msg_conversation:({ME},{THREAD_ID})")
+
+    assert page.requests == []
+
+
+def _search_page(*rows: tuple[str, str, bool, int]) -> dict[str, Any]:
+    """A message-search answer: (thread id, participant urn, group, activity)."""
+    included: list[dict[str, Any]] = []
+    for thread, participant, group, activity in rows:
+        included.append(
+            {
+                "$type": "com.linkedin.messenger.Conversation",
+                "entityUrn": f"urn:li:msg_conversation:({ME},{thread})",
+                "conversationUrl": f"https://www.linkedin.com/messaging/thread/{thread}/",
+                "*conversationParticipants": [participant],
+                "lastActivityAt": activity,
+                "groupChat": group,
+            }
+        )
+    for urn in {row[1] for row in rows}:
+        included.append(_participant(urn, "Ada", "Lovelace"))
+    container = {"*elements": [], "metadata": {"nextCursor": None}}
+    payload = {
+        "data": {"data": {"messengerConversationsBySearchCriteria": container}},
+        "included": included,
+    }
+    return {"body": json.dumps(payload)}
+
+
+ADA_URN = "urn:li:fsd_profile:ACoAA-ada"
+ADA_FOUND = {
+    "body": json.dumps(
+        {
+            "data": {"*elements": [ADA_URN]},
+            "included": [
+                {"entityUrn": ADA_URN, "firstName": "Ada", "lastName": "Lovelace"}
+            ],
+        }
+    )
+}
+OTHER = "urn:li:msg_messagingParticipant:urn:li:fsd_profile:ACoAA-namesake"
+
+
+async def test_a_person_leads_to_their_one_to_one_thread_before_any_group():
+    reader, page, _ = _reader(
+        ADA_FOUND,
+        ME_ANSWER,
+        _search_page(
+            ("2-group", ADA_PARTICIPANT, True, 9_000),
+            ("2-direct", ADA_PARTICIPANT, False, 1_000),
+            # Same name, different member: found by the search, not hers.
+            ("2-namesake", OTHER, False, 8_000),
+        ),
+        ME_ANSWER,
+        _thread(_message(ADA_PARTICIPANT, 1_000, "hello")),
+    )
+
+    result = await reader.get_thread(linkedin_username="ada-lovelace")
+
+    assert result["thread_id"] == "2-direct"
+    assert "keywords:Ada%20Lovelace)" in page.requests[2]
+
+
+async def test_index_selects_among_a_persons_threads_and_past_the_end_says_so():
+    answers = (
+        ADA_FOUND,
+        ME_ANSWER,
+        _search_page(
+            ("2-group", ADA_PARTICIPANT, True, 9_000),
+            ("2-direct", ADA_PARTICIPANT, False, 1_000),
+        ),
+    )
+    reader, _, _ = _reader(
+        *answers, ME_ANSWER, _thread(_message(ADA_PARTICIPANT, 1_000, "hello"))
+    )
+    second = await reader.get_thread(linkedin_username="ada-lovelace", index=1)
+    assert second["thread_id"] == "2-group"
+
+    past, _, _ = _reader(*answers)
+    with pytest.raises(LinkedInScraperException, match="found 2 conversation"):
+        await past.get_thread(linkedin_username="ada-lovelace", index=2)
+
+
+async def test_a_thread_id_wins_over_a_username_and_no_lookup_is_made():
+    reader, page, _ = _reader(ME_ANSWER, _thread(_message(ADA_PARTICIPANT, 1, "x")))
+
+    result = await reader.get_thread(THREAD_ID, linkedin_username="ada-lovelace")
+
+    assert result["thread_id"] == THREAD_ID
+    assert len(page.requests) == 2
+
+
+async def test_neither_a_thread_nor_a_person_is_refused_before_any_request():
+    reader, page, _ = _reader()
+
+    with pytest.raises(LinkedInScraperException, match="at least one of"):
+        await reader.get_thread()
 
     assert page.requests == []
