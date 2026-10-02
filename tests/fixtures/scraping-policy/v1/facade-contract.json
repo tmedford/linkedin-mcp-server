@@ -517,7 +517,7 @@
               "type": "boolean"
             },
             "linkedin_username": {
-              "description": "The recipient's /in/ public identifier, or\ntheir profile URL.",
+              "description": "The recipient's /in/ public identifier, or\ntheir profile URL. Several separated by commas address one\ngroup conversation with all of them.",
               "type": "string"
             },
             "message": {
@@ -807,47 +807,6 @@
           },
           "required": [
             "keywords"
-          ],
-          "type": "object"
-        },
-        "output": {
-          "additionalProperties": true,
-          "type": "object"
-        }
-      },
-      "send_message": {
-        "input": {
-          "additionalProperties": false,
-          "properties": {
-            "confirm_send": {
-              "description": "Must be True to send the message",
-              "type": "boolean"
-            },
-            "linkedin_username": {
-              "description": "LinkedIn username of the recipient; a full profile URL is accepted too",
-              "type": "string"
-            },
-            "message": {
-              "description": "Single-line message text to send. C0 control characters and\nDEL are rejected, including CR, LF, and tab.",
-              "type": "string"
-            },
-            "profile_urn": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Optional profile URN (e.g. ACoAAB...) to verify against\nthe URN exposed by the loaded profile before opening its Message\naction. It never bypasses recipient verification. Obtain via\nget_person_profile. Note: inbox may not always show all messages;\nuse search_conversations as a fallback."
-            }
-          },
-          "required": [
-            "linkedin_username",
-            "message",
-            "confirm_send"
           ],
           "type": "object"
         },

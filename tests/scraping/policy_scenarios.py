@@ -1298,7 +1298,7 @@ async def _message_search_scenario() -> dict[str, Any]:
 async def _person_message_scenario(confirm_send: bool) -> dict[str, Any]:
     """Record what `message_person` does to the page.
 
-    A dry run is two reads: who the recipient is and who is signed in. A
+    A dry run is two reads: who is signed in and who the recipient is. A
     confirmed message adds one write. No profile is opened and nothing is
     typed, where `send_message` navigates twice and drives a composer.
     """
@@ -1309,6 +1309,7 @@ async def _person_message_scenario(confirm_send: bool) -> dict[str, Any]:
     me = "urn:li:fsd_profile:ACoAA-me"
     ada = "urn:li:fsd_profile:ACoAA-policy"
     answers: list[dict[str, Any]] = [
+        {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
         {
             "body": json.dumps(
                 {
@@ -1319,7 +1320,6 @@ async def _person_message_scenario(confirm_send: bool) -> dict[str, Any]:
                 }
             )
         },
-        {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
     ]
     if confirm_send:
         created = {

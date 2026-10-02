@@ -15,12 +15,14 @@ instead of a conversation.
 profile URN at ``data['*elements']`` and the profile entity in ``included``.
 It is a plain REST finder, so there is no query id to rotate.
 
-**Not yet measured: the write addressed to a person.** The body is the
+**The write addressed to people is measured too**, the same day: the
 ``createMessage`` body with ``hostRecipientUrns`` in place of
-``conversationUrn``, built from the endpoint's known shape. Until one live send
-proves it, upstream's ``send_message`` stays served beside this tool. Where
-the message lands is not assumed either: the server's answer names the
-conversation, and that is what is returned as ``thread_id``.
+``conversationUrn``, sent to two members, answered HTTP 200 with the created
+message and a NEW conversation URN. That conversation then read back through
+``get_thread`` and appeared in ``get_conversations`` as a group chat with both
+members. A single recipient uses the same body with one URN and has not been
+sent separately. Where a message lands is never assumed: the server's answer
+names the conversation, and that is what is returned as ``thread_id``.
 """
 
 from __future__ import annotations
@@ -57,6 +59,14 @@ def _result(url: str, status: str, message: str, **extra: Any) -> dict[str, Any]
     return base
 
 
+def _split_usernames(value: str) -> list[str]:
+    """One identifier, or several separated by commas for a group conversation."""
+    names = [part.strip() for part in value.split(",") if part.strip()]
+    # An empty list would index out of range below; hand the blank through so
+    # the identifier check raises its own, clearer error.
+    return names or [value]
+
+
 def refuse_an_invalid_person_message(
     linkedin_username: str, message: str
 ) -> dict[str, Any] | None:
@@ -69,7 +79,10 @@ def refuse_an_invalid_person_message(
         person_profile_url,
     )
 
-    url = person_profile_url(normalize_person_identifier(linkedin_username), "/")
+    usernames = _split_usernames(linkedin_username)
+    url = person_profile_url(normalize_person_identifier(usernames[0]), "/")
+    for other in usernames[1:]:
+        normalize_person_identifier(other)
     if not message.strip():
         reason = "Message must contain non-whitespace characters."
     elif any(
@@ -126,18 +139,30 @@ class VoyagerPersonMessage(VoyagerThreadReply):
         refusal = refuse_an_invalid_person_message(linkedin_username, message)
         if refusal is not None:
             return refusal
-        username = normalize_person_identifier(linkedin_username)
-        url = person_profile_url(username, "/")
+        usernames = [
+            normalize_person_identifier(name)
+            for name in _split_usernames(linkedin_username)
+        ]
+        url = person_profile_url(usernames[0], "/")
 
-        recipient = await self._recipient(username)
         mailbox_urn = await self._mailbox_urn()
-        if recipient["urn"] == mailbox_urn:
-            return _result(
-                url,
-                "recipient_is_sender",
-                "That identifier is the signed-in member. Nothing was sent.",
-            )
-        who = {"recipient_urn": recipient["urn"], "recipient_name": recipient["name"]}
+        recipients: list[dict[str, Any]] = []
+        for username in usernames:
+            recipient = await self._recipient(username)
+            if recipient["urn"] == mailbox_urn:
+                return _result(
+                    url,
+                    "recipient_is_sender",
+                    f"{username!r} is the signed-in member. Nothing was sent.",
+                )
+            # Two identifiers for one member would otherwise address a
+            # one-person "group", which is not what either spelling asked for.
+            if recipient["urn"] not in [r["urn"] for r in recipients]:
+                recipients.append(recipient)
+        who: dict[str, Any] = {"recipients": recipients}
+        if len(recipients) == 1:
+            who["recipient_urn"] = recipients[0]["urn"]
+            who["recipient_name"] = recipients[0]["name"]
 
         if not confirm_send:
             return _result(
@@ -157,7 +182,7 @@ class VoyagerPersonMessage(VoyagerThreadReply):
             "mailboxUrn": mailbox_urn,
             "trackingId": thread_reply._tracking_id(),
             "dedupeByClientGeneratedToken": False,
-            "hostRecipientUrns": [recipient["urn"]],
+            "hostRecipientUrns": [recipient["urn"] for recipient in recipients],
         }
         outcome = await self._create_message(body)
         landed_in = outcome.pop("conversation_urn", None)

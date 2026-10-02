@@ -5114,7 +5114,8 @@ class TestRealOwner:
             assert "search_messages" in names, sorted(names)
             assert "search_conversations" not in names, sorted(names)
             assert "message_person" in names, sorted(names)
-            assert len(names) == 22, sorted(names)
+            assert "send_message" not in names, sorted(names)
+            assert len(names) == 21, sorted(names)
         finally:
             _stop(result.get("pid"))
 

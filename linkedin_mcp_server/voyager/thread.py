@@ -25,6 +25,13 @@ taken without opening the thread that was asked about. That is the same page
 load ``get_conversations`` already makes to find its own query. The result
 says when it happened (``query_id_renewed``).
 
+**``participants`` is who wrote, not who belongs.** The payload carries a
+``MessagingParticipant`` only for the senders of the messages it returns. A new
+group thread in which only the signed-in member had written came back with no
+other participants, while ``get_conversations`` listed both members.
+
+**Measured across 40 threads: the most that came back was 20 messages.**
+
 **Not measured: paging back.** This is the query the page issues on load, which
 returns the most recent messages. Older ones arrive through a different query
 when the page is scrolled, and that one has not been observed. A long thread

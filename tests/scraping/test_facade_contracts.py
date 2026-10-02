@@ -131,7 +131,7 @@ async def test_registered_tools_and_extractor_delegates_are_counted_separately()
     tools = await create_mcp_server().list_tools()
     tool_names = {tool.name for tool in tools}
 
-    assert len(tool_names) == 22
+    assert len(tool_names) == 21
     # The overlay supersedes get_inbox, so the tool is no longer served while
     # the extractor delegate behind it stays exactly as upstream wrote it --
     # superseding is done by not registering a tool, never by deleting their
@@ -146,6 +146,7 @@ async def test_registered_tools_and_extractor_delegates_are_counted_separately()
         "get_inbox",
         "get_conversation",
         "search_conversations",
+        "send_message",
     }
     assert len(TOOL_DELEGATES) == 24
     assert set(TOOL_DELEGATES.values()) == TOOL_FACADE_METHODS

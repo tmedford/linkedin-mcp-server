@@ -1665,6 +1665,7 @@ class TestToolTimeouts:
             "search_messages",
             "message_person",
         )
+        tool_names = tuple(n for n in tool_names if n != "send_message")
 
         for name in tool_names:
             tool = await mcp.get_tool(name)
@@ -1715,6 +1716,7 @@ class TestToolTimeouts:
             "search_messages",
             "message_person",
         )
+        tool_names = tuple(n for n in tool_names if n != "send_message")
 
         for name in tool_names:
             tool = await mcp.get_tool(name)

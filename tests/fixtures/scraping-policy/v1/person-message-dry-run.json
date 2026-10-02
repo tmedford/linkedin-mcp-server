@@ -8,7 +8,7 @@
   },
   "events": [
     {
-      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ada-lovelace",
+      "arg": "https://www.linkedin.com/voyager/api/me",
       "call": "message_person",
       "kind": "evaluate",
       "operation": "voyager_conversations_fetch",
@@ -16,7 +16,7 @@
       "section": "message"
     },
     {
-      "arg": "https://www.linkedin.com/voyager/api/me",
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ada-lovelace",
       "call": "message_person",
       "kind": "evaluate",
       "operation": "voyager_conversations_fetch",
@@ -29,6 +29,12 @@
     "recipient_name": "Ada Lovelace",
     "recipient_selected": true,
     "recipient_urn": "urn:li:fsd_profile:ACoAA-policy",
+    "recipients": [
+      {
+        "name": "Ada Lovelace",
+        "urn": "urn:li:fsd_profile:ACoAA-policy"
+      }
+    ],
     "retry_safe": true,
     "sent": false,
     "status": "confirmation_required",

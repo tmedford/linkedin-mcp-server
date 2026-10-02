@@ -61,14 +61,16 @@ class OverlayError(RuntimeError):
 #: render, which opens the first match and so marks it read. ``search_messages``
 #: issues the keyword query that page loads its results from.
 #:
-#: ``send_message`` is NOT here yet, on purpose. ``message_person`` is served
-#: beside it until one live send has proved the person-addressed write; see
-#: ``person_message.py``. Superseding it first would leave no way to start a
-#: conversation if that body turns out to be wrong.
+#: ``send_message`` opens the recipient's profile, follows its Message action
+#: to a composer and types. On 2026-10-02 that could not reach a first-degree
+#: connection whose profile exposed no unambiguous Message action.
+#: ``message_person`` resolves the member and posts to the messaging API, and
+#: was held beside ``send_message`` until its write had been sent live once.
 SUPERSEDED: dict[str, str] = {
     "get_inbox": "get_conversations",
     "get_conversation": "get_thread",
     "search_conversations": "search_messages",
+    "send_message": "message_person",
 }
 
 
@@ -317,6 +319,11 @@ def install_voyager_overlay(
             thread_id, thread_urn, participants, messages, count and
             query_id_renewed.
 
+            **`participants` is who has WRITTEN in the returned messages, not
+            the thread's membership.** A group thread in which only you have
+            written comes back with none. get_conversations carries the full
+            membership of every thread.
+
             `messages` is oldest first. Each carries message_urn, sender_name,
             from_me, delivered_at, delivered_at_iso, subject and text. from_me
             is None when the payload does not name the sender.
@@ -532,7 +539,8 @@ def install_voyager_overlay(
 
         Args:
             linkedin_username: The recipient's /in/ public identifier, or
-                their profile URL.
+                their profile URL. Several separated by commas address one
+                group conversation with all of them.
             message: Message text. Line breaks (LF) are kept. Other C0 control
                 characters and DEL are rejected, including CR and tab.
             confirm_send: Must be True to send. False is a dry run: the
@@ -541,8 +549,9 @@ def install_voyager_overlay(
 
         Returns:
             Dict with url, status, message, recipient_selected, sent and
-            retry_safe, plus recipient_urn and recipient_name once the member
-            is resolved.
+            retry_safe, plus recipients (urn and name of each) once resolved.
+            With a single recipient, recipient_urn and recipient_name are set
+            too.
 
             `sent` is true only when LinkedIn answered the write with the
             message it created. A sent result adds message_urn, delivered_at,
