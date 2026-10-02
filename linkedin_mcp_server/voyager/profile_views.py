@@ -27,31 +27,51 @@ recent viewers; ``start``, ``count`` and a time frame were each tried as
 parameters and each was ignored. On this account 33 cards came back against
 529 views in the period.
 
-**The whole list is read off the page's own requests, and nothing is sent.**
-The analytics page loads its viewer list from a server-rendered component
-stream (``rsc-action`` with ``sduiid=WvmpEntityList``), ten rows at a time as
-it scrolls. On 2026-10-02 that request was replayed from here with three of
-the dozen headers the page sends, and the session was logged out on the next
-call. So this module never issues that request. It loads the real page, lets
-the page ask, and reads a copy of each answer: the page's ``fetch`` is wrapped
-before the document runs so every response it receives is also kept. The rows
-are then parsed out of the stream.
+**The whole list comes from the page's own paging endpoint, called directly.**
+The analytics page is built from server-rendered components, and it loads more
+viewers by POSTing to ``rsc-action/actions/pagination`` with
+``sduiid=com.linkedin.sdui.premium.wvmp.entityList``. That request takes a
+``start``, a ``count`` and the selected period, and answers with a component
+stream whose rows are parsed here. Measured on 2026-10-02:
 
-What a row carries is a rendered row: profile link, degree badge, headline and
-a relative time ("Viewed 3h ago"). The link is the identity. The time is
-LinkedIn's rounding, so it is reported as the text it was plus an approximate
-instant, and marked approximate; where the JSON endpoint also has that viewer
-its exact time wins. Reading the relative time needs English units and is the
-one locale-dependent step here.
+- Its body is fixed apart from those three values. The page's own request was
+  captured and is reproduced as ``_paging_body``; nothing in it is per-account.
+- ``count`` is honoured beyond the page's own ten: 40 rows came back for 40.
+- ``start`` is honoured: a page starting at row 60 began three weeks back.
+- The period is the value of the date-range state, and the page sends it
+  explicitly even for its default (``LAST_90_DAYS``).
+- The sibling ``server-request`` action that renders the FIRST page ignores
+  all three: sent with start, count and a period it returned the same first
+  ten rows four times. So it is not used, and the first page is read through
+  the paging action like every other.
 
-Run live the same day, the walk read the list to its end: 117 named viewers
-and 95 private ones against 529 counted views, the remainder being repeat
-views and the recruiters LinkedIn reports only as a number. The session was
-still valid afterwards.
+**The headers are the page's own, taken once per browser session.** The paging
+request carries about a dozen ``x-li-*`` headers naming the page instance and
+client version, which cannot be invented. The analytics page is loaded once,
+the headers of a request it sends are copied, and they are reused for every
+call until the browser restarts.
 
-With ``days=365`` chosen through the page's filter, the same walk returned 296
-named viewers and 193 private ones reaching back eleven months, the page's
-request carried the 365-day value, and the session was again valid afterwards.
+**What was not the cause of a logout.** Earlier the same day the session was
+found logged out after this family of request had been replayed with three
+headers, and a direct call was blamed. That was never shown: the same hour
+also saw every server process killed and restarted and some twenty direct
+launches of the profile. Sent with the page's full headers, direct calls were
+then made a dozen times across four runs and the session was valid after each.
+
+A row is a rendered row: profile link, degree badge, headline, a relative time
+("Viewed 3h ago") and sometimes a mutual-connection count held on another line
+of the stream. The link is the identity. The time is LinkedIn's rounding, so
+it is reported as the text it was plus an approximate instant, and marked
+approximate; where the JSON endpoint also has that viewer its exact time wins.
+Reading the relative time needs English units and is the one locale-dependent
+step here.
+
+Run live through the tool the same day: 365 days returned 296 named viewers
+and 193 private ones in 38 seconds, reaching back eleven months; 7 days
+returned 26 and 13 in one second, none older than days; the default returned
+117 and 95. The session was valid afterwards. Before this the same lists had
+been read by opening the page, wrapping its ``fetch`` and scrolling it, which
+gave identical counts for 90 and 365 days and took minutes.
 
 The recruiter-views page is a different surface and is not read here.
 """
@@ -64,7 +84,11 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
+from linkedin_mcp_server.core.exceptions import (
+    AuthenticationError,
+    LinkedInScraperException,
+    RateLimitError,
+)
 from linkedin_mcp_server.voyager.client import VoyagerReader
 
 logger = logging.getLogger(__name__)
@@ -74,82 +98,60 @@ PAGE_URL = "https://www.linkedin.com/analytics/profile-views/"
 
 _ELEMENTS_PATH = "included[WvmpCard].value.insightCards"
 
-#: Installed before the page's own scripts run. It forwards every call
-#: untouched and keeps a copy of what came back from the component endpoint.
-_TEE_JS = """(() => {
-    if (window.__liMcpTee) return;
-    window.__liMcpTee = true;
-    window.__liMcpRsc = [];
-    const original = window.fetch;
-    window.fetch = async function (...args) {
-        const response = await original.apply(this, args);
-        try {
-            const target = args[0];
-            const url = String((target && target.url) || target || '');
-            if (url.includes('/rsc-action/')) {
-                const sent = args[1] && typeof args[1].body === 'string'
-                    ? args[1].body : '';
-                response.clone().text().then(text => {
-                    window.__liMcpRsc.push({url, text, sent});
-                }).catch(() => {});
-            }
-        } catch (error) {}
-        return response;
-    };
-})()"""
+_PAGINATION = (
+    "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination"
+    "?sduiid=com.linkedin.sdui.premium.wvmp.entityList"
+)
+_PAGER_ID = "com.linkedin.sdui.premium.wvmp.entityList"
+_FILTERS = ("DATE_RANGE", "INTERESTING_VIEWER", "ORGANIZATION", "INDUSTRY", "LOCATION")
+_FILTER_FIELDS = {
+    "DATE_RANGE": "dateRangeSelectionFilters",
+    "INTERESTING_VIEWER": "interestingViewerSelectionFilters",
+    "ORGANIZATION": "organizationSelectionFilters",
+    "INDUSTRY": "industrySelectionFilters",
+    "LOCATION": "locationSelectionFilters",
+}
 
-_READ_TEE_JS = """() => (window.__liMcpRsc || []).map(entry => ({
-    url: entry.url, text: entry.text, sent: entry.sent || '',
-}))"""
+#: Headers a page script may not set on fetch; the browser supplies its own.
+_BROWSER_OWNED = frozenset(
+    {
+        "cookie",
+        "host",
+        "content-length",
+        "origin",
+        "referer",
+        "user-agent",
+        "accept-encoding",
+        "connection",
+        "priority",
+    }
+)
 
-#: Chooses a period in the page's own date filter, by POSITION.
-#:
-#: Measured in a live page on 2026-10-02. The filter is the first checkbox
-#: pill in ``main``. Opening it shows a popover holding exactly five radios,
-#: in the order of ``TIME_RANGES`` (the fourth, 90 days, is checked by
-#: default), and two buttons: reset first, apply last. The radios carry no
-#: value and their labels are words, so the option is taken by its index and
-#: nothing here reads a label. Anything other than exactly five radios is a
-#: layout this does not know, and it answers False rather than clicking a
-#: guess. The copies are emptied just before applying, so every answer kept
-#: afterwards belongs to the chosen period.
-_APPLY_PERIOD_JS = """async (index) => {
-    const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-    const pill = document.querySelector('main input[type="checkbox"]');
-    if (!pill) return 'no-filter';
-    (document.querySelector('label[for="' + pill.id + '"]') || pill).click();
-    let options = [];
-    for (let attempt = 0; attempt < 20 && options.length !== 5; attempt++) {
-        await pause(150);
-        options = Array.from(document.querySelectorAll('input[type="radio"]'))
-            .filter(radio => !radio.closest('main'));
-    }
-    if (options.length !== 5) return 'unknown-layout';
-    const container = options[0].closest('[role="dialog"], [popover]');
-    if (!container || !options.every(radio => container.contains(radio))) {
-        return 'unknown-layout';
-    }
-    const option = options[index];
-    (document.querySelector('label[for="' + option.id + '"]') || option).click();
-    await pause(200);
-    if (!option.checked) return 'not-selected';
-    const buttons = Array.from(container.querySelectorAll('button'));
-    if (buttons.length < 2) return 'unknown-layout';
-    return 'ready';
+_POST_STREAM_JS = """async ({url, headers, body}) => {
+    const r = await fetch(url, {
+        method: 'POST', credentials: 'include', headers, body,
+    });
+    return {status: r.status, text: await r.text()};
 }"""
 
-_SUBMIT_PERIOD_JS = """() => {
-    const options = Array.from(document.querySelectorAll('input[type="radio"]'))
-        .filter(radio => !radio.closest('main'));
-    const container = options.length === 5
-        ? options[0].closest('[role="dialog"], [popover]') : null;
-    const buttons = container ? Array.from(container.querySelectorAll('button')) : [];
-    if (buttons.length < 2) return false;
-    buttons[buttons.length - 1].click();
-    return true;
-}"""
+#: Rows asked for per request. The page asks for ten; forty was measured to
+#: be honoured, and fewer requests is the kinder way to read a long list.
+PAGE_SIZE = 40
+#: Requests per call, so a list that never ends cannot run away.
+MAX_PAGES = 40
+#: Seconds between requests.
+PAGE_DELAY = 1.5
 
-_CLEAR_TEE_JS = "() => { window.__liMcpRsc = []; return true; }"
+# Headers are valid for as long as the page that issued them, for the reason
+# given beside `_QUERY_CACHE` in `messaging.py`.
+_HEADER_CACHE: tuple[Any, dict[str, str]] | None = None
+
+
+def forget_cached_headers() -> None:
+    """Drop the copied page headers so the next read takes them again."""
+    global _HEADER_CACHE
+    _HEADER_CACHE = None
+
 
 #: The periods LinkedIn's own filter offers, by their length in days. The
 #: names are the page's, taken from a request it sent.
@@ -160,19 +162,6 @@ TIME_RANGES = {
     90: "WvmpSearchFilterTimeRange_LAST_90_DAYS",
     365: "WvmpSearchFilterTimeRange_LAST_365_DAYS",
 }
-
-_SCROLL_JS = """() => {
-    const root = document.scrollingElement || document.documentElement;
-    root.scrollTo(0, root.scrollHeight);
-    for (const element of document.querySelectorAll('main, main *')) {
-        const style = getComputedStyle(element);
-        if ((style.overflowY === 'auto' || style.overflowY === 'scroll')
-                && element.scrollHeight > element.clientHeight + 20) {
-            element.scrollTop = element.scrollHeight;
-        }
-    }
-    return root.scrollHeight;
-}"""
 
 _ROW_MARKER = '"viewName":"viewer-list-item"'
 _INLINE_TEXT = re.compile(
@@ -194,10 +183,7 @@ _UNIT_SECONDS = {
     "yr": 31_536_000,
 }
 
-#: Scroll rounds before giving up on a list that keeps growing, and how many
-#: rounds with nothing new mean the list has ended.
-MAX_ROUNDS = 60
-IDLE_ROUNDS = 3
+
 _DISTANCE = {"DISTANCE_1": "1st", "DISTANCE_2": "2nd", "DISTANCE_3": "3rd"}
 
 
@@ -477,75 +463,164 @@ def parse_stream_rows(text: str, now: datetime | None = None) -> list[dict[str, 
     return rows
 
 
+def _paging_body(start: int, count: int, period: str) -> str:
+    """The paging request, as the page sends it, for one window of the list."""
+
+    def key(name: str) -> str:
+        return f"entityListQueryFilterPrefixWvmpSearchFilterType_{name}"
+
+    state_keys = [{"key": {"value": {"$case": "id", "id": key(n)}}} for n in _FILTERS]
+    payload: dict[str, Any] = {
+        "sortType": "ProfileViewSortType_TIME_DESCENDING",
+        "start": start,
+        "count": count,
+        "filterTypeList": [f"WvmpSearchFilterType_{n}" for n in _FILTERS],
+    }
+    for name in _FILTERS:
+        payload[_FILTER_FIELDS[name]] = {
+            "key": key(name),
+            "namespace": "MemoryNamespace",
+        }
+    arguments = {
+        "$type": "proto.sdui.actions.requests.RequestedArguments",
+        "requestedStateKeys": state_keys,
+        "payload": payload,
+        "requestMetadata": {"$type": "proto.sdui.common.RequestMetadata"},
+    }
+    states = [
+        {
+            "key": key(name),
+            "namespace": "MemoryNamespace",
+            # Only the date range is ever selected; the others stay empty.
+            "value": [period] if name == "DATE_RANGE" else [],
+            "originalProtoCase": "stringListValue",
+            "protoKey": {
+                "$type": "proto.sdui.Key",
+                "value": {"$case": "id", "id": key(name)},
+            },
+        }
+        for name in _FILTERS
+    ]
+    return json.dumps(
+        {
+            "pagerId": _PAGER_ID,
+            "clientArguments": {
+                **arguments,
+                "states": states,
+                "screenId": "com.linkedin.sdui.flagshipnav.premium.wvmp.WVMP",
+                "knownTemplateIds": [],
+            },
+            "paginationRequest": {
+                "$type": "proto.sdui.actions.requests.PaginationRequest",
+                "pagerId": _PAGER_ID,
+                "trigger": {
+                    "$case": "itemDistanceTrigger",
+                    "itemDistanceTrigger": {
+                        "$type": "proto.sdui.actions.requests.ItemDistanceTrigger",
+                        "preloadDistance": 3,
+                        "preloadLength": 250,
+                    },
+                },
+                "retryCount": 2,
+                "requestedArguments": arguments,
+            },
+        }
+    )
+
+
+def _seconds(relative: str | None) -> int | None:
+    match = _RELATIVE.search(relative or "")
+    return int(match.group(1)) * _UNIT_SECONDS[match.group(2)] if match else None
+
+
 class VoyagerProfileViews(VoyagerReader):
     """Read the signed-in member's profile viewers without opening the page."""
 
     surface = "profile-views"
 
-    async def _page_rows(
-        self, max_rounds: int, days: int | None = None
-    ) -> tuple[list[dict[str, Any]], bool, bool | None]:
-        """Every row the analytics page loads for itself, and whether it ended.
-
-        Sends nothing. The page is opened and scrolled; the answers it fetches
-        are copied as they arrive and parsed. The second value is True when
-        scrolling stopped producing answers, False when the round limit cut
-        the walk short. The third says whether the page asked for the period
-        requested: True, False, or None when no period was requested.
-
-        The period is chosen in the page's own date filter, so the page
-        issues the request itself. Putting it in the address
-        (``?timeRange=``, the form the recruiter-views page is linked with)
-        was tried first and is ignored here: a live run asking for 365 days
-        that way got the default list back. Whether the page asked for the
-        period is read from the request it sent rather than assumed, which is
-        what caught that.
-        """
+    async def _page_headers(self) -> dict[str, str]:
+        """The headers the analytics page sends, copied from one of its requests."""
+        global _HEADER_CACHE
         page = self._session.page
-        await page.add_init_script(_TEE_JS)
-        await self._navigator._navigate_to_page(PAGE_URL)
-        await self._session.check_rate_limit()
+        if _HEADER_CACHE is not None and _HEADER_CACHE[0] is page:
+            return _HEADER_CACHE[1]
 
-        if days is not None:
-            await self._session.delay(3.0)
-            index = list(TIME_RANGES).index(days)
-            state = await page.evaluate(_APPLY_PERIOD_JS, index)
-            logger.info("Period filter for %s days: %s", days, state)
-            if state == "ready":
-                await page.evaluate(_CLEAR_TEE_JS, isolated_context=False)
-                await page.evaluate(_SUBMIT_PERIOD_JS)
+        seen: list[Any] = []
 
-        # The copies live in the page's own world, where its fetch was
-        # wrapped. Patchright evaluates in an isolated world by default, which
-        # sees none of them: the first live run read an empty list that way
-        # and reported the walk as finished.
-        seen = 0
-        idle = 0
-        ended = False
-        for _ in range(max_rounds):
-            await self._session.delay(2.0)
-            captured = await page.evaluate(_READ_TEE_JS, isolated_context=False)
-            count = len(captured) if isinstance(captured, list) else 0
-            if count > seen:
-                seen, idle = count, 0
-            else:
-                idle += 1
-                if idle >= IDLE_ROUNDS:
-                    ended = True
+        def _capture(request: Any) -> None:
+            if "/rsc-action/" in request.url and request.method == "POST":
+                seen.append(request)
+
+        page.on("request", _capture)
+        try:
+            await self._navigator._navigate_to_page(PAGE_URL)
+            await self._session.check_rate_limit()
+            for _ in range(20):
+                if seen:
                     break
-            await page.evaluate(_SCROLL_JS)
-        captured = await page.evaluate(_READ_TEE_JS, isolated_context=False)
+                await self._session.delay(1.0)
+        finally:
+            page.remove_listener("request", _capture)
+        if not seen:
+            raise LinkedInScraperException(
+                "The profile-views page sent no component request to copy "
+                "headers from, so its viewer list cannot be asked for. The "
+                "page did not load, or LinkedIn changed how it is built."
+            )
+        headers = {
+            name: value
+            for name, value in seen[0].headers.items()
+            if name.lower() not in _BROWSER_OWNED
+            and not name.lower().startswith(("sec-", ":"))
+        }
+        _HEADER_CACHE = (page, headers)
+        return headers
 
-        now = datetime.now(timezone.utc)
+    async def _list_window(
+        self, start: int, count: int, period: str
+    ) -> list[dict[str, Any]]:
+        """One window of the viewer list, straight from the paging endpoint."""
+        answer = await self._session.page.evaluate(
+            _POST_STREAM_JS,
+            {
+                "url": _PAGINATION,
+                "headers": await self._page_headers(),
+                "body": _paging_body(start, count, period),
+            },
+        )
+        status = answer.get("status") if isinstance(answer, dict) else None
+        if status in (401, 403):
+            raise AuthenticationError(
+                f"Voyager {self.surface} list request rejected: HTTP {status}"
+            )
+        if status == 429:
+            raise RateLimitError(
+                f"Voyager {self.surface} list request rate limited: HTTP {status}"
+            )
+        if status != 200:
+            raise LinkedInScraperException(
+                f"Voyager {self.surface} list request failed: HTTP {status}"
+            )
+        text = answer.get("text") or ""
+        rows = parse_stream_rows(text)
+        if not rows and "viewer-list-item" in text:
+            raise LinkedInScraperException(
+                f"Voyager {self.surface} list changed shape: rows are marked "
+                "in the answer but none parsed. Refusing to report that as "
+                "the end of the list."
+            )
+        return rows
+
+    async def _all_rows(self, period: str) -> tuple[list[dict[str, Any]], bool]:
+        """The whole list for a period, and whether its end was reached."""
         rows: list[dict[str, Any]] = []
         keys: set[str] = set()
-        for entry in captured if isinstance(captured, list) else []:
-            text = entry.get("text") if isinstance(entry, dict) else None
-            if not isinstance(text, str) or _ROW_MARKER not in text:
-                continue
-            for row in parse_stream_rows(text, now):
-                # The same row can arrive twice (a re-render); a viewer who
-                # came back twice is two rows with different times.
+        for index in range(MAX_PAGES):
+            if index:
+                await self._session.delay(PAGE_DELAY)
+            window = await self._list_window(index * PAGE_SIZE, PAGE_SIZE, period)
+            viewers = [row for row in window if "aggregate" not in row]
+            for row in window:
                 key = json.dumps(
                     [
                         row.get("public_identifier"),
@@ -557,29 +632,19 @@ class VoyagerProfileViews(VoyagerReader):
                 if key not in keys:
                     keys.add(key)
                     rows.append(row)
-        applied: bool | None = None
-        if days is not None:
-            # The selected period is the VALUE of the date-range state. Its
-            # name also appears in the request as one of the options offered,
-            # so only the selected-value form counts.
-            wanted = f'"value":["{TIME_RANGES[days]}"]'
-            requests = [
-                entry.get("sent") or ""
-                for entry in (captured if isinstance(captured, list) else [])
-                if isinstance(entry, dict)
-                and "WvmpEntityList" in (entry.get("url") or "")
-            ]
-            applied = any(wanted in sent for sent in requests) if requests else False
-        return rows, ended, applied
+            # Measured against what was asked for: a short window is the end.
+            if len(viewers) < PAGE_SIZE:
+                return rows, True
+        return rows, False
 
     async def get_profile_views(
         self, full: bool = True, days: int | None = None
     ) -> dict[str, Any]:
         """Read who viewed the profile: the JSON highlights, and the full list.
 
-        With ``full`` the analytics page is also opened and its own list read
-        to the end; without it only the JSON endpoint is asked. ``days``
-        chooses the period the list covers and needs ``full``.
+        With ``full`` the whole list is paged through as well; without it only
+        the JSON endpoint is asked. ``days`` chooses the period the list
+        covers and needs ``full``.
         """
         if days is not None and days not in TIME_RANGES:
             raise LinkedInScraperException(
@@ -610,7 +675,15 @@ class VoyagerProfileViews(VoyagerReader):
         list_ended: bool | None = None
         period_applied: bool | None = None
         if full:
-            rows, list_ended, period_applied = await self._page_rows(MAX_ROUNDS, days)
+            rows, list_ended = await self._all_rows(TIME_RANGES[days or 90])
+            if days is not None:
+                # A row older than the period means the period was ignored.
+                # Nothing older proves little for a long period, so this can
+                # only ever catch the failure, and is named for that.
+                limit = days * 86_400 * 1.5
+                period_applied = not any(
+                    (_seconds(row.get("viewed_text")) or 0) > limit for row in rows
+                )
             exact = {v.get("public_identifier"): v for v in views["viewers"]}
             merged: dict[str, dict[str, Any]] = {}
             anonymous: list[dict[str, Any]] = []
@@ -655,11 +728,11 @@ class VoyagerProfileViews(VoyagerReader):
             **views,
             "count": len(views["viewers"]),
             "returned": returned,
-            # Whether the page's list was read to its end. None when the list
-            # was not read at all; False when the walk was cut short.
+            # Whether the list was read to its end. None when the list was not
+            # read at all; False when the page limit cut the walk short.
             "complete": list_ended,
             "days": days,
-            # Whether the page asked LinkedIn for that period. False means the
-            # list is LinkedIn's default period, whatever was requested.
+            # False when a returned row is older than the period allows, which
+            # means LinkedIn ignored it. True means nothing contradicted it.
             "period_applied": period_applied,
         }

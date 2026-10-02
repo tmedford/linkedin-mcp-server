@@ -1050,8 +1050,8 @@ def install_voyager_overlay(
         """
         Read who viewed YOUR profile: every viewer LinkedIn lists, newest first.
 
-        Runs in the server's own browser, not yours. Takes a minute or two,
-        because the full list is read by letting LinkedIn's page load it.
+        Pages through LinkedIn's own viewer-list endpoint, 40 at a time. The
+        default period takes about 15 seconds and a year about 40.
 
         Args:
             ctx: FastMCP context for progress reporting
@@ -1078,9 +1078,9 @@ def install_voyager_overlay(
             groups: how LinkedIn grouped the highlights, with view counts.
             count, returned, complete, days and period_applied.
 
-            **Check period_applied when you pass days.** True means LinkedIn's
-            page asked for that period. False means it did not, and the list
-            is the default period whatever was requested.
+            **Check period_applied when you pass days.** False means a row
+            came back older than the period allows, so LinkedIn ignored it.
+            True means nothing contradicted the period asked for.
 
             **Most view times are approximate.** LinkedIn's list says "1w ago",
             so viewed_at_iso is computed from that and the row carries
@@ -1090,7 +1090,7 @@ def install_voyager_overlay(
             "2 mutual connections".
 
             complete is True when the list was read to its end, False when the
-            walk was cut short, and None with full=False. **total_views counts
+            request limit cut it short, and None with full=False. **total_views counts
             views, not people**: one run returned 117 named and 95 private
             viewers against 529 views, the rest being repeat views and the
             recruiters LinkedIn only reports as a number.
