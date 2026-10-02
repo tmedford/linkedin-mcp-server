@@ -241,3 +241,18 @@ async def test_a_closing_rollup_is_reported_apart_from_the_recruiters():
     assert result["aggregates"] == ["38 other recruiters"]
     assert [r["company"] for r in result["recruiters"]] == ["Co0", "Co1"]
     assert "38 other recruiters" in result["sections"]["recruiter_views"]
+
+
+async def test_two_closing_rollups_are_both_kept():
+    link = "https://www.linkedin.com/x"
+    # The second rollup arrives alone, in the next window: the case where it
+    # was lost, since a window with nothing new ends the read.
+    rows = (
+        _many(39)
+        + [("", ["38 other recruiters"], link)]
+        + [("", ["6 other recruiters"], link)]
+    )
+
+    result = await _reader(_Page(rows)).get_recruiter_views()
+
+    assert result["aggregates"] == ["38 other recruiters", "6 other recruiters"]
