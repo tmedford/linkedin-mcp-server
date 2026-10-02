@@ -5108,14 +5108,19 @@ class TestRealOwner:
             assert "get_conversations" in names, sorted(names)
             assert "get_invitations" in names, sorted(names)
             assert "get_inbox" not in names, sorted(names)
-            assert "reply_to_thread" in names, sorted(names)
-            assert "get_thread" in names, sorted(names)
-            assert "get_conversation" not in names, sorted(names)
-            assert "search_messages" in names, sorted(names)
-            assert "search_conversations" not in names, sorted(names)
-            assert "message_person" in names, sorted(names)
-            assert "send_message" not in names, sorted(names)
-            assert len(names) == 21, sorted(names)
+            # A replacement keeps upstream's name, so the names below that
+            # upstream also has are served by this fork's API readers.
+            for ours in (
+                "reply_to_thread",
+                "get_mutual_connections",
+                "get_person_posts",
+                "get_conversation",
+                "search_conversations",
+                "send_message",
+                "get_person_profile",
+            ):
+                assert ours in names, sorted(names)
+            assert len(names) == 23, sorted(names)
         finally:
             _stop(result.get("pid"))
 

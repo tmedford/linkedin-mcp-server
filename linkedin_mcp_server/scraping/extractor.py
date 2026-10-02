@@ -21,6 +21,7 @@ from linkedin_mcp_server.scraping.conversations import ConversationReader
 from linkedin_mcp_server.voyager.invitations import VoyagerInvitationsReader
 from linkedin_mcp_server.voyager.messaging import VoyagerMessagingReader
 from linkedin_mcp_server.voyager.message_search import VoyagerMessageSearch
+from linkedin_mcp_server.voyager.person import VoyagerPersonReader
 from linkedin_mcp_server.voyager.person_message import VoyagerPersonMessage
 from linkedin_mcp_server.voyager.thread import VoyagerThreadReader
 from linkedin_mcp_server.voyager.thread_reply import VoyagerThreadReply
@@ -84,6 +85,7 @@ class LinkedInExtractor:
         self._voyager_thread = VoyagerThreadReader(session, navigator)
         self._voyager_search = VoyagerMessageSearch(session, navigator)
         self._person_message = VoyagerPersonMessage(session, navigator)
+        self._voyager_person = VoyagerPersonReader(session, navigator)
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -311,9 +313,16 @@ class LinkedInExtractor:
             confirm_send=confirm_send,
         )
 
-    async def get_thread(self, thread_id: str) -> dict[str, Any]:
+    async def get_thread(
+        self,
+        thread_id: str | None = None,
+        linkedin_username: str | None = None,
+        index: int = 0,
+    ) -> dict[str, Any]:
         """Read one thread's recent messages from the messaging API."""
-        return await self._voyager_thread.get_thread(thread_id)
+        return await self._voyager_thread.get_thread(
+            thread_id, linkedin_username=linkedin_username, index=index
+        )
 
     async def search_messages(
         self, keywords: str, cursor: str | None = None
@@ -327,10 +336,36 @@ class LinkedInExtractor:
         message: str,
         *,
         confirm_send: bool,
+        profile_urn: str | None = None,
     ) -> dict[str, Any]:
         """Message a person through the API with explicit confirmation gating."""
         return await self._person_message.message_person(
             linkedin_username,
             message,
             confirm_send=confirm_send,
+            profile_urn=profile_urn,
+        )
+
+    async def get_person(
+        self, linkedin_username: str, compare_to_me: bool = True
+    ) -> dict[str, Any]:
+        """Read a member's whole profile from the API, and what it shares with yours."""
+        return await self._voyager_person.get_person(
+            linkedin_username, compare_to_me=compare_to_me
+        )
+
+    async def get_mutual_connections(
+        self, linkedin_username: str, start: int = 0, count: int = 40
+    ) -> dict[str, Any]:
+        """Read one page of the connections you share with a member."""
+        return await self._voyager_person.get_mutual_connections(
+            linkedin_username, start=start, count=count
+        )
+
+    async def get_person_posts(
+        self, linkedin_username: str, count: int = 10, cursor: str | None = None
+    ) -> dict[str, Any]:
+        """Read one page of a member's posts and reposts from the API."""
+        return await self._voyager_person.get_person_posts(
+            linkedin_username, count=count, cursor=cursor
         )

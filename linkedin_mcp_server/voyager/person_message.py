@@ -134,7 +134,12 @@ class VoyagerPersonMessage(VoyagerThreadReply):
         return {"urn": urns[0], "name": name or None}
 
     async def message_person(
-        self, linkedin_username: str, message: str, *, confirm_send: bool
+        self,
+        linkedin_username: str,
+        message: str,
+        *,
+        confirm_send: bool,
+        profile_urn: str | None = None,
     ) -> dict[str, Any]:
         """Send a message to a person with explicit confirmation gating."""
         from linkedin_mcp_server.scraping.identifiers import (
@@ -165,6 +170,18 @@ class VoyagerPersonMessage(VoyagerThreadReply):
             # one-person "group", which is not what either spelling asked for.
             if recipient["urn"] not in [r["urn"] for r in recipients]:
                 recipients.append(recipient)
+        if profile_urn is not None:
+            # Upstream's argument, kept with its meaning: a caller that already
+            # knows who it means can have that checked against who was found.
+            expected = profile_urn.strip().removeprefix(_PROFILE_URN_PREFIX)
+            resolved = [r["urn"].removeprefix(_PROFILE_URN_PREFIX) for r in recipients]
+            if resolved != [expected]:
+                return _result(
+                    url,
+                    "recipient_resolution_failed",
+                    "The supplied profile URN did not match the member that "
+                    "identifier resolves to. Nothing was sent.",
+                )
         who: dict[str, Any] = {"recipients": recipients}
         if len(recipients) == 1:
             who["recipient_urn"] = recipients[0]["urn"]

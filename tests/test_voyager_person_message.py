@@ -205,3 +205,27 @@ async def test_a_group_that_includes_the_sender_is_refused_before_any_write():
 def test_one_bad_identifier_in_a_group_raises_for_the_whole_call():
     with pytest.raises(InvalidReferenceError):
         refuse_an_invalid_person_message("ada-lovelace, ../../feed", "hi")
+
+
+@pytest.mark.parametrize("urn", ["ACoAA-ada", "urn:li:fsd_profile:ACoAA-ada"])
+async def test_a_matching_profile_urn_lets_the_send_through(urn):
+    sender, page = _sender(ME_ANSWER, _profiles(ADA), _created())
+
+    result = await sender.message_person(
+        "ada-lovelace", "hello", confirm_send=True, profile_urn=urn
+    )
+
+    assert result["status"] == "sent"
+    assert len(page.writes) == 1
+
+
+async def test_a_profile_urn_for_someone_else_stops_the_send():
+    sender, page = _sender(ME_ANSWER, _profiles(ADA))
+
+    result = await sender.message_person(
+        "ada-lovelace", "hello", confirm_send=True, profile_urn="ACoAA-other"
+    )
+
+    assert result["status"] == "recipient_resolution_failed"
+    assert result["sent"] is False
+    assert page.writes == []

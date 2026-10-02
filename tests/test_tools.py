@@ -1656,16 +1656,12 @@ class TestToolTimeouts:
         tool_names = tuple(n for n in tool_names if n != "get_inbox") + (
             "get_conversations",
         )
-        tool_names = tuple(n for n in tool_names if n != "get_conversation") + (
-            "get_thread",
+        tool_names = tool_names + (
             "reply_to_thread",
             "get_invitations",
+            "get_mutual_connections",
+            "get_person_posts",
         )
-        tool_names = tuple(n for n in tool_names if n != "search_conversations") + (
-            "search_messages",
-            "message_person",
-        )
-        tool_names = tuple(n for n in tool_names if n != "send_message")
 
         for name in tool_names:
             tool = await mcp.get_tool(name)
@@ -1707,16 +1703,12 @@ class TestToolTimeouts:
         tool_names = tuple(n for n in tool_names if n != "get_inbox") + (
             "get_conversations",
         )
-        tool_names = tuple(n for n in tool_names if n != "get_conversation") + (
-            "get_thread",
+        tool_names = tool_names + (
             "reply_to_thread",
             "get_invitations",
+            "get_mutual_connections",
+            "get_person_posts",
         )
-        tool_names = tuple(n for n in tool_names if n != "search_conversations") + (
-            "search_messages",
-            "message_person",
-        )
-        tool_names = tuple(n for n in tool_names if n != "send_message")
 
         for name in tool_names:
             tool = await mcp.get_tool(name)

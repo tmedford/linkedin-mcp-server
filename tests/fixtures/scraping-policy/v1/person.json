@@ -1,0 +1,240 @@
+{
+  "call": {
+    "arguments": {
+      "linkedin_username": "ada"
+    },
+    "method": "get_person"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ada&decorationId=com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93",
+      "call": "get_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ada&decorationId=com.linkedin.voyager.dash.deco.identity.profile.WebTopCardCore-19",
+      "call": "get_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ada&decorationId=com.linkedin.voyager.dash.deco.identity.profile.ProfileContactInfo-2",
+      "call": "get_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/profiles/ACoAA-ada/memberConnections?q=inCommon&start=0&count=40",
+      "call": "get_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/me",
+      "call": "get_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ACoAA-me&decorationId=com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93",
+      "call": "get_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    }
+  ],
+  "result": {
+    "certifications": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "common_ground": {
+      "certification_authorities": [],
+      "companies": [
+        {
+          "company": "Analytical Engine",
+          "company_urn": "urn:li:fsd_company:1",
+          "matched_by": "urn",
+          "mine": {
+            "company": "Analytical Engine",
+            "company_urn": "urn:li:fsd_company:1",
+            "start": "2013-01",
+            "title": "Engineer"
+          },
+          "overlap": {
+            "end": null,
+            "months": null,
+            "start": "2015-01"
+          },
+          "theirs": {
+            "company": "Analytical Engine",
+            "company_urn": "urn:li:fsd_company:1",
+            "start": "2015-01",
+            "title": "Engineer"
+          }
+        }
+      ],
+      "languages": [],
+      "location": null,
+      "organizations": [],
+      "same_location": false,
+      "schools": [],
+      "skills": [],
+      "volunteering": [],
+      "worked_together": [
+        {
+          "company": "Analytical Engine",
+          "company_urn": "urn:li:fsd_company:1",
+          "matched_by": "urn",
+          "mine": {
+            "company": "Analytical Engine",
+            "company_urn": "urn:li:fsd_company:1",
+            "start": "2013-01",
+            "title": "Engineer"
+          },
+          "overlap": {
+            "end": null,
+            "months": null,
+            "start": "2015-01"
+          },
+          "theirs": {
+            "company": "Analytical Engine",
+            "company_urn": "urn:li:fsd_company:1",
+            "start": "2015-01",
+            "title": "Engineer"
+          }
+        }
+      ],
+      "worked_together_by_employer": [
+        {
+          "company": "Analytical Engine",
+          "end": null,
+          "months": null,
+          "start": "2015-01"
+        }
+      ]
+    },
+    "contact": {},
+    "courses": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "education": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "honors": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "identity": {
+      "name": "Ada Policy",
+      "profile_urn": "urn:li:fsd_profile:ACoAA-ada",
+      "public_identifier": "ada"
+    },
+    "incomplete_sections": [],
+    "languages": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "mutual_connections": {
+      "complete": true,
+      "items": [
+        {
+          "distance": "DISTANCE_1",
+          "name": "Grace Hopper",
+          "public_identifier": "grace-hopper"
+        }
+      ],
+      "returned": 1,
+      "start": 0,
+      "total": 1
+    },
+    "organizations": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "patents": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "positions": {
+      "complete": true,
+      "employers": 1,
+      "items": [
+        {
+          "company": "Analytical Engine",
+          "company_urn": "urn:li:fsd_company:1",
+          "start": "2015-01",
+          "title": "Engineer"
+        }
+      ],
+      "returned": 1,
+      "total": null,
+      "total_employers": 1
+    },
+    "projects": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "publications": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "relationship": "connection",
+    "sections": {
+      "main_profile": "Ada Policy\n1st degree connection\n\nExperience\nEngineer at Analytical Engine (2015-01 to present)"
+    },
+    "skills": {
+      "complete": true,
+      "items": [],
+      "returned": 0,
+      "total": 0
+    },
+    "test_scores": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "url": "https://www.linkedin.com/in/ada/",
+    "volunteering": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    }
+  },
+  "scenario": "get_person__baseline",
+  "schema_version": 1
+}

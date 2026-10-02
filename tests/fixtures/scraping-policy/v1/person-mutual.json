@@ -1,0 +1,46 @@
+{
+  "call": {
+    "arguments": {
+      "linkedin_username": "ada"
+    },
+    "method": "get_mutual_connections"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ada",
+      "call": "get_mutual_connections",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/profiles/ACoAA-ada/memberConnections?q=inCommon&start=0&count=40",
+      "call": "get_mutual_connections",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    }
+  ],
+  "result": {
+    "at_end": true,
+    "count": 1,
+    "mutual_connections": [
+      {
+        "distance": "DISTANCE_1",
+        "name": "Grace Hopper",
+        "public_identifier": "grace-hopper"
+      }
+    ],
+    "page_size": 40,
+    "sections": {
+      "mutual_connections": "Grace Hopper"
+    },
+    "start": 0,
+    "total": 1,
+    "url": "https://www.linkedin.com/in/ada/"
+  },
+  "scenario": "get_mutual_connections__baseline",
+  "schema_version": 1
+}

@@ -28,6 +28,7 @@ from linkedin_mcp_server.scraping import session as session_module
 from linkedin_mcp_server.scraping import LinkedInExtractor
 from linkedin_mcp_server.scraping.fields import COMPANY_SECTIONS, PERSON_SECTIONS
 from linkedin_mcp_server.server import create_mcp_server
+from linkedin_mcp_server.voyager import person as voyager_person
 from linkedin_mcp_server.voyager import thread_reply
 
 from .support.policy_trace import (
@@ -1232,6 +1233,144 @@ async def _thread_scenario() -> dict[str, Any]:
     return recorder.trace({"method": "get_thread", "arguments": arguments}, result)
 
 
+def _policy_profile(urn: str, first: str, company: str, start: int) -> dict[str, Any]:
+    """A full-profile answer in the shape LinkedIn returns it, with one job."""
+    group = f"{urn}:group"
+    return {
+        "data": {"*elements": [urn]},
+        "included": [
+            {
+                "entityUrn": urn,
+                "firstName": first,
+                "lastName": "Policy",
+                "publicIdentifier": first.lower(),
+                "*profilePositionGroups": f"{urn}:groups",
+                "*profileSkills": f"{urn}:skills",
+            },
+            {
+                "entityUrn": f"{urn}:groups",
+                "*elements": [group],
+                "paging": {"total": 1},
+            },
+            {"entityUrn": group, "*profilePositionInPositionGroup": f"{group}:rows"},
+            {"entityUrn": f"{group}:rows", "*elements": [f"{group}:job"]},
+            {
+                "entityUrn": f"{group}:job",
+                "title": "Engineer",
+                "companyName": "Analytical Engine",
+                "*company": company,
+                "dateRange": {"start": {"year": start, "month": 1}},
+            },
+            {"entityUrn": f"{urn}:skills", "*elements": [], "paging": {"total": 0}},
+        ],
+    }
+
+
+_POLICY_MUTUAL = {
+    "data": {
+        "elements": [
+            {
+                "*miniProfile": "urn:li:fs_miniProfile:ACoAA-grace",
+                "distance": {"value": "DISTANCE_1"},
+            }
+        ],
+        "paging": {"total": 1},
+    },
+    "included": [
+        {
+            "entityUrn": "urn:li:fs_miniProfile:ACoAA-grace",
+            "firstName": "Grace",
+            "lastName": "Hopper",
+            "publicIdentifier": "grace-hopper",
+        }
+    ],
+}
+
+
+async def _person_extra_scenario(method: str) -> dict[str, Any]:
+    """Record what the two paged person reads do to the page.
+
+    Two evaluates each and no navigation: the member is resolved to an id,
+    then one page is read.
+    """
+    recorder = TraceRecorder(f"{method}__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    resolved = {"data": {"*elements": ["urn:li:fsd_profile:ACoAA-ada"]}, "included": []}
+    activity = "urn:li:activity:7457533446958170112"
+    posts = {
+        "data": {"*elements": ["urn:li:fs_updateV2:1"]},
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.feed.render.UpdateV2",
+                "entityUrn": "urn:li:fs_updateV2:1",
+                "updateMetadata": {"urn": activity},
+                "actor": {"name": {"text": "Ada Lovelace"}},
+                "commentary": {"text": {"text": "On the engine"}},
+            }
+        ],
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps(resolved)},
+        {
+            "body": json.dumps(
+                _POLICY_MUTUAL if method == "get_mutual_connections" else posts
+            )
+        },
+    )
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context(method, "person"):
+            arguments = {"linkedin_username": "ada"}
+            result = await getattr(extractor, method)("ada")
+    page.assert_clean()
+    return recorder.trace({"method": method, "arguments": arguments}, result)
+
+
+async def _person_scenario() -> dict[str, Any]:
+    """Record what `get_person` does to the page.
+
+    Six evaluates and no navigation: the profile, how the signed-in member
+    relates to it, its contact fields, the connections the two share, who is
+    signed in, and that member's own profile for the comparison. The tool beside it loads the profile page and one more page
+    per section.
+    """
+    recorder = TraceRecorder("get_person__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    me, ada = "urn:li:fsd_profile:ACoAA-me", "urn:li:fsd_profile:ACoAA-ada"
+    company = "urn:li:fsd_company:1"
+    relationship = {
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.dash.relationships.MemberRelationship",
+                "memberRelationshipUnion": {"*connection": "urn:li:fsd_connection:x"},
+            }
+        ]
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps(_policy_profile(ada, "Ada", company, 2015))},
+        {"body": json.dumps(relationship)},
+        {"body": json.dumps({"included": []})},
+        {"body": json.dumps(_POLICY_MUTUAL)},
+        {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
+        {"body": json.dumps(_policy_profile(me, "Taylor", company, 2013))},
+    )
+    extractor = _extractor(page)
+    voyager_person.forget_my_profile()
+    try:
+        async with boundaries(recorder, clock):
+            with recorder.context("get_person", "person"):
+                arguments = {"linkedin_username": "ada"}
+                result = await extractor.get_person("ada")
+    finally:
+        voyager_person.forget_my_profile()
+    page.assert_clean()
+    return recorder.trace({"method": "get_person", "arguments": arguments}, result)
+
+
 async def _message_search_scenario() -> dict[str, Any]:
     """Record what `search_messages` does to the page.
 
@@ -1452,6 +1591,9 @@ TOOL_FACADE_METHODS = {
     "get_thread",
     "search_messages",
     "message_person",
+    "get_person",
+    "get_mutual_connections",
+    "get_person_posts",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1529,6 +1671,9 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "conversations-page.json": await _conversations_page_scenario(),
         "invitations.json": await _invitations_scenario(),
         "thread.json": await _thread_scenario(),
+        "person.json": await _person_scenario(),
+        "person-mutual.json": await _person_extra_scenario("get_mutual_connections"),
+        "person-posts.json": await _person_extra_scenario("get_person_posts"),
         "message-search.json": await _message_search_scenario(),
         "person-message-dry-run.json": await _person_message_scenario(False),
         "person-message-sent.json": await _person_message_scenario(True),

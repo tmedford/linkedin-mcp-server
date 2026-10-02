@@ -45,7 +45,7 @@
     ],
     "query_id_renewed": false,
     "sections": {
-      "thread": "Ada Lovelace - 2023-11-14T22:13:20+00:00\nEarlier message"
+      "conversation": "Ada Lovelace - 2023-11-14T22:13:20+00:00\nEarlier message"
     },
     "thread_id": "2-policy-thread==",
     "thread_urn": "urn:li:msg_conversation:(urn:li:fsd_profile:ACoAA-me,2-policy-thread==)",

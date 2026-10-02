@@ -921,14 +921,15 @@ class TestWhatTheToolsPromise:
         """
         mcp = create_mcp_server()
         marks_things_read = {"get_conversation", "search_conversations"}
-        # This fork does not serve get_conversation: get_thread replaces it and
-        # reads the API without opening the thread. Applied as a line of its own
-        # so upstream's set above stays as they wrote it.
-        marks_things_read = marks_things_read - {"get_conversation"}
-        # Likewise search_conversations, replaced by search_messages. With both
-        # gone no tool this fork serves reads by clicking, which is the state
-        # this test exists to protect.
-        marks_things_read = marks_things_read - {"search_conversations"}
+        # In this fork both names are served by API readers that never open a
+        # thread, so they mark nothing read and their read-only hint is true.
+        # The guard still stands for any tool that reads by clicking; these two
+        # are taken out of it on a line of their own, so upstream's set above
+        # stays as they wrote it.
+        marks_things_read = marks_things_read - {
+            "get_conversation",
+            "search_conversations",
+        }
         claiming = set()
         for name in marks_things_read:
             tool = await mcp.get_tool(name)

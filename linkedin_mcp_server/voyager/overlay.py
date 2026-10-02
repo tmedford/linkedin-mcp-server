@@ -1,9 +1,9 @@
 """Serve our API-reading tools in place of the page-scraping ones.
 
 Installed once, after upstream has registered its own tools. For each tool we
-supersede it removes upstream's registration and registers ours under a name of
-our own, so a caller is offered one way to do the job rather than two that
-disagree.
+supersede it removes upstream's registration and registers ours, under the SAME
+name wherever ours can honour upstream's arguments, so a caller is offered one
+way to do the job and does not have to learn a new name for it.
 
 **Superseding is done by not serving a tool, never by editing it.** Upstream's
 implementation is left exactly as written and still imports, still has its
@@ -28,7 +28,10 @@ from typing import Any
 from fastmcp import Context, FastMCP
 
 from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
-from linkedin_mcp_server.core.exceptions import AuthenticationError
+from linkedin_mcp_server.core.exceptions import (
+    AuthenticationError,
+    LinkedInScraperException,
+)
 from linkedin_mcp_server.dependencies import get_ready_extractor, handle_auth_error
 from linkedin_mcp_server.error_handler import raise_tool_error
 from linkedin_mcp_server.voyager.person_message import refuse_an_invalid_person_message
@@ -51,27 +54,55 @@ class OverlayError(RuntimeError):
 #:
 #: ``get_conversation`` opens the thread and reads the rendered page, which
 #: marks the thread read and returns one block of text with the page's chrome
-#: in it. ``get_thread`` issues the query the thread page itself loads from:
-#: each message as a record, and the thread left unread. What is given up is
-#: lookup by username, which upstream did by clicking sidebar rows;
-#: ``get_conversations`` returns every thread's ``thread_url`` beside its
-#: participants, and that is the way from a person to a thread here.
+#: in it. Ours issues the query the thread page itself loads from: each
+#: message as a record, and the thread left unread. Lookup by username is kept,
+#: done by searching messages for the member's name rather than by clicking
+#: sidebar rows.
 #:
 #: ``search_conversations`` types into the messaging search box and reads the
-#: render, which opens the first match and so marks it read. ``search_messages``
-#: issues the keyword query that page loads its results from.
+#: render, which opens the first match and so marks it read. Ours issues the
+#: keyword query that page loads its results from.
 #:
 #: ``send_message`` opens the recipient's profile, follows its Message action
 #: to a composer and types. On 2026-10-02 that could not reach a first-degree
 #: connection whose profile exposed no unambiguous Message action.
-#: ``message_person`` resolves the member and posts to the messaging API, and
-#: was held beside ``send_message`` until its write had been sent live once.
+#: Ours resolves the member and posts to the messaging API, and was held
+#: beside upstream's until its write had been sent live once.
+#:
+#: ``get_person_profile`` loads the profile page and one more page per section
+#: and returns each as text. Ours reads the whole profile in one request as
+#: records, with contact info, mutual connections and what the profile shares
+#: with the signed-in member's own.
+#:
+#: **A replacement keeps the name it replaces.** Four of the five below are
+#: registered under upstream's own tool name and accept upstream's arguments,
+#: so nothing that calls the tool has to change when its implementation does.
+#: ``get_inbox`` is the exception and predates the rule: its replacement pages
+#: by cursor, which a ``limit`` argument cannot express, and callers moved to
+#: ``get_conversations`` when it was introduced.
 SUPERSEDED: dict[str, str] = {
     "get_inbox": "get_conversations",
-    "get_conversation": "get_thread",
-    "search_conversations": "search_messages",
-    "send_message": "message_person",
+    "get_conversation": "get_conversation",
+    "search_conversations": "search_conversations",
+    "send_message": "send_message",
+    "get_person_profile": "get_person_profile",
 }
+
+#: The section names upstream's get_person_profile accepts.
+_PERSON_SECTIONS = frozenset(
+    {
+        "experience",
+        "education",
+        "interests",
+        "honors",
+        "languages",
+        "certifications",
+        "skills",
+        "projects",
+        "contact_info",
+        "posts",
+    }
+)
 
 
 def _remove_one(mcp: FastMCP, name: str) -> None:
@@ -287,66 +318,90 @@ def install_voyager_overlay(
 
     @mcp.tool(
         timeout=tool_timeout,
-        title="Get Thread",
-        # Reads the messaging API. The thread asked about is never opened.
+        title="Get Conversation",
+        # Reads the messaging API. The thread is never opened, so unlike the
+        # upstream tool of this name it does not mark anything read.
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"messaging", "scraping"},
         exclude_args=["extractor"],
     )
-    async def get_thread(
-        thread_id: str,
+    async def get_conversation(
         ctx: Context,
+        linkedin_username: str | None = None,
+        thread_id: str | None = None,
+        index: int = 0,
         extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Read the recent messages of ONE LinkedIn messaging thread from the API.
 
-        Use this to see what was said in a conversation before replying. It
-        issues the request the thread page itself loads from, so the thread is
-        not opened and stays unread.
+        Provide either thread_id or linkedin_username. The thread is not
+        opened, so it stays unread.
 
-        To find a thread for a person, call get_conversations: each row carries
-        the participants and a `thread_url` to pass here.
+        Prefer thread_id when you have it: pass the `thread_url` a
+        get_conversations or search_conversations row carries. By
+        linkedin_username, the thread is found by searching messages for that
+        member's name and keeping the conversations they are in; that finds
+        the usual case and can miss a thread the search does not surface.
 
         Args:
-            thread_id: The thread to read. Pass the `thread_url` that
-                get_conversations returned, a `/messaging/thread/{id}/`
-                reference, or the bare thread id.
             ctx: FastMCP context for progress reporting
+            linkedin_username: The participant's /in/ public identifier or
+                profile URL. Used only when thread_id is not given.
+            thread_id: The thread to read: a `thread_url`, a
+                `/messaging/thread/{id}/` reference, or the bare thread id.
+            index: 0-based selector when the member is in several
+                conversations with you. One-to-one threads come first, then
+                group threads, each most recent first. Ignored when thread_id
+                is provided.
 
         Returns:
-            Dict with url and sections (the standard scraping-tool shape), plus
-            thread_id, thread_urn, participants, messages, count and
-            query_id_renewed.
+            Dict with url and sections (conversation -> text), plus thread_id,
+            thread_urn, participants, messages, count and query_id_renewed.
+
+            `messages` is oldest first. Each carries message_urn, sender_name,
+            from_me, delivered_at, delivered_at_iso, subject and text. from_me
+            is None when the payload does not name the sender.
+
+            **This is the recent tail of the thread, not its whole history**:
+            at most the 20 most recent messages. `count` is how many came
+            back, not how many exist.
 
             **`participants` is who has WRITTEN in the returned messages, not
             the thread's membership.** A group thread in which only you have
             written comes back with none. get_conversations carries the full
             membership of every thread.
 
-            `messages` is oldest first. Each carries message_urn, sender_name,
-            from_me, delivered_at, delivered_at_iso, subject and text. from_me
-            is None when the payload does not name the sender.
-
-            **This is the recent tail of the thread, not its whole history.**
-            It is the query the page issues on load; older messages come from a
-            different query that has not been built yet, so `count` is how many
-            came back and not how many exist.
-
             `query_id_renewed` is normally False. LinkedIn rotates the id of
             this query, and when the known one stops working the new one is
             learned by loading the messaging page once, the same page
             get_conversations loads. That call reports query_id_renewed: True.
         """
+        if not linkedin_username and not thread_id:
+            raise_tool_error(
+                LinkedInScraperException(
+                    "Provide at least one of linkedin_username or thread_id"
+                ),
+                "get_conversation",
+            )
         try:
             extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_thread"
+                ctx, tool_name="get_conversation"
             )
-            logger.info("Reading thread %s", thread_id)
+            logger.info(
+                "Reading conversation: username=%s, thread=%s, index=%d",
+                linkedin_username,
+                bool(thread_id),
+                index,
+            )
 
-            await ctx.report_progress(progress=0, total=100, message="Reading thread")
+            await ctx.report_progress(
+                progress=0, total=100, message="Loading conversation"
+            )
 
-            result = await extractor.get_thread(thread_id)
+            result = await extractor.get_thread(
+                thread_id, linkedin_username=linkedin_username, index=index
+            )
 
             await ctx.report_progress(progress=100, total=100, message="Complete")
 
@@ -356,9 +411,9 @@ def install_voyager_overlay(
             try:
                 await handle_auth_error(e, ctx)
             except Exception as relogin_exc:
-                raise_tool_error(relogin_exc, "get_thread")
+                raise_tool_error(relogin_exc, "get_conversation")
         except Exception as e:
-            raise_tool_error(e, "get_thread")  # NoReturn
+            raise_tool_error(e, "get_conversation")  # NoReturn
 
     @mcp.tool(
         timeout=tool_timeout,
@@ -453,16 +508,17 @@ def install_voyager_overlay(
 
     @mcp.tool(
         timeout=tool_timeout,
-        title="Search Messages",
+        title="Search Conversations",
         # Reads the messaging API. Nothing is typed into the search box and no
         # result is opened, so no thread is marked read.
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"messaging", "scraping"},
         exclude_args=["extractor"],
     )
-    async def search_messages(
+    async def search_conversations(
         keywords: str,
         ctx: Context,
+        limit: int = 20,
         cursor: str | None = None,
         extractor: Any | None = None,
     ) -> dict[str, Any]:
@@ -475,6 +531,10 @@ def install_voyager_overlay(
         Args:
             keywords: The word or phrase to search for.
             ctx: FastMCP context for progress reporting
+            limit: Kept for compatibility and NOT applied. A page is whatever
+                LinkedIn returns for it, up to 20; cutting it shorter while
+                the cursor moves on would silently skip the rest. Read
+                `count` and page with `cursor`.
             cursor: next_cursor from a previous call. OMIT for the first page.
 
         Returns:
@@ -484,7 +544,7 @@ def install_voyager_overlay(
 
             Each conversation has the same fields as a get_conversations row,
             including participants and thread_url; pass thread_url to
-            get_thread to read it. **The last_message_* fields are a message
+            get_conversation to read it. **The last_message_* fields are a message
             from that conversation, not necessarily the one that matched.**
 
             at_end is measured from the row count: True means fewer than
@@ -494,7 +554,7 @@ def install_voyager_overlay(
         """
         try:
             extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="search_messages"
+                ctx, tool_name="search_conversations"
             )
             logger.info("Searching messages (cursor=%s)", bool(cursor))
 
@@ -512,22 +572,23 @@ def install_voyager_overlay(
             try:
                 await handle_auth_error(e, ctx)
             except Exception as relogin_exc:
-                raise_tool_error(relogin_exc, "search_messages")
+                raise_tool_error(relogin_exc, "search_conversations")
         except Exception as e:
-            raise_tool_error(e, "search_messages")  # NoReturn
+            raise_tool_error(e, "search_conversations")  # NoReturn
 
     @mcp.tool(
         timeout=tool_timeout,
-        title="Message Person",
+        title="Send Message",
         annotations={"destructiveHint": True, "openWorldHint": True},
         tags={"messaging", "actions"},
         exclude_args=["extractor"],
     )
-    async def message_person(
+    async def send_message(
         linkedin_username: str,
         message: str,
         confirm_send: bool,
         ctx: Context,
+        profile_urn: str | None = None,
         extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
@@ -548,6 +609,10 @@ def install_voyager_overlay(
             confirm_send: Must be True to send. False is a dry run: the
                 recipient is resolved and reported, and nothing is written.
             ctx: FastMCP context for progress reporting
+            profile_urn: Optional. The member's profile URN (ACoAAB...) if
+                you already know it; the send is refused unless it matches the
+                member that linkedin_username resolves to. It never bypasses
+                that lookup.
 
         Returns:
             Dict with url, status, message, recipient_selected, sent and
@@ -559,7 +624,7 @@ def install_voyager_overlay(
             message it created. A sent result adds message_urn, delivered_at,
             thread_urn, thread_id and thread_url: the conversation the server
             says the message landed in, which is what reply_to_thread and
-            get_thread take. `retry_safe` is false whenever the message was or
+            get_conversation take. `retry_safe` is false whenever the message was or
             may have been delivered. `send_rejected` means LinkedIn refused the
             request and nothing was sent.
         """
@@ -570,7 +635,7 @@ def install_voyager_overlay(
             if refusal is not None:
                 return refusal
             extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="message_person"
+                ctx, tool_name="send_message"
             )
             logger.info(
                 "Messaging %s (confirm_send=%s)", linkedin_username, confirm_send
@@ -584,6 +649,7 @@ def install_voyager_overlay(
                 linkedin_username,
                 message,
                 confirm_send=confirm_send,
+                profile_urn=profile_urn,
             )
 
             await ctx.report_progress(progress=100, total=100, message="Complete")
@@ -594,6 +660,265 @@ def install_voyager_overlay(
             try:
                 await handle_auth_error(e, ctx)
             except Exception as relogin_exc:
-                raise_tool_error(relogin_exc, "message_person")
+                raise_tool_error(relogin_exc, "send_message")
         except Exception as e:
-            raise_tool_error(e, "message_person")  # NoReturn
+            raise_tool_error(e, "send_message")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Person Profile",
+        # Reads the profile API. No profile page is loaded.
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_person_profile(
+        linkedin_username: str,
+        ctx: Context,
+        sections: str | None = None,
+        max_scrolls: int | None = None,
+        compare_to_me: bool = True,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read a person's WHOLE profile from LinkedIn's API, and what you share.
+
+        One request returns every section as structured records with ids and
+        dates, rather than a page of text per section. Use it to understand
+        who someone is and, above all, how the two of you are connected.
+
+        Args:
+            linkedin_username: The /in/ public identifier or a profile URL.
+            ctx: FastMCP context for progress reporting
+            sections: Comma-separated section names, kept for compatibility.
+                Every profile section (experience, education, interests,
+                honors, languages, certifications, skills, projects,
+                contact_info) is ALWAYS returned, so naming them changes
+                nothing. Only "posts" adds something: the member's ten most
+                recent posts. Unrecognised names come back in
+                unknown_sections.
+            max_scrolls: Kept for compatibility and ignored. Nothing is
+                scrolled; sections arrive whole from the API.
+            compare_to_me: When true (the default), also reads your own profile
+                once and returns `common_ground`. Pass false to skip it.
+
+        Returns:
+            Dict with url and sections (main_profile -> text, and posts when
+            requested), plus:
+
+            identity: name, headline, summary, public_identifier, profile_urn,
+                location, industry.
+            relationship: "connection" for a first-degree connection, "self"
+                for your own profile, another LinkedIn label otherwise, or
+                None when it could not be read.
+            contact: what the member shares with you: email, phones, websites,
+                twitter, messengers, address, birthday. Only fields they share
+                appear. {} means the read worked and nothing is shared; None
+                means the read failed.
+            mutual_connections (omitted for your own profile): {items,
+                returned, start, total, complete}. The people you are both
+                connected to, which is who could introduce you. Each has name,
+                headline, public_identifier, profile_urn and LinkedIn's own
+                suggested_ask. Up to 40 are included; when `complete` is false
+                call get_mutual_connections for the rest.
+            positions, education, skills, certifications, honors, languages,
+                organizations, volunteering, projects, publications, patents,
+                courses, test_scores: each is {items, returned, total,
+                complete}. Positions carry title, company, company_urn, start,
+                end, location and description, one entry per title held.
+            incomplete_sections: names of sections where the server returned
+                fewer than it has. **Skills are capped at 20**, so skills is
+                usually listed; every other section normally comes back whole.
+
+            common_ground (omitted for your own profile):
+                worked_together_by_employer: one line per employer you were
+                    both at at the same time: company, start, end and months.
+                    **Read this first.** It is the strongest signal.
+                worked_together: the same, title by title, with both
+                    people's entries and the overlapping span of each pair.
+                companies: every shared employer, with both people's entries
+                    and `overlap` (None if the dates never met).
+                schools: shared schools, same shape.
+                organizations, volunteering, certification_authorities,
+                languages, skills: shared names. **A skill missing here is not
+                evidence it is not shared**, since both lists are capped.
+                same_location: whether both profiles name the same location.
+
+            Employers and schools are matched by LinkedIn's id for them
+            (`matched_by: "urn"`); a name is used only when one side typed the
+            place in free text (`matched_by: "name"`).
+
+            Ask for "posts" in sections for the ten most recent, or call
+            get_person_posts to page through them.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_person_profile"
+            )
+            logger.info("Reading person %s", linkedin_username)
+
+            await ctx.report_progress(progress=0, total=100, message="Reading profile")
+
+            result = await extractor.get_person(
+                linkedin_username, compare_to_me=compare_to_me
+            )
+
+            requested = {
+                name.strip().lower()
+                for name in (sections or "").split(",")
+                if name.strip()
+            }
+            unknown = sorted(requested - _PERSON_SECTIONS)
+            if unknown:
+                result["unknown_sections"] = unknown
+            if "posts" in requested:
+                posts = await extractor.get_person_posts(linkedin_username, count=10)
+                result["sections"]["posts"] = posts["sections"]["posts"]
+                result["posts"] = posts["posts"]
+                result["posts_next_cursor"] = posts["next_cursor"]
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_person_profile")
+        except Exception as e:
+            raise_tool_error(e, "get_person_profile")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Mutual Connections",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_mutual_connections(
+        linkedin_username: str,
+        ctx: Context,
+        start: int = 0,
+        count: int = 40,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read ONE page of the connections you share with a person.
+
+        These are the people who could introduce you. get_person_profile already
+        returns the first 40 with the total; use this to page through the rest,
+        or when the mutual connections are all you need.
+
+        Args:
+            linkedin_username: The /in/ public identifier or a profile URL.
+            ctx: FastMCP context for progress reporting
+            start: 0-based offset. Paging is the caller's loop.
+            count: how many to ask for.
+
+        Returns:
+            Dict with url and sections (the standard scraping-tool shape), plus
+            mutual_connections, count, start, page_size, total and at_end.
+
+            Each connection has name, headline, public_identifier, profile_urn,
+            distance, and suggested_ask: the text LinkedIn itself pre-fills
+            when you ask that person for an introduction.
+
+            total is LinkedIn's own count of mutual connections. at_end is
+            measured against it: True when this page reaches the total, False
+            when there are more, and None for an empty page.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_mutual_connections"
+            )
+            logger.info("Reading mutual connections (start=%s)", start)
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Reading mutual connections"
+            )
+
+            result = await extractor.get_mutual_connections(
+                linkedin_username, start=start, count=count
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_mutual_connections")
+        except Exception as e:
+            raise_tool_error(e, "get_mutual_connections")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Person Posts",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_person_posts(
+        linkedin_username: str,
+        ctx: Context,
+        count: int = 10,
+        cursor: str | None = None,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read ONE page of a person's posts and reposts from LinkedIn's API.
+
+        Use it to see what someone has been saying lately before you write to
+        them.
+
+        Args:
+            linkedin_username: The /in/ public identifier or a profile URL.
+            ctx: FastMCP context for progress reporting
+            count: how many to ask for.
+            cursor: next_cursor from a previous call. OMIT for the first page.
+                This endpoint pages only by cursor; there is no offset.
+
+        Returns:
+            Dict with url and sections (the standard scraping-tool shape), plus
+            posts, count, page_size, next_cursor and at_end.
+
+            Each post has activity_urn, url, posted_at_iso, author, text, and
+            likes, comments and shares where LinkedIn returned them.
+
+            Three kinds of entry come back and they read differently:
+            - their own post: `author` is them and `text` is what they wrote.
+            - a reshare with their comment: `text` is their comment, and
+              reshared_author and reshared_text are the original.
+            - a plain repost: repost_header says so, and `author`, `text` and
+              **posted_at_iso are the ORIGINAL's**, not the repost's.
+
+            posted_at_iso is read from the activity id, which encodes its
+            creation time. at_end is True when fewer than `count` came back,
+            False for a full page, and None for an empty page.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_person_posts"
+            )
+            logger.info("Reading posts (cursor=%s)", bool(cursor))
+
+            await ctx.report_progress(progress=0, total=100, message="Reading posts")
+
+            result = await extractor.get_person_posts(
+                linkedin_username, count=count, cursor=cursor
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_person_posts")
+        except Exception as e:
+            raise_tool_error(e, "get_person_posts")  # NoReturn
