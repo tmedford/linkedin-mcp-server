@@ -598,3 +598,54 @@ def test_a_private_viewer_known_only_by_school_keeps_the_school():
 
     assert row["school"] == "Example University"
     assert "title" not in row and "company_id" not in row
+
+
+async def test_the_relevant_order_is_asked_for_and_kept_as_linkedin_gave_it():
+    rows = [
+        _row("old", "Old But Relevant", "Viewed 3w ago"),
+        _row("new", "New Viewer", "Viewed 1h ago"),
+    ]
+    reader, _ = _reader(_payload(), rows)
+
+    result = await reader.get_profile_views(sort="relevant")
+
+    body = getattr(reader, "test_page").windows[0]["body"]
+    assert body["clientArguments"]["payload"]["sortType"] == (
+        "ProfileViewSortType_RELEVANCE_DESCENDING"
+    )
+    # Not re-sorted by time: LinkedIn's first stays first.
+    assert [v["public_identifier"] for v in result["viewers"]][:2] == ["old", "new"]
+    assert result["sort"] == "relevant"
+
+
+async def test_the_default_order_is_newest_first():
+    rows = [
+        _row("old", "Old Viewer", "Viewed 3w ago"),
+        _row("new", "New Viewer", "Viewed 1h ago"),
+    ]
+    reader, _ = _reader(_payload(), rows)
+
+    result = await reader.get_profile_views()
+
+    body = getattr(reader, "test_page").windows[0]["body"]
+    assert body["clientArguments"]["payload"]["sortType"] == (
+        "ProfileViewSortType_TIME_DESCENDING"
+    )
+    named = [v["public_identifier"] for v in result["viewers"]]
+    assert named.index("new") < named.index("old")
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"sort": "popular"}, "recent, relevant"),
+        ({"sort": "relevant", "full": False}, "sort needs the full list"),
+    ],
+)
+async def test_an_unusable_sort_is_refused_before_any_request(arguments, message):
+    reader, requests = _reader(_payload())
+
+    with pytest.raises(LinkedInScraperException, match=message):
+        await reader.get_profile_views(**arguments)
+
+    assert requests == []

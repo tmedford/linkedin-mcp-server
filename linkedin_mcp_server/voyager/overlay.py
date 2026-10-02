@@ -1049,6 +1049,7 @@ def install_voyager_overlay(
         company_id: str | None = None,
         industry_id: str | None = None,
         geo_id: str | None = None,
+        sort: str = "recent",
         extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
@@ -1073,6 +1074,10 @@ def install_voyager_overlay(
             industry_id: Only viewers in this industry, by numeric id.
             geo_id: Only viewers in this place, by numeric geo id (the
                 geo_id search_people reports in location_resolved).
+
+            sort: "recent" (default, newest first) or "relevant", LinkedIn's
+                "Sort by most relevant", kept in LinkedIn's order. Needs
+                full=True.
 
             The filters combine, and all need full=True. A private viewer's
             row carries company_id, industry_id and geo_id where LinkedIn
@@ -1138,6 +1143,7 @@ def install_voyager_overlay(
                 company_id=company_id,
                 industry_id=industry_id,
                 geo_id=geo_id,
+                sort=sort,
             )
 
             await ctx.report_progress(progress=100, total=100, message="Complete")

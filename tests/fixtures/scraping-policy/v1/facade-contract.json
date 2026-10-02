@@ -74,7 +74,7 @@
       },
       "get_profile_views": {
         "coroutine": true,
-        "signature": "(self, full: 'bool' = True, days: 'int | None' = None, interesting: 'str | None' = None, company_id: 'str | None' = None, industry_id: 'str | None' = None, geo_id: 'str | None' = None) -> 'dict[str, Any]'"
+        "signature": "(self, full: 'bool' = True, days: 'int | None' = None, interesting: 'str | None' = None, company_id: 'str | None' = None, industry_id: 'str | None' = None, geo_id: 'str | None' = None, sort: 'str' = 'recent') -> 'dict[str, Any]'"
       },
       "get_saved_jobs": {
         "coroutine": true,
@@ -653,6 +653,11 @@
               ],
               "default": null,
               "description": "Only LinkedIn's \"interesting viewers\" of one kind:\n\"can_help_you_get_a_job\", \"senior_leader_in_your_industry\",\n\"senior_leader_with_your_job_function\" or \"has_verifications\"."
+            },
+            "sort": {
+              "default": "recent",
+              "description": "\"recent\" (default, newest first) or \"relevant\", LinkedIn's\n\"Sort by most relevant\", kept in LinkedIn's order. Needs\nfull=True.",
+              "type": "string"
             }
           },
           "type": "object"

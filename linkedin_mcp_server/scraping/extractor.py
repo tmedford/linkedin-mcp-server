@@ -401,6 +401,7 @@ class LinkedInExtractor:
         company_id: str | None = None,
         industry_id: str | None = None,
         geo_id: str | None = None,
+        sort: str = "recent",
     ) -> dict[str, Any]:
         """Read who viewed the signed-in member's profile."""
         return await self._profile_views.get_profile_views(
@@ -410,4 +411,5 @@ class LinkedInExtractor:
             company_id=company_id,
             industry_id=industry_id,
             geo_id=geo_id,
+            sort=sort,
         )

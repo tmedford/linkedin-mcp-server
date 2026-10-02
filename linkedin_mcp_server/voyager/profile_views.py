@@ -164,6 +164,14 @@ TIME_RANGES = {
     365: "WvmpSearchFilterTimeRange_LAST_365_DAYS",
 }
 
+#: The list's two orders, by the name a caller passes. The relevance value is
+#: the one LinkedIn's own page sends for "Sort by most relevant"; measured
+#: 2026-10-02 to reorder the list, where RELEVANCE and MOST_RELEVANT did not.
+SORTS = {
+    "recent": "ProfileViewSortType_TIME_DESCENDING",
+    "relevant": "ProfileViewSortType_RELEVANCE_DESCENDING",
+}
+
 #: LinkedIn's "interesting viewers" filter, by the name a caller passes.
 INTERESTING = {
     "can_help_you_get_a_job": "InterestingViewerType_CAN_HELP_YOU_GET_A_JOB",
@@ -634,6 +642,7 @@ class VoyagerProfileViews(VoyagerReader):
         count: int,
         period: str,
         selections: dict[str, list[str]] | None = None,
+        sort: str = SORTS["recent"],
     ) -> list[dict[str, Any]]:
         """One window of the viewer list, straight from the paging endpoint."""
         answer = await self._session.page.evaluate(
@@ -641,7 +650,7 @@ class VoyagerProfileViews(VoyagerReader):
             {
                 "url": _PAGINATION,
                 "headers": await self._page_headers(),
-                "body": _paging_body(start, count, period, selections),
+                "body": _paging_body(start, count, period, selections, sort),
             },
         )
         status = answer.get("status") if isinstance(answer, dict) else None
@@ -668,7 +677,10 @@ class VoyagerProfileViews(VoyagerReader):
         return rows
 
     async def _all_rows(
-        self, period: str, selections: dict[str, list[str]] | None = None
+        self,
+        period: str,
+        selections: dict[str, list[str]] | None = None,
+        sort: str = SORTS["recent"],
     ) -> tuple[list[dict[str, Any]], bool]:
         """The whole list for a period, and whether its end was reached."""
         rows: list[dict[str, Any]] = []
@@ -677,7 +689,7 @@ class VoyagerProfileViews(VoyagerReader):
             if index:
                 await self._session.delay(PAGE_DELAY)
             window = await self._list_window(
-                index * PAGE_SIZE, PAGE_SIZE, period, selections
+                index * PAGE_SIZE, PAGE_SIZE, period, selections, sort
             )
             viewers = [row for row in window if "aggregate" not in row]
             for row in window:
@@ -705,6 +717,7 @@ class VoyagerProfileViews(VoyagerReader):
         company_id: str | None = None,
         industry_id: str | None = None,
         geo_id: str | None = None,
+        sort: str = "recent",
     ) -> dict[str, Any]:
         """Read who viewed the profile: the JSON highlights, and the full list.
 
@@ -717,6 +730,15 @@ class VoyagerProfileViews(VoyagerReader):
                 f"days was {days!r}. LinkedIn offers these periods: "
                 f"{', '.join(str(d) for d in TIME_RANGES)}. Omit it for "
                 "LinkedIn's default."
+            )
+        if sort not in SORTS:
+            raise LinkedInScraperException(
+                f"sort was {sort!r}. Pass one of: {', '.join(SORTS)}."
+            )
+        if sort != "recent" and not full:
+            raise LinkedInScraperException(
+                "sort needs the full list (full=True). The quick read returns "
+                "LinkedIn's highlights as they are."
             )
         selections: dict[str, list[str]] = {}
         if interesting is not None:
@@ -769,7 +791,9 @@ class VoyagerProfileViews(VoyagerReader):
         list_ended: bool | None = None
         period_applied: bool | None = None
         if full:
-            rows, list_ended = await self._all_rows(TIME_RANGES[days or 90], selections)
+            rows, list_ended = await self._all_rows(
+                TIME_RANGES[days or 90], selections, SORTS[sort]
+            )
             if days is not None:
                 # A row older than the period means the period was ignored.
                 # Nothing older proves little for a long period, so this can
@@ -790,7 +814,9 @@ class VoyagerProfileViews(VoyagerReader):
                 slug = row.get("public_identifier")
                 if slug:
                     if slug in merged:
-                        continue  # rows are newest first; keep the latest view
+                        # Newest first, or most relevant first: either way the
+                        # first row is the one the chosen order puts first.
+                        continue
                     known = exact.get(slug)
                     if known:
                         # The JSON endpoint has the exact time and more.
@@ -812,10 +838,17 @@ class VoyagerProfileViews(VoyagerReader):
                 for slug, known in exact.items():
                     merged.setdefault(slug or known.get("name") or "", known)
             if rows or selections:
-                views["viewers"] = sorted(
-                    merged.values(),
-                    key=lambda v: v.get("viewed_at_iso") or "",
-                    reverse=True,
+                # LinkedIn's relevance has no field to sort by again, so that
+                # order is kept as the list gave it; highlights the list
+                # lacked follow it.
+                views["viewers"] = (
+                    list(merged.values())
+                    if sort == "relevant"
+                    else sorted(
+                        merged.values(),
+                        key=lambda v: v.get("viewed_at_iso") or "",
+                        reverse=True,
+                    )
                 )
                 views["anonymous_viewers"] = anonymous
                 views["aggregates"] = aggregates
@@ -831,6 +864,7 @@ class VoyagerProfileViews(VoyagerReader):
             # read at all; False when the page limit cut the walk short.
             "complete": list_ended,
             "days": days,
+            "sort": sort,
             "filters": {
                 key: value
                 for key, value in (
