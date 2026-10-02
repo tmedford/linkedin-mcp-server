@@ -56,6 +56,10 @@
         "coroutine": true,
         "signature": "(self) -> 'str'"
       },
+      "get_person": {
+        "coroutine": true,
+        "signature": "(self, linkedin_username: 'str', compare_to_me: 'bool' = True) -> 'dict[str, Any]'"
+      },
       "get_saved_jobs": {
         "coroutine": true,
         "signature": "(self, max_pages: 'int' = 3) -> 'dict[str, Any]'"
@@ -127,6 +131,7 @@
       "get_inbox",
       "get_invitations",
       "get_my_profile",
+      "get_person",
       "get_saved_jobs",
       "get_sidebar_profiles",
       "get_thread",
@@ -399,6 +404,30 @@
               "description": "Comma-separated list of extra sections to scrape.\nThe main profile page is always included.\nAvailable sections: experience, education, interests, honors, languages, certifications, skills, projects, contact_info, posts\nExamples: \"experience,education\", \"contact_info\", \"skills,projects\"\nDefault (None) scrapes only the main profile page."
             }
           },
+          "type": "object"
+        },
+        "output": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "get_person": {
+        "input": {
+          "additionalProperties": false,
+          "properties": {
+            "compare_to_me": {
+              "default": true,
+              "description": "When true (the default), also reads your own profile\nonce and returns `common_ground`. Pass false to skip it.",
+              "type": "boolean"
+            },
+            "linkedin_username": {
+              "description": "The /in/ public identifier or a profile URL.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "linkedin_username"
+          ],
           "type": "object"
         },
         "output": {

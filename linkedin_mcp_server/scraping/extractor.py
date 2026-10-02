@@ -21,6 +21,7 @@ from linkedin_mcp_server.scraping.conversations import ConversationReader
 from linkedin_mcp_server.voyager.invitations import VoyagerInvitationsReader
 from linkedin_mcp_server.voyager.messaging import VoyagerMessagingReader
 from linkedin_mcp_server.voyager.message_search import VoyagerMessageSearch
+from linkedin_mcp_server.voyager.person import VoyagerPersonReader
 from linkedin_mcp_server.voyager.person_message import VoyagerPersonMessage
 from linkedin_mcp_server.voyager.thread import VoyagerThreadReader
 from linkedin_mcp_server.voyager.thread_reply import VoyagerThreadReply
@@ -84,6 +85,7 @@ class LinkedInExtractor:
         self._voyager_thread = VoyagerThreadReader(session, navigator)
         self._voyager_search = VoyagerMessageSearch(session, navigator)
         self._person_message = VoyagerPersonMessage(session, navigator)
+        self._voyager_person = VoyagerPersonReader(session, navigator)
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -333,4 +335,12 @@ class LinkedInExtractor:
             linkedin_username,
             message,
             confirm_send=confirm_send,
+        )
+
+    async def get_person(
+        self, linkedin_username: str, compare_to_me: bool = True
+    ) -> dict[str, Any]:
+        """Read a member's whole profile from the API, and what it shares with yours."""
+        return await self._voyager_person.get_person(
+            linkedin_username, compare_to_me=compare_to_me
         )

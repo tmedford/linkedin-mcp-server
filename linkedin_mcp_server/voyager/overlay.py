@@ -597,3 +597,91 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "message_person")
         except Exception as e:
             raise_tool_error(e, "message_person")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Person",
+        # Reads the profile API. No profile page is loaded.
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_person(
+        linkedin_username: str,
+        ctx: Context,
+        compare_to_me: bool = True,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read a person's WHOLE profile from LinkedIn's API, and what you share.
+
+        One request returns every section as structured records with ids and
+        dates, rather than a page of text per section. Use it to understand
+        who someone is and, above all, how the two of you are connected.
+
+        Args:
+            linkedin_username: The /in/ public identifier or a profile URL.
+            ctx: FastMCP context for progress reporting
+            compare_to_me: When true (the default), also reads your own profile
+                once and returns `common_ground`. Pass false to skip it.
+
+        Returns:
+            Dict with url and sections (the standard scraping-tool shape), plus:
+
+            identity: name, headline, summary, public_identifier, profile_urn,
+                location, industry.
+            relationship: "connection" for a first-degree connection, "self"
+                for your own profile, another LinkedIn label otherwise, or
+                None when it could not be read.
+            positions, education, skills, certifications, honors, languages,
+                organizations, volunteering, projects, publications, patents,
+                courses, test_scores: each is {items, returned, total,
+                complete}. Positions carry title, company, company_urn, start,
+                end, location and description, one entry per title held.
+            incomplete_sections: names of sections where the server returned
+                fewer than it has. **Skills are capped at 20**, so skills is
+                usually listed; every other section normally comes back whole.
+
+            common_ground (omitted for your own profile):
+                worked_together_by_employer: one line per employer you were
+                    both at at the same time: company, start, end and months.
+                    **Read this first.** It is the strongest signal.
+                worked_together: the same, title by title, with both
+                    people's entries and the overlapping span of each pair.
+                companies: every shared employer, with both people's entries
+                    and `overlap` (None if the dates never met).
+                schools: shared schools, same shape.
+                organizations, volunteering, certification_authorities,
+                languages, skills: shared names. **A skill missing here is not
+                evidence it is not shared**, since both lists are capped.
+                same_location: whether both profiles name the same location.
+
+            Employers and schools are matched by LinkedIn's id for them
+            (`matched_by: "urn"`); a name is used only when one side typed the
+            place in free text (`matched_by: "name"`).
+
+            Mutual connections are not included; this reads the profile only.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_person"
+            )
+            logger.info("Reading person %s", linkedin_username)
+
+            await ctx.report_progress(progress=0, total=100, message="Reading profile")
+
+            result = await extractor.get_person(
+                linkedin_username, compare_to_me=compare_to_me
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_person")
+        except Exception as e:
+            raise_tool_error(e, "get_person")  # NoReturn

@@ -28,6 +28,7 @@ from linkedin_mcp_server.scraping import session as session_module
 from linkedin_mcp_server.scraping import LinkedInExtractor
 from linkedin_mcp_server.scraping.fields import COMPANY_SECTIONS, PERSON_SECTIONS
 from linkedin_mcp_server.server import create_mcp_server
+from linkedin_mcp_server.voyager import person as voyager_person
 from linkedin_mcp_server.voyager import thread_reply
 
 from .support.policy_trace import (
@@ -1232,6 +1233,80 @@ async def _thread_scenario() -> dict[str, Any]:
     return recorder.trace({"method": "get_thread", "arguments": arguments}, result)
 
 
+def _policy_profile(urn: str, first: str, company: str, start: int) -> dict[str, Any]:
+    """A full-profile answer in the shape LinkedIn returns it, with one job."""
+    group = f"{urn}:group"
+    return {
+        "data": {"*elements": [urn]},
+        "included": [
+            {
+                "entityUrn": urn,
+                "firstName": first,
+                "lastName": "Policy",
+                "publicIdentifier": first.lower(),
+                "*profilePositionGroups": f"{urn}:groups",
+                "*profileSkills": f"{urn}:skills",
+            },
+            {
+                "entityUrn": f"{urn}:groups",
+                "*elements": [group],
+                "paging": {"total": 1},
+            },
+            {"entityUrn": group, "*profilePositionInPositionGroup": f"{group}:rows"},
+            {"entityUrn": f"{group}:rows", "*elements": [f"{group}:job"]},
+            {
+                "entityUrn": f"{group}:job",
+                "title": "Engineer",
+                "companyName": "Analytical Engine",
+                "*company": company,
+                "dateRange": {"start": {"year": start, "month": 1}},
+            },
+            {"entityUrn": f"{urn}:skills", "*elements": [], "paging": {"total": 0}},
+        ],
+    }
+
+
+async def _person_scenario() -> dict[str, Any]:
+    """Record what `get_person` does to the page.
+
+    Four evaluates and no navigation: the profile, how the signed-in member
+    relates to it, who is signed in, and that member's own profile for the
+    comparison. The tool beside it loads the profile page and one more page
+    per section.
+    """
+    recorder = TraceRecorder("get_person__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    me, ada = "urn:li:fsd_profile:ACoAA-me", "urn:li:fsd_profile:ACoAA-ada"
+    company = "urn:li:fsd_company:1"
+    relationship = {
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.dash.relationships.MemberRelationship",
+                "memberRelationshipUnion": {"*connection": "urn:li:fsd_connection:x"},
+            }
+        ]
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps(_policy_profile(ada, "Ada", company, 2015))},
+        {"body": json.dumps(relationship)},
+        {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
+        {"body": json.dumps(_policy_profile(me, "Taylor", company, 2013))},
+    )
+    extractor = _extractor(page)
+    voyager_person.forget_my_profile()
+    try:
+        async with boundaries(recorder, clock):
+            with recorder.context("get_person", "person"):
+                arguments = {"linkedin_username": "ada"}
+                result = await extractor.get_person("ada")
+    finally:
+        voyager_person.forget_my_profile()
+    page.assert_clean()
+    return recorder.trace({"method": "get_person", "arguments": arguments}, result)
+
+
 async def _message_search_scenario() -> dict[str, Any]:
     """Record what `search_messages` does to the page.
 
@@ -1452,6 +1527,7 @@ TOOL_FACADE_METHODS = {
     "get_thread",
     "search_messages",
     "message_person",
+    "get_person",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1529,6 +1605,7 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "conversations-page.json": await _conversations_page_scenario(),
         "invitations.json": await _invitations_scenario(),
         "thread.json": await _thread_scenario(),
+        "person.json": await _person_scenario(),
         "message-search.json": await _message_search_scenario(),
         "person-message-dry-run.json": await _person_message_scenario(False),
         "person-message-sent.json": await _person_message_scenario(True),

@@ -82,6 +82,7 @@ a page-owning collaborator.
 - `get_invitations`
 - `get_my_profile`
 - `get_page_text`
+- `get_person`
 - `get_saved_jobs`
 - `get_sidebar_profiles`
 - `get_thread`
@@ -114,6 +115,7 @@ a page-owning collaborator.
 - `_thread_reply`
 - `_voyager_invitations`
 - `_voyager_messaging`
+- `_voyager_person`
 - `_voyager_search`
 - `_voyager_thread`
 

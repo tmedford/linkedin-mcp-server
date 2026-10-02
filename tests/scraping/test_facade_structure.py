@@ -52,6 +52,7 @@ PUBLIC_SIGNATURES = {
     "search_people": "(self, keywords: 'str', location: 'str | None' = None, network: 'list[str] | None' = None, current_company: 'str | None' = None) -> 'dict[str, Any]'",
     "search_posts": "(self, keywords: 'str', date_posted: 'str | None' = None, max_pages: 'int' = 3) -> 'dict[str, Any]'",
     "get_thread": "(self, thread_id: 'str') -> 'dict[str, Any]'",
+    "get_person": "(self, linkedin_username: 'str', compare_to_me: 'bool' = True) -> 'dict[str, Any]'",
     "search_messages": "(self, keywords: 'str', cursor: 'str | None' = None) -> 'dict[str, Any]'",
     "message_person": "(self, linkedin_username: 'str', message: 'str', *, confirm_send: 'bool') -> 'dict[str, Any]'",
     "reply_to_thread": "(self, thread_id: 'str', message: 'str', *, confirm_send: 'bool') -> 'dict[str, Any]'",
@@ -81,6 +82,7 @@ DELEGATES = {
     "search_people": ("_person", "search_people"),
     "search_posts": ("_posts", "search_posts"),
     "get_thread": ("_voyager_thread", "get_thread"),
+    "get_person": ("_voyager_person", "get_person"),
     "search_messages": ("_voyager_search", "search_messages"),
     "message_person": ("_person_message", "message_person"),
     "reply_to_thread": ("_thread_reply", "reply_to_thread"),
@@ -110,6 +112,7 @@ DELEGATE_CALLS = {
     "search_people": "self._person.search_people(keywords, location=location, network=network, current_company=current_company)",
     "search_posts": "self._posts.search_posts(keywords, date_posted=date_posted, max_pages=max_pages)",
     "get_thread": "self._voyager_thread.get_thread(thread_id)",
+    "get_person": "self._voyager_person.get_person(linkedin_username, compare_to_me=compare_to_me)",
     "search_messages": "self._voyager_search.search_messages(keywords, cursor=cursor)",
     "message_person": "self._person_message.message_person(linkedin_username, message, confirm_send=confirm_send)",
     "reply_to_thread": "self._thread_reply.reply_to_thread(thread_id, message, confirm_send=confirm_send)",
@@ -133,6 +136,7 @@ FACADE_STATE = {
     "_voyager_thread",
     "_voyager_search",
     "_person_message",
+    "_voyager_person",
 }
 
 PERMANENT_ALIASES = {
