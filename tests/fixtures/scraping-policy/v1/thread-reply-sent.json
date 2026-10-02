@@ -1,0 +1,56 @@
+{
+  "call": {
+    "arguments": {
+      "confirm_send": true,
+      "outcome": "sent"
+    },
+    "method": "reply_to_thread"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/me",
+      "call": "reply_to_thread",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "message"
+    },
+    {
+      "arg": {
+        "body": {
+          "dedupeByClientGeneratedToken": false,
+          "mailboxUrn": "urn:li:fsd_profile:ACoAA-me",
+          "message": {
+            "body": {
+              "attributes": [],
+              "text": "New text"
+            },
+            "conversationUrn": "urn:li:msg_conversation:(urn:li:fsd_profile:ACoAA-me,2-policy-thread==)",
+            "originToken": "policy-origin-token",
+            "renderContentUnions": []
+          },
+          "trackingId": "policy-tracking-id"
+        },
+        "url": "https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage"
+      },
+      "call": "reply_to_thread",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "3840cc729d4b",
+      "section": "message"
+    }
+  ],
+  "result": {
+    "delivered_at": "2023-11-14T22:15:00+00:00",
+    "message": "Delivered; LinkedIn returned the message it created.",
+    "message_urn": "urn:li:msg_message:(urn:li:fsd_profile:ACoAA-me,2-new)",
+    "recipient_selected": true,
+    "retry_safe": false,
+    "sent": true,
+    "status": "sent",
+    "thread_id": "2-policy-thread==",
+    "url": "https://www.linkedin.com/messaging/thread/2-policy-thread==/"
+  },
+  "scenario": "reply_to_thread__sent",
+  "schema_version": 1
+}

@@ -18,7 +18,12 @@ from linkedin_mcp_server.scraping.contracts import (
     rate_limited_section_error as rate_limited_section_error,
 )
 from linkedin_mcp_server.scraping.conversations import ConversationReader
-from linkedin_mcp_server.scraping.voyager_messaging import VoyagerMessagingReader
+from linkedin_mcp_server.voyager.invitations import VoyagerInvitationsReader
+from linkedin_mcp_server.voyager.messaging import VoyagerMessagingReader
+from linkedin_mcp_server.voyager.message_search import VoyagerMessageSearch
+from linkedin_mcp_server.voyager.person_message import VoyagerPersonMessage
+from linkedin_mcp_server.voyager.thread import VoyagerThreadReader
+from linkedin_mcp_server.voyager.thread_reply import VoyagerThreadReply
 from linkedin_mcp_server.scraping.feed import FeedScraper
 from linkedin_mcp_server.scraping.job_pages import JobPageReader
 from linkedin_mcp_server.scraping.jobs import JobScraper
@@ -74,6 +79,11 @@ class LinkedInExtractor:
             session, navigator, content, profile_page
         )
         self._voyager_messaging = VoyagerMessagingReader(session, navigator)
+        self._voyager_invitations = VoyagerInvitationsReader(session, navigator)
+        self._thread_reply = VoyagerThreadReply(session, navigator)
+        self._voyager_thread = VoyagerThreadReader(session, navigator)
+        self._voyager_search = VoyagerMessageSearch(session, navigator)
+        self._person_message = VoyagerPersonMessage(session, navigator)
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -241,6 +251,19 @@ class LinkedInExtractor:
             category=category,
         )
 
+    async def get_invitations(
+        self,
+        direction: str = "received",
+        start: int = 0,
+        count: int = 50,
+    ) -> dict[str, Any]:
+        """Read one page of the invitation board from the relationships API."""
+        return await self._voyager_invitations.get_invitations(
+            direction=direction,
+            start=start,
+            count=count,
+        )
+
     async def get_conversation(
         self,
         linkedin_username: str | None = None,
@@ -272,4 +295,42 @@ class LinkedInExtractor:
             message,
             confirm_send=confirm_send,
             profile_urn=profile_urn,
+        )
+
+    async def reply_to_thread(
+        self,
+        thread_id: str,
+        message: str,
+        *,
+        confirm_send: bool,
+    ) -> dict[str, Any]:
+        """Reply inside an existing thread with explicit confirmation gating."""
+        return await self._thread_reply.reply_to_thread(
+            thread_id,
+            message,
+            confirm_send=confirm_send,
+        )
+
+    async def get_thread(self, thread_id: str) -> dict[str, Any]:
+        """Read one thread's recent messages from the messaging API."""
+        return await self._voyager_thread.get_thread(thread_id)
+
+    async def search_messages(
+        self, keywords: str, cursor: str | None = None
+    ) -> dict[str, Any]:
+        """Read one page of conversations matching a keyword from the API."""
+        return await self._voyager_search.search_messages(keywords, cursor=cursor)
+
+    async def message_person(
+        self,
+        linkedin_username: str,
+        message: str,
+        *,
+        confirm_send: bool,
+    ) -> dict[str, Any]:
+        """Message a person through the API with explicit confirmation gating."""
+        return await self._person_message.message_person(
+            linkedin_username,
+            message,
+            confirm_send=confirm_send,
         )

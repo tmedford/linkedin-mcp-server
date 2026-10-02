@@ -1,0 +1,47 @@
+{
+  "call": {
+    "arguments": {},
+    "method": "get_invitations"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/relationships/invitationViews?q=receivedInvitation&start=0&count=50",
+      "call": "get_invitations",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "invitations"
+    }
+  ],
+  "result": {
+    "at_end": true,
+    "count": 1,
+    "direction": "received",
+    "invitations": [
+      {
+        "has_note": true,
+        "has_note_flag": true,
+        "headline": "Engineer",
+        "invitation_type": "CONNECTION",
+        "invitation_urn": "urn:li:invitation:1",
+        "name": "Ada Lovelace",
+        "note": "Happy to connect",
+        "note_length": 16,
+        "profile_slug": "ada-lovelace",
+        "profile_urn": "urn:li:member:1",
+        "sent_at_iso": "2023-11-14T22:13:20Z",
+        "shared_secret": "s3cret",
+        "state": "PENDING"
+      }
+    ],
+    "page_size": 50,
+    "sections": {
+      "invitations": "Received invitations (1)\nAda Lovelace (ada-lovelace) — Engineer — PENDING — sent 2023-11-14T22:13:20Z — note (16 chars)"
+    },
+    "start": 0,
+    "url": "https://www.linkedin.com/voyager/api/relationships/invitationViews?q=receivedInvitation&start=0&count=50",
+    "zero_reason": null
+  },
+  "scenario": "get_invitations__baseline",
+  "schema_version": 1
+}

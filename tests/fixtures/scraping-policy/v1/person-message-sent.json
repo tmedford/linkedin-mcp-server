@@ -1,0 +1,76 @@
+{
+  "call": {
+    "arguments": {
+      "confirm_send": true,
+      "outcome": "sent"
+    },
+    "method": "message_person"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/me",
+      "call": "message_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "message"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ada-lovelace",
+      "call": "message_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "message"
+    },
+    {
+      "arg": {
+        "body": {
+          "dedupeByClientGeneratedToken": false,
+          "hostRecipientUrns": [
+            "urn:li:fsd_profile:ACoAA-policy"
+          ],
+          "mailboxUrn": "urn:li:fsd_profile:ACoAA-me",
+          "message": {
+            "body": {
+              "attributes": [],
+              "text": "New text"
+            },
+            "originToken": "policy-origin-token",
+            "renderContentUnions": []
+          },
+          "trackingId": "policy-tracking-id"
+        },
+        "url": "https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage"
+      },
+      "call": "message_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "3840cc729d4b",
+      "section": "message"
+    }
+  ],
+  "result": {
+    "delivered_at": "2023-11-14T22:15:00+00:00",
+    "message": "Delivered; LinkedIn returned the message it created.",
+    "message_urn": "urn:li:msg_message:(urn:li:fsd_profile:ACoAA-me,2-new)",
+    "recipient_name": "Ada Lovelace",
+    "recipient_selected": true,
+    "recipient_urn": "urn:li:fsd_profile:ACoAA-policy",
+    "recipients": [
+      {
+        "name": "Ada Lovelace",
+        "urn": "urn:li:fsd_profile:ACoAA-policy"
+      }
+    ],
+    "retry_safe": false,
+    "sent": true,
+    "status": "sent",
+    "thread_id": "2-policy-thread==",
+    "thread_url": "https://www.linkedin.com/messaging/thread/2-policy-thread==/",
+    "thread_urn": "urn:li:msg_conversation:(urn:li:fsd_profile:ACoAA-me,2-policy-thread==)",
+    "url": "https://www.linkedin.com/in/ada-lovelace/"
+  },
+  "scenario": "message_person__sent",
+  "schema_version": 1
+}

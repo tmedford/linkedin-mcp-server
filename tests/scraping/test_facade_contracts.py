@@ -46,6 +46,7 @@ TOOL_DELEGATES = {
     "get_company_posts": "extract_page",
     "get_company_profile": "scrape_company",
     "get_conversations": "get_conversations",
+    "get_invitations": "get_invitations",
     "get_conversation": "get_conversation",
     "get_feed": "extract_feed",
     "get_inbox": "get_inbox",
@@ -60,6 +61,10 @@ TOOL_DELEGATES = {
     "search_people": "search_people",
     "search_posts": "search_posts",
     "send_message": "send_message",
+    "reply_to_thread": "reply_to_thread",
+    "get_thread": "get_thread",
+    "search_messages": "search_messages",
+    "message_person": "message_person",
 }
 
 
@@ -99,6 +104,11 @@ async def test_constructor_export_and_dependency_use_the_same_facade(monkeypatch
         "_person",
         "_posts",
         "_voyager_messaging",
+        "_voyager_invitations",
+        "_thread_reply",
+        "_voyager_thread",
+        "_voyager_search",
+        "_person_message",
     }
     assert set(vars(extractor)) == expected_state
     assert type(constructed) is LinkedInExtractor
@@ -121,9 +131,24 @@ async def test_registered_tools_and_extractor_delegates_are_counted_separately()
     tools = await create_mcp_server().list_tools()
     tool_names = {tool.name for tool in tools}
 
-    assert len(tool_names) == 20
-    assert tool_names == {*TOOL_DELEGATES, "close_session"}
-    assert len(TOOL_DELEGATES) == 19
+    assert len(tool_names) == 21
+    # The overlay supersedes get_inbox, so the tool is no longer served while
+    # the extractor delegate behind it stays exactly as upstream wrote it --
+    # superseding is done by not registering a tool, never by deleting their
+    # code. That asymmetry is the point, so it is named here rather than
+    # smuggled into a count: the delegate set still has get_inbox and the
+    # served set must not.
+    assert "get_inbox" in TOOL_DELEGATES
+    assert "get_inbox" not in tool_names
+    assert "get_conversation" in TOOL_DELEGATES
+    assert "get_conversation" not in tool_names
+    assert tool_names == {*TOOL_DELEGATES, "close_session"} - {
+        "get_inbox",
+        "get_conversation",
+        "search_conversations",
+        "send_message",
+    }
+    assert len(TOOL_DELEGATES) == 24
     assert set(TOOL_DELEGATES.values()) == TOOL_FACADE_METHODS
     assert "close_session" not in TOOL_DELEGATES
 
@@ -499,7 +524,7 @@ def test_facade_methods_are_exactly_the_frozen_coroutine_surface():
     }
 
     assert actual == expected
-    assert len(TOOL_FACADE_METHODS) == 19
+    assert len(TOOL_FACADE_METHODS) == 24
     assert len(COMPATIBILITY_METHODS) == 2
 
 

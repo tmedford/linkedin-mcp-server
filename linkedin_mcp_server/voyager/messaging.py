@@ -20,7 +20,6 @@ credential is handled here, and there is no second auth path to keep in sync.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 import re
@@ -28,6 +27,7 @@ from typing import Any
 
 from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 
+from linkedin_mcp_server.voyager.client import VoyagerReader
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
     LinkedInScraperException,
@@ -163,12 +163,39 @@ def forget_cached_query() -> None:
     _QUERY_CACHE = None
 
 
-class VoyagerMessagingReader:
-    """Page the full conversation list without touching the DOM."""
+# LinkedIn puts an OBFUSCATED member id where a vanity handle would go:
+# /in/ACoAADAv-8oB... rather than /in/ryan-dart. Measured against a live
+# mailbox, all 25 rows came back in the obfuscated form and none as a handle.
+# The two are not interchangeable - a vanity handle is what a human-facing
+# record files under, while the obfuscated id is stable and unique but opaque -
+# so they are reported separately and never conflated.
+_OBFUSCATED_ID = re.compile(r"^ACoAA[A-Za-z0-9_-]+$")
 
-    def __init__(self, session: Any, navigator: Any):
-        self._session = session
-        self._navigator = navigator
+
+def _handle(profile_url: str) -> str:
+    """Return the VANITY handle from a profile URL, or "" when there is none.
+
+    An obfuscated member id is deliberately NOT returned here. It is a valid
+    identifier but it is not a handle, and reporting it as one would file a
+    person under a key that cannot match any handle-keyed record.
+    """
+    match = re.search(r"/in/([^/?#]+)", profile_url or "")
+    if not match:
+        return ""
+    candidate = match.group(1)
+    return "" if _OBFUSCATED_ID.match(candidate) else candidate
+
+
+class VoyagerMessagingReader(VoyagerReader):
+    """Page the full conversation list without touching the DOM.
+
+    Construction, the authenticated fetch and the failure typing come from
+    :class:`~linkedin_mcp_server.voyager.client.VoyagerReader`; what is left
+    here is what is specific to conversations -- discovering the query the
+    messaging page issues, stripping its cursor, and normalizing rows.
+    """
+
+    surface = "conversations"
 
     # ------------------------------------------------------------------ #
     # Query discovery
@@ -322,42 +349,6 @@ class VoyagerMessagingReader:
     # ------------------------------------------------------------------ #
     # Fetching
     # ------------------------------------------------------------------ #
-    async def _fetch(self, url: str) -> dict[str, Any]:
-        """Issue one Voyager GET from inside the authenticated page."""
-        raw = await self._session.page.evaluate(
-            """async (target) => {
-                const m = document.cookie.match(/JSESSIONID="?([^";]+)/);
-                if (!m) return {error: 'no JSESSIONID cookie in page context'};
-                const r = await fetch(target, {
-                    credentials: 'include',
-                    headers: {
-                        'csrf-token': m[1],
-                        'accept': 'application/vnd.linkedin.normalized+json+2.1',
-                    },
-                });
-                if (r.status !== 200) return {error: 'HTTP ' + r.status, status: r.status};
-                return {body: await r.text()};
-            }""",
-            url,
-        )
-        if not isinstance(raw, dict) or raw.get("error"):
-            detail = (raw or {}).get("error", "unknown")
-            status = (raw or {}).get("status")
-            # Auth and rate-limit failures keep their own types so a caller can
-            # tell "sign in again" and "slow down" apart from "this broke", and
-            # so neither is retried as though it were transient noise.
-            if status in (401, 403):
-                raise AuthenticationError(
-                    f"Voyager conversations request rejected: {detail}"
-                )
-            if status == 429:
-                raise RateLimitError(
-                    f"Voyager conversations request rate limited: {detail}"
-                )
-            raise LinkedInScraperException(
-                f"Voyager conversations request failed: {detail}"
-            )
-        return json.loads(raw["body"])
 
     @staticmethod
     def _conversations(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -432,10 +423,19 @@ class VoyagerMessagingReader:
             member = (item.get("participantType") or {}).get("member") or {}
             first = (member.get("firstName") or {}).get("text") or ""
             last = (member.get("lastName") or {}).get("text") or ""
+            profile_url = member.get("profileUrl") or ""
             out[item.get("entityUrn", "")] = {
                 "name": f"{first} {last}".strip(),
                 "headline": (member.get("headline") or {}).get("text") or "",
-                "profile_urn": member.get("profileUrl") or item.get("hostIdentityUrn"),
+                # Two different identifiers, kept apart on purpose. The urn is
+                # stable but opaque; the slug is what the ledger keys on, and
+                # it only exists when LinkedIn hands back a profile URL.
+                "profile_urn": item.get("hostIdentityUrn") or "",
+                "profile_url": profile_url,
+                # Populated only when LinkedIn actually returns a vanity URL.
+                # In practice it usually does not; profile_urn is the reliable
+                # identifier and this is the convenience when it exists.
+                "profile_handle": _handle(profile_url),
             }
         return out
 
@@ -478,6 +478,15 @@ class VoyagerMessagingReader:
             or (conversation.get("headlineText") or {}).get("text"),
             "participants": [p["name"] for p in people if p["name"]],
             "headlines": [p["headline"] for p in people if p["headline"]],
+            # The identifiers, structured. participants/headlines stay as they
+            # are because the routine reads them, but they are parallel arrays
+            # of strings and cannot say WHICH person a headline belongs to, nor
+            # carry an id at all. people is the one to build on.
+            "people": people,
+            # The identifier that is always present. Handles are reported per
+            # person in `people` and are frequently absent, so a list of them
+            # would silently under-represent the participants.
+            "participant_urns": [p["profile_urn"] for p in people if p["profile_urn"]],
             "last_activity_at": conversation.get("lastActivityAt"),
             "last_activity_iso": self._iso(conversation.get("lastActivityAt")),
             "last_read_at": conversation.get("lastReadAt"),
@@ -627,15 +636,29 @@ class VoyagerMessagingReader:
         The agent calling this is already a loop. It does not need a second one
         hidden inside a tool call.
         """
+        # Both guards name OMITTING the argument first, because that is the
+        # remedy every caller can perform. Saying only "pass None" strands a
+        # caller whose client cannot express null: on 2026-09-17 an agent read
+        # "Pass None for the first page", concluded page one was unreachable,
+        # and reported this tool dead for two runs -- while omitting the
+        # argument worked the whole time and the schema never marked it
+        # required. An error that names an impossible remedy reads as a dead
+        # end, so name the possible one first.
         if category is not None and not category.strip():
             raise LinkedInScraperException(
-                "category was blank. Pass None for no filter, or one of: "
-                f"{', '.join(sorted(KNOWN_CATEGORIES))}."
+                "category was blank. OMIT the argument to inherit the "
+                "messaging page's own category (in practice PRIMARY_INBOX), "
+                f"or pass one of: {', '.join(sorted(KNOWN_CATEGORIES))}. "
+                "Omitting is not 'no filter' -- every conversations query "
+                "carries a category and there is none meaning 'all'."
             )
         if cursor is not None and not cursor.strip():
             raise LinkedInScraperException(
-                "cursor was blank. Pass None for the first page, or a "
-                "next_cursor from a previous call."
+                "cursor was blank. OMIT the argument entirely for the first "
+                "page, or pass a next_cursor from a previous call. An empty "
+                "string is rejected rather than treated as the first page, "
+                "because a paging loop whose cursor silently went blank would "
+                "otherwise re-read page one forever."
             )
 
         me = self._me_profile_id((await self._discover_query())[0])
