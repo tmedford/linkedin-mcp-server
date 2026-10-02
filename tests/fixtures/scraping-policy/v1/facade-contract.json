@@ -48,6 +48,10 @@
         "coroutine": true,
         "signature": "(self, direction: 'str' = 'received', start: 'int' = 0, count: 'int' = 50) -> 'dict[str, Any]'"
       },
+      "get_mutual_connections": {
+        "coroutine": true,
+        "signature": "(self, linkedin_username: 'str', start: 'int' = 0, count: 'int' = 40) -> 'dict[str, Any]'"
+      },
       "get_my_profile": {
         "coroutine": true,
         "signature": "(self, sections: 'set[str] | None' = None, callbacks: 'ProgressCallback | None' = None, max_scrolls: 'int | None' = None) -> 'dict[str, Any]'"
@@ -59,6 +63,10 @@
       "get_person": {
         "coroutine": true,
         "signature": "(self, linkedin_username: 'str', compare_to_me: 'bool' = True) -> 'dict[str, Any]'"
+      },
+      "get_person_posts": {
+        "coroutine": true,
+        "signature": "(self, linkedin_username: 'str', count: 'int' = 10, cursor: 'str | None' = None) -> 'dict[str, Any]'"
       },
       "get_saved_jobs": {
         "coroutine": true,
@@ -130,8 +138,10 @@
       "get_conversations",
       "get_inbox",
       "get_invitations",
+      "get_mutual_connections",
       "get_my_profile",
       "get_person",
+      "get_person_posts",
       "get_saved_jobs",
       "get_sidebar_profiles",
       "get_thread",
@@ -373,6 +383,35 @@
           "type": "object"
         }
       },
+      "get_mutual_connections": {
+        "input": {
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "default": 40,
+              "description": "how many to ask for.",
+              "type": "integer"
+            },
+            "linkedin_username": {
+              "description": "The /in/ public identifier or a profile URL.",
+              "type": "string"
+            },
+            "start": {
+              "default": 0,
+              "description": "0-based offset. Paging is the caller's loop.",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "linkedin_username"
+          ],
+          "type": "object"
+        },
+        "output": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
       "get_my_profile": {
         "input": {
           "additionalProperties": false,
@@ -419,6 +458,42 @@
               "default": true,
               "description": "When true (the default), also reads your own profile\nonce and returns `common_ground`. Pass false to skip it.",
               "type": "boolean"
+            },
+            "linkedin_username": {
+              "description": "The /in/ public identifier or a profile URL.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "linkedin_username"
+          ],
+          "type": "object"
+        },
+        "output": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "get_person_posts": {
+        "input": {
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "default": 10,
+              "description": "how many to ask for.",
+              "type": "integer"
+            },
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "next_cursor from a previous call. OMIT for the first page.\nThis endpoint pages only by cursor; there is no offset."
             },
             "linkedin_username": {
               "description": "The /in/ public identifier or a profile URL.",

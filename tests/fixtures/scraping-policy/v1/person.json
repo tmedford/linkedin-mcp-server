@@ -23,6 +23,22 @@
       "section": "person"
     },
     {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ada&decorationId=com.linkedin.voyager.dash.deco.identity.profile.ProfileContactInfo-2",
+      "call": "get_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/profiles/ACoAA-ada/memberConnections?q=inCommon&start=0&count=40",
+      "call": "get_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
       "arg": "https://www.linkedin.com/voyager/api/me",
       "call": "get_person",
       "kind": "evaluate",
@@ -112,6 +128,7 @@
         }
       ]
     },
+    "contact": {},
     "courses": {
       "complete": null,
       "items": [],
@@ -141,6 +158,19 @@
       "items": [],
       "returned": 0,
       "total": null
+    },
+    "mutual_connections": {
+      "complete": true,
+      "items": [
+        {
+          "distance": "DISTANCE_1",
+          "name": "Grace Hopper",
+          "public_identifier": "grace-hopper"
+        }
+      ],
+      "returned": 1,
+      "start": 0,
+      "total": 1
     },
     "organizations": {
       "complete": null,

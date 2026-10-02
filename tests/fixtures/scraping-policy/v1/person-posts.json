@@ -1,0 +1,47 @@
+{
+  "call": {
+    "arguments": {
+      "linkedin_username": "ada"
+    },
+    "method": "get_person_posts"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ada",
+      "call": "get_person_posts",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/profileUpdatesV2?count=10&includeLongTermHistory=true&moduleKey=member-shares%3Aphone&numComments=0&numLikes=0&profileUrn=urn%3Ali%3Afsd_profile%3AACoAA-ada&q=memberShareFeed",
+      "call": "get_person_posts",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    }
+  ],
+  "result": {
+    "at_end": true,
+    "count": 1,
+    "next_cursor": null,
+    "page_size": 10,
+    "posts": [
+      {
+        "activity_urn": "urn:li:activity:7457533446958170112",
+        "author": "Ada Lovelace",
+        "posted_at_iso": "2026-05-05T20:55+00:00",
+        "text": "On the engine",
+        "url": "https://www.linkedin.com/feed/update/urn:li:activity:7457533446958170112/"
+      }
+    ],
+    "sections": {
+      "posts": "Ada Lovelace - 2026-05-05T20:55+00:00\nOn the engine"
+    },
+    "url": "https://www.linkedin.com/in/ada/recent-activity/all/"
+  },
+  "scenario": "get_person_posts__baseline",
+  "schema_version": 1
+}

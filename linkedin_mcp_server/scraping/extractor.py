@@ -344,3 +344,19 @@ class LinkedInExtractor:
         return await self._voyager_person.get_person(
             linkedin_username, compare_to_me=compare_to_me
         )
+
+    async def get_mutual_connections(
+        self, linkedin_username: str, start: int = 0, count: int = 40
+    ) -> dict[str, Any]:
+        """Read one page of the connections you share with a member."""
+        return await self._voyager_person.get_mutual_connections(
+            linkedin_username, start=start, count=count
+        )
+
+    async def get_person_posts(
+        self, linkedin_username: str, count: int = 10, cursor: str | None = None
+    ) -> dict[str, Any]:
+        """Read one page of a member's posts and reposts from the API."""
+        return await self._voyager_person.get_person_posts(
+            linkedin_username, count=count, cursor=cursor
+        )

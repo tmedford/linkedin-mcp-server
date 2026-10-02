@@ -1266,12 +1266,74 @@ def _policy_profile(urn: str, first: str, company: str, start: int) -> dict[str,
     }
 
 
+_POLICY_MUTUAL = {
+    "data": {
+        "elements": [
+            {
+                "*miniProfile": "urn:li:fs_miniProfile:ACoAA-grace",
+                "distance": {"value": "DISTANCE_1"},
+            }
+        ],
+        "paging": {"total": 1},
+    },
+    "included": [
+        {
+            "entityUrn": "urn:li:fs_miniProfile:ACoAA-grace",
+            "firstName": "Grace",
+            "lastName": "Hopper",
+            "publicIdentifier": "grace-hopper",
+        }
+    ],
+}
+
+
+async def _person_extra_scenario(method: str) -> dict[str, Any]:
+    """Record what the two paged person reads do to the page.
+
+    Two evaluates each and no navigation: the member is resolved to an id,
+    then one page is read.
+    """
+    recorder = TraceRecorder(f"{method}__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    resolved = {"data": {"*elements": ["urn:li:fsd_profile:ACoAA-ada"]}, "included": []}
+    activity = "urn:li:activity:7457533446958170112"
+    posts = {
+        "data": {"*elements": ["urn:li:fs_updateV2:1"]},
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.feed.render.UpdateV2",
+                "entityUrn": "urn:li:fs_updateV2:1",
+                "updateMetadata": {"urn": activity},
+                "actor": {"name": {"text": "Ada Lovelace"}},
+                "commentary": {"text": {"text": "On the engine"}},
+            }
+        ],
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps(resolved)},
+        {
+            "body": json.dumps(
+                _POLICY_MUTUAL if method == "get_mutual_connections" else posts
+            )
+        },
+    )
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context(method, "person"):
+            arguments = {"linkedin_username": "ada"}
+            result = await getattr(extractor, method)("ada")
+    page.assert_clean()
+    return recorder.trace({"method": method, "arguments": arguments}, result)
+
+
 async def _person_scenario() -> dict[str, Any]:
     """Record what `get_person` does to the page.
 
-    Four evaluates and no navigation: the profile, how the signed-in member
-    relates to it, who is signed in, and that member's own profile for the
-    comparison. The tool beside it loads the profile page and one more page
+    Six evaluates and no navigation: the profile, how the signed-in member
+    relates to it, its contact fields, the connections the two share, who is
+    signed in, and that member's own profile for the comparison. The tool beside it loads the profile page and one more page
     per section.
     """
     recorder = TraceRecorder("get_person__baseline", _COMMON_ALLOWED)
@@ -1291,6 +1353,8 @@ async def _person_scenario() -> dict[str, Any]:
         "evaluate:voyager_conversations_fetch",
         {"body": json.dumps(_policy_profile(ada, "Ada", company, 2015))},
         {"body": json.dumps(relationship)},
+        {"body": json.dumps({"included": []})},
+        {"body": json.dumps(_POLICY_MUTUAL)},
         {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
         {"body": json.dumps(_policy_profile(me, "Taylor", company, 2013))},
     )
@@ -1528,6 +1592,8 @@ TOOL_FACADE_METHODS = {
     "search_messages",
     "message_person",
     "get_person",
+    "get_mutual_connections",
+    "get_person_posts",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1606,6 +1672,8 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "invitations.json": await _invitations_scenario(),
         "thread.json": await _thread_scenario(),
         "person.json": await _person_scenario(),
+        "person-mutual.json": await _person_extra_scenario("get_mutual_connections"),
+        "person-posts.json": await _person_extra_scenario("get_person_posts"),
         "message-search.json": await _message_search_scenario(),
         "person-message-dry-run.json": await _person_message_scenario(False),
         "person-message-sent.json": await _person_message_scenario(True),

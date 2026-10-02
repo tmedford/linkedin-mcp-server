@@ -51,7 +51,9 @@ An MCP server that connects AI assistants like Claude to LinkedIn through your o
 | `get_conversation` | Read a specific messaging conversation by username or thread ID |
 | `search_conversations` | Search messages by keyword |
 | `send_message` | Compose/send a new message to a LinkedIn user (requires confirmation; profile-based targeting may open a separate DM instead of replying in an existing thread — see #483) |
-| `get_person` | Read a person's whole profile from LinkedIn's API in one request: every position, school, certification, honor, language and more as structured records with ids and dates. Also returns `common_ground` with your own profile, including employers where your dates overlapped (`worked_together`) and shared schools |
+| `get_person` | Read a person's whole profile from LinkedIn's API in one request: every position, school, certification, honor, language and more as structured records with ids and dates. Also returns contact info, the first 40 mutual connections, and `common_ground` with your own profile, including employers where your dates overlapped (`worked_together`) and shared schools |
+| `get_mutual_connections` | Page through the connections you share with a person, with LinkedIn's own total and its suggested introduction ask for each. These are the people who could introduce you |
+| `get_person_posts` | Read a person's posts and reposts from the API, with real timestamps, engagement counts, and the original of anything reshared |
 | `get_thread` | Read the recent messages of one messaging thread from the messaging API, by thread id or `thread_url`. Each message comes back as a record (sender, time, text) and the thread is not opened, so it stays unread. Returns the recent tail of a long thread, not its full history |
 | `search_messages` | Find conversations by keyword through the messaging API, one page of 20, across inbox, archive and spam. No result is opened, so nothing is marked read |
 | `message_person` | Send a message to a person by profile through the messaging API (requires confirmation). Works where the profile exposes no usable Message button, and returns the thread the message landed in |

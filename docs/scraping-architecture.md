@@ -80,9 +80,11 @@ a page-owning collaborator.
 - `get_conversations`
 - `get_inbox`
 - `get_invitations`
+- `get_mutual_connections`
 - `get_my_profile`
 - `get_page_text`
 - `get_person`
+- `get_person_posts`
 - `get_saved_jobs`
 - `get_sidebar_profiles`
 - `get_thread`

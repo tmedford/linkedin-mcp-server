@@ -633,6 +633,16 @@ def install_voyager_overlay(
             relationship: "connection" for a first-degree connection, "self"
                 for your own profile, another LinkedIn label otherwise, or
                 None when it could not be read.
+            contact: what the member shares with you: email, phones, websites,
+                twitter, messengers, address, birthday. Only fields they share
+                appear. {} means the read worked and nothing is shared; None
+                means the read failed.
+            mutual_connections (omitted for your own profile): {items,
+                returned, start, total, complete}. The people you are both
+                connected to, which is who could introduce you. Each has name,
+                headline, public_identifier, profile_urn and LinkedIn's own
+                suggested_ask. Up to 40 are included; when `complete` is false
+                call get_mutual_connections for the rest.
             positions, education, skills, certifications, honors, languages,
                 organizations, volunteering, projects, publications, patents,
                 courses, test_scores: each is {items, returned, total,
@@ -660,7 +670,7 @@ def install_voyager_overlay(
             (`matched_by: "urn"`); a name is used only when one side typed the
             place in free text (`matched_by: "name"`).
 
-            Mutual connections are not included; this reads the profile only.
+            Posts are not included; call get_person_posts for them.
         """
         try:
             extractor = extractor or await get_ready_extractor(
@@ -685,3 +695,137 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "get_person")
         except Exception as e:
             raise_tool_error(e, "get_person")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Mutual Connections",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_mutual_connections(
+        linkedin_username: str,
+        ctx: Context,
+        start: int = 0,
+        count: int = 40,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read ONE page of the connections you share with a person.
+
+        These are the people who could introduce you. get_person already
+        returns the first 40 with the total; use this to page through the rest,
+        or when the mutual connections are all you need.
+
+        Args:
+            linkedin_username: The /in/ public identifier or a profile URL.
+            ctx: FastMCP context for progress reporting
+            start: 0-based offset. Paging is the caller's loop.
+            count: how many to ask for.
+
+        Returns:
+            Dict with url and sections (the standard scraping-tool shape), plus
+            mutual_connections, count, start, page_size, total and at_end.
+
+            Each connection has name, headline, public_identifier, profile_urn,
+            distance, and suggested_ask: the text LinkedIn itself pre-fills
+            when you ask that person for an introduction.
+
+            total is LinkedIn's own count of mutual connections. at_end is
+            measured against it: True when this page reaches the total, False
+            when there are more, and None for an empty page.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_mutual_connections"
+            )
+            logger.info("Reading mutual connections (start=%s)", start)
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Reading mutual connections"
+            )
+
+            result = await extractor.get_mutual_connections(
+                linkedin_username, start=start, count=count
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_mutual_connections")
+        except Exception as e:
+            raise_tool_error(e, "get_mutual_connections")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Person Posts",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_person_posts(
+        linkedin_username: str,
+        ctx: Context,
+        count: int = 10,
+        cursor: str | None = None,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read ONE page of a person's posts and reposts from LinkedIn's API.
+
+        Use it to see what someone has been saying lately before you write to
+        them.
+
+        Args:
+            linkedin_username: The /in/ public identifier or a profile URL.
+            ctx: FastMCP context for progress reporting
+            count: how many to ask for.
+            cursor: next_cursor from a previous call. OMIT for the first page.
+                This endpoint pages only by cursor; there is no offset.
+
+        Returns:
+            Dict with url and sections (the standard scraping-tool shape), plus
+            posts, count, page_size, next_cursor and at_end.
+
+            Each post has activity_urn, url, posted_at_iso, author, text, and
+            likes, comments and shares where LinkedIn returned them.
+
+            Three kinds of entry come back and they read differently:
+            - their own post: `author` is them and `text` is what they wrote.
+            - a reshare with their comment: `text` is their comment, and
+              reshared_author and reshared_text are the original.
+            - a plain repost: repost_header says so, and `author`, `text` and
+              **posted_at_iso are the ORIGINAL's**, not the repost's.
+
+            posted_at_iso is read from the activity id, which encodes its
+            creation time. at_end is True when fewer than `count` came back,
+            False for a full page, and None for an empty page.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_person_posts"
+            )
+            logger.info("Reading posts (cursor=%s)", bool(cursor))
+
+            await ctx.report_progress(progress=0, total=100, message="Reading posts")
+
+            result = await extractor.get_person_posts(
+                linkedin_username, count=count, cursor=cursor
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_person_posts")
+        except Exception as e:
+            raise_tool_error(e, "get_person_posts")  # NoReturn

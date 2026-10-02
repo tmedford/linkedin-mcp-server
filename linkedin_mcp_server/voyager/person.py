@@ -31,15 +31,40 @@ which is the point of this tool: ``common_ground`` is computed, not inferred.
   key says how the signed-in member relates to this one: ``self``,
   ``*connection`` for a first-degree connection.
 
-**Not measured:** whether this read registers as a profile view. The profile
+**Contact info, mutual connections and posts are three more REST reads.** The
+pages that show them are rendered on the server now and issue no data request
+of their own, so there was nothing to observe; each endpoint below was found by
+asking for it and reading the answer, the same day.
+
+- ``...profile.ProfileContactInfo-2`` on the same finder returns the contact
+  fields the member lets this viewer see: websites, email, phone numbers,
+  Twitter handles, messengers, address, birthday. A field the member does not
+  share is null, which is not the same as the member having none.
+- ``identity/profiles/<id>/memberConnections?q=inCommon`` returns the people
+  both members are connected to, with ``paging.total``. Each row carries the
+  connection's ``MiniProfile`` and an introduction insight. This is the answer
+  to "who could introduce us". It needs the member's id, not their public
+  identifier.
+- ``identity/profileUpdatesV2?q=memberShareFeed&profileUrn=<urn>`` returns the
+  member's posts and reposts. The order is ``data['*elements']``; ``included``
+  also holds the originals of reshares, so reading ``included`` alone doubles
+  them. An activity id is a snowflake whose high bits are its creation time in
+  milliseconds, which is where ``posted_at_iso`` comes from; checked against
+  LinkedIn's own "5 months ago" on six posts.
+  It pages by ``paginationToken`` and ignores ``start``: an offset of five
+  returned the first five again.
+
+The legacy ``profileContactInfo`` and ``networkinfo`` routes answer HTTP 410.
+
+**Not measured:** whether these reads register as a profile view. The profile
 page's own tracking is a separate request this does not make, but that has not
-been confirmed from the other side. Mutual connections are not in this payload
-and are not reported.
+been confirmed from the other side.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -56,6 +81,13 @@ _PROFILES = "https://www.linkedin.com/voyager/api/identity/dash/profiles"
 _DECORATION = "com.linkedin.voyager.dash.deco.identity.profile."
 FULL_PROFILE = "FullProfileWithEntities-93"
 TOP_CARD = "WebTopCardCore-19"
+CONTACT_INFO = "ProfileContactInfo-2"
+
+_LEGACY = "https://www.linkedin.com/voyager/api/identity"
+
+#: How many mutual connections `get_person` reads inline. The rest are one
+#: `get_mutual_connections` call away, and `complete` says when there are more.
+MUTUAL_INLINE = 40
 
 _ELEMENTS_PATH = "data['*elements']"
 _PROFILE_URN_PREFIX = "urn:li:fsd_profile:"
@@ -485,6 +517,172 @@ def common_ground(mine: dict[str, Any], theirs: dict[str, Any]) -> dict[str, Any
     }
 
 
+def parse_contact(payload: dict[str, Any]) -> dict[str, Any]:
+    """The contact fields this viewer is allowed to see, absent ones dropped."""
+    profile: dict[str, Any] = {}
+    for entity in payload.get("included") or []:
+        if str(entity.get("$type", "")).endswith(".Profile"):
+            profile = entity
+            break
+    phones = [
+        _clean(
+            {
+                "number": (phone.get("phoneNumber") or {}).get("number")
+                if isinstance(phone.get("phoneNumber"), dict)
+                else phone.get("number"),
+                "type": phone.get("type"),
+            }
+        )
+        for phone in profile.get("phoneNumbers") or []
+        if isinstance(phone, dict)
+    ]
+    email = profile.get("emailAddress")
+    return _clean(
+        {
+            "email": email.get("emailAddress") if isinstance(email, dict) else email,
+            "phones": [phone for phone in phones if phone],
+            "websites": [
+                _clean(
+                    {
+                        "url": site.get("url"),
+                        "category": site.get("category"),
+                        "label": site.get("label"),
+                    }
+                )
+                for site in profile.get("websites") or []
+                if isinstance(site, dict) and site.get("url")
+            ],
+            "twitter": [
+                handle.get("name")
+                for handle in profile.get("twitterHandles") or []
+                if isinstance(handle, dict) and handle.get("name")
+            ],
+            "messengers": [
+                _clean({"provider": im.get("provider"), "id": im.get("id")})
+                for im in profile.get("instantMessengers") or []
+                if isinstance(im, dict)
+            ],
+            "address": profile.get("address"),
+            "birthday": _date(profile.get("birthDateOn"))
+            or (
+                f"--{profile['birthDateOn']['month']:02d}-{profile['birthDateOn']['day']:02d}"
+                if isinstance(profile.get("birthDateOn"), dict)
+                and profile["birthDateOn"].get("month")
+                and profile["birthDateOn"].get("day")
+                else None
+            ),
+        }
+    )
+
+
+def parse_mutual(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], int | None, bool]:
+    """Mutual connections, the server's total, and whether the list was found."""
+    data = payload.get("data") or {}
+    found = isinstance(data, dict) and "elements" in data
+    minis = {
+        entity.get("entityUrn"): entity
+        for entity in payload.get("included") or []
+        if isinstance(entity, dict)
+    }
+    rows = []
+    for element in data.get("elements") or []:
+        mini = minis.get(element.get("*miniProfile")) or {}
+        if not mini:
+            continue
+        insight = element.get("introductionBrokerInsight") or {}
+        rows.append(
+            _clean(
+                {
+                    "name": " ".join(
+                        part
+                        for part in (mini.get("firstName"), mini.get("lastName"))
+                        if part
+                    ),
+                    "headline": mini.get("occupation"),
+                    "public_identifier": mini.get("publicIdentifier"),
+                    "profile_urn": mini.get("dashEntityUrn"),
+                    "distance": (element.get("distance") or {}).get("value"),
+                    # LinkedIn's own suggested ask, kept because it is what
+                    # the member would see on the "ask for an intro" button.
+                    "suggested_ask": (insight.get("preFilledText") or {}).get("text"),
+                }
+            )
+        )
+    total = (data.get("paging") or {}).get("total")
+    return rows, total if isinstance(total, int) else None, found
+
+
+def _activity_time(urn: str) -> str | None:
+    """When an activity was created, read from its id.
+
+    The id is a snowflake: its bits above the low 22 are a millisecond epoch.
+    Anything that is not such an id answers None rather than a wrong date.
+    """
+    tail = urn.rsplit(":", 1)[-1]
+    if not tail.isdigit() or len(tail) < 18:
+        return None
+    return datetime.fromtimestamp((int(tail) >> 22) / 1000, tz=timezone.utc).isoformat(
+        timespec="minutes"
+    )
+
+
+def parse_posts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """A member's posts and reposts, in the order the server lists them."""
+    included = [e for e in payload.get("included") or [] if isinstance(e, dict)]
+    updates = {
+        entity.get("entityUrn"): entity
+        for entity in included
+        if str(entity.get("$type", "")).endswith(".UpdateV2")
+    }
+    counts = {
+        entity.get("urn"): entity
+        for entity in included
+        if str(entity.get("$type", "")).endswith(".SocialActivityCounts")
+    }
+
+    def text(node: Any) -> str | None:
+        inner = (node or {}).get("text") if isinstance(node, dict) else None
+        return inner.get("text") if isinstance(inner, dict) else inner
+
+    posts = []
+    for urn in (payload.get("data") or {}).get("*elements") or []:
+        update = updates.get(urn)
+        if not update:
+            continue
+        activity = (update.get("updateMetadata") or {}).get("urn") or ""
+        actor = update.get("actor") or {}
+        original = updates.get(update.get("*resharedUpdate")) or {}
+        tally = counts.get(activity) or {}
+        posts.append(
+            _clean(
+                {
+                    "activity_urn": activity,
+                    "url": f"https://www.linkedin.com/feed/update/{activity}/"
+                    if activity
+                    else None,
+                    "posted_at_iso": _activity_time(activity),
+                    "author": text({"text": actor.get("name")}),
+                    # Present when the member reposted someone else's update
+                    # without adding to it; `author` is then the original's.
+                    "repost_header": text(
+                        {"text": (update.get("header") or {}).get("text")}
+                    ),
+                    "text": text(update.get("commentary")),
+                    "reshared_text": text(original.get("commentary")),
+                    "reshared_author": text(
+                        {"text": (original.get("actor") or {}).get("name")}
+                    ),
+                    "likes": tally.get("numLikes"),
+                    "comments": tally.get("numComments"),
+                    "shares": tally.get("numShares"),
+                }
+            )
+        )
+    return posts
+
+
 class VoyagerPersonReader(VoyagerReader):
     """Read a member's full profile without rendering it."""
 
@@ -544,6 +742,145 @@ class VoyagerPersonReader(VoyagerReader):
             return keys[0] if keys else None
         return None
 
+    async def _contact(self, identifier: str) -> dict[str, Any] | None:
+        """Contact fields, or None when the read itself failed. Best effort."""
+        try:
+            payload = await self._fetch(self._url(identifier, CONTACT_INFO))
+        except (AuthenticationError, RateLimitError):
+            raise
+        except LinkedInScraperException as exc:
+            logger.info("Contact read unavailable: %s", exc)
+            return None
+        return parse_contact(payload)
+
+    async def _member_id(self, linkedin_username: str) -> tuple[str, str]:
+        """A member's id and canonical profile URL, from any identifier."""
+        from linkedin_mcp_server.scraping.identifiers import (
+            normalize_person_identifier,
+            person_profile_url,
+        )
+
+        identifier = normalize_person_identifier(linkedin_username)
+        payload = await self._fetch(
+            f"{_PROFILES}?q=memberIdentity&memberIdentity={quote(identifier, safe='')}"
+        )
+        data = payload.get("data") or {}
+        found = self._has_rows_key(data)
+        urns = [
+            urn
+            for urn in (data.get("*elements") or [] if found else [])
+            if isinstance(urn, str) and urn.startswith(_PROFILE_URN_PREFIX)
+        ]
+        self._refuse_unexplained_zero(
+            rows=urns, payload=payload, path=_ELEMENTS_PATH, container_found=found
+        )
+        if len(urns) != 1:
+            raise LinkedInScraperException(
+                f"Voyager {self.surface} found {len(urns)} members for "
+                f"{identifier!r}, not exactly one. Pass the /in/ public "
+                "identifier exactly as a profile URL shows it."
+            )
+        return urns[0].rsplit(":", 1)[-1], person_profile_url(identifier, "/")
+
+    async def _mutual(
+        self, member_id: str, *, start: int, count: int
+    ) -> dict[str, Any]:
+        payload = await self._fetch(
+            f"{_LEGACY}/profiles/{quote(member_id, safe='')}/memberConnections"
+            f"?q=inCommon&start={start}&count={count}"
+        )
+        rows, total, found = parse_mutual(payload)
+        self._refuse_unexplained_zero(
+            rows=rows,
+            payload=payload,
+            path="data.elements",
+            container_found=found,
+        )
+        return {
+            "items": rows,
+            "returned": len(rows),
+            "start": start,
+            "total": total,
+            # Measured against the server's total. None when it gave none.
+            "complete": (start + len(rows) >= total) if total is not None else None,
+        }
+
+    async def get_mutual_connections(
+        self, linkedin_username: str, start: int = 0, count: int = MUTUAL_INLINE
+    ) -> dict[str, Any]:
+        """Read one page of the connections you share with a member."""
+        if start < 0 or count < 1:
+            raise LinkedInScraperException(
+                f"start must be >= 0 and count >= 1, got start={start}, count={count}."
+            )
+        member_id, url = await self._member_id(linkedin_username)
+        page = await self._mutual(member_id, start=start, count=count)
+        lines = [
+            f"{row.get('name')} - {row.get('headline') or ''}".rstrip(" -")
+            for row in page["items"]
+        ]
+        return {
+            "url": url,
+            "sections": {"mutual_connections": "\n".join(lines)},
+            "mutual_connections": page["items"],
+            "count": page["returned"],
+            "start": start,
+            "page_size": count,
+            "total": page["total"],
+            "at_end": page["complete"] if page["items"] else None,
+        }
+
+    async def get_person_posts(
+        self, linkedin_username: str, count: int = 10, cursor: str | None = None
+    ) -> dict[str, Any]:
+        """Read one page of a member's posts and reposts, newest activity first."""
+        if count < 1:
+            raise LinkedInScraperException(f"count must be >= 1, got {count}.")
+        if cursor is not None and not cursor.strip():
+            raise LinkedInScraperException(
+                "cursor was blank. OMIT the argument for the first page, or "
+                "pass a next_cursor from a previous call."
+            )
+        member_id, url = await self._member_id(linkedin_username)
+        urn = quote(f"{_PROFILE_URN_PREFIX}{member_id}", safe="")
+        # Measured on 2026-10-02: this endpoint IGNORES `start`. Asking for
+        # start=5 returned the first five again, with the same token. Only
+        # `paginationToken` moves the page, so that is the cursor.
+        paging = f"&paginationToken={quote(cursor.strip(), safe='')}" if cursor else ""
+        payload = await self._fetch(
+            f"{_LEGACY}/profileUpdatesV2?count={count}&includeLongTermHistory=true"
+            "&moduleKey=member-shares%3Aphone&numComments=0&numLikes=0"
+            f"&profileUrn={urn}&q=memberShareFeed{paging}"
+        )
+        data = payload.get("data") or {}
+        posts = parse_posts(payload)
+        self._refuse_unexplained_zero(
+            rows=posts,
+            payload=payload,
+            path=_ELEMENTS_PATH,
+            container_found=self._has_rows_key(data),
+        )
+        token = (data.get("metadata") or {}).get("paginationToken")
+        if not isinstance(token, str) or not token or token == (cursor or "").strip():
+            # A token equal to the one supplied is the server re-serving the
+            # page just read; handing it back would loop the caller forever.
+            token = None
+        lines = []
+        for post in posts:
+            who = post.get("repost_header") or post.get("author") or "?"
+            body = post.get("text") or post.get("reshared_text") or ""
+            lines.append(f"{who} - {post.get('posted_at_iso')}\n{body}")
+        return {
+            "url": f"{url}recent-activity/all/",
+            "sections": {"posts": "\n\n".join(lines)},
+            "posts": posts,
+            "count": len(posts),
+            "page_size": count,
+            "next_cursor": token,
+            # Measured from what came back; an empty page proves nothing.
+            "at_end": None if not posts else len(posts) < count,
+        }
+
     async def _my_profile(self) -> dict[str, Any]:
         global _MY_PROFILE_CACHE
         page = self._session.page
@@ -565,6 +902,8 @@ class VoyagerPersonReader(VoyagerReader):
         identifier = normalize_person_identifier(linkedin_username)
         profile = await self._full_profile(identifier)
         relationship = await self._relationship(identifier)
+        contact = await self._contact(identifier)
+        member_id = (profile["identity"].get("profile_urn") or "").rsplit(":", 1)[-1]
 
         result: dict[str, Any] = {
             "url": person_profile_url(
@@ -572,6 +911,9 @@ class VoyagerPersonReader(VoyagerReader):
             ),
             "sections": {"profile": render_profile(profile)},
             "relationship": relationship,
+            # None when the read failed; {} when it worked and the member
+            # shares nothing with this viewer. Those are different answers.
+            "contact": contact,
             **profile,
             "incomplete_sections": sorted(
                 name
@@ -579,6 +921,12 @@ class VoyagerPersonReader(VoyagerReader):
                 if isinstance(section, dict) and section.get("complete") is False
             ),
         }
+        if relationship != "self" and member_id:
+            # Who could introduce the two of you. Read here because it is the
+            # other half of "how are we connected", beside common_ground.
+            result["mutual_connections"] = await self._mutual(
+                member_id, start=0, count=MUTUAL_INLINE
+            )
         if compare_to_me and relationship != "self":
             mine = await self._my_profile()
             if mine["identity"].get("profile_urn") != profile["identity"].get(

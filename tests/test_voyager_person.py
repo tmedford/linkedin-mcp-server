@@ -129,6 +129,54 @@ def _relationship(key: str) -> dict[str, Any]:
     return {"body": json.dumps({"included": [entity]})}
 
 
+def _mutual(count: int, *, total: int | None = None, start: int = 0) -> dict[str, Any]:
+    elements, included = [], []
+    for index in range(start, start + count):
+        mini = f"urn:li:fs_miniProfile:ACoAA-m{index}"
+        elements.append(
+            {
+                "*miniProfile": mini,
+                "distance": {"value": "DISTANCE_1"},
+                "introductionBrokerInsight": {
+                    "preFilledText": {"text": f"Hi M{index}, could you introduce me?"}
+                },
+            }
+        )
+        included.append(
+            {
+                "entityUrn": mini,
+                "firstName": f"M{index}",
+                "lastName": "Mutual",
+                "occupation": "Engineer",
+                "publicIdentifier": f"m{index}",
+                "dashEntityUrn": f"urn:li:fsd_profile:ACoAA-m{index}",
+            }
+        )
+    data = {
+        "elements": elements,
+        "paging": {"total": count if total is None else total},
+    }
+    return {"body": json.dumps({"data": data, "included": included})}
+
+
+CONTACT = {
+    "body": json.dumps(
+        {
+            "included": [
+                {
+                    "$type": "com.linkedin.voyager.dash.identity.profile.Profile",
+                    "websites": [{"url": "https://ada.example/"}],
+                    "emailAddress": None,
+                    "phoneNumbers": None,
+                }
+            ]
+        }
+    )
+}
+
+RESOLVED = {"body": json.dumps({"data": {"*elements": [ADA]}, "included": []})}
+
+
 def _body(payload: dict[str, Any]) -> dict[str, Any]:
     return {"body": json.dumps(payload)}
 
@@ -310,7 +358,12 @@ async def test_a_profile_comes_back_whole_with_common_ground_and_no_navigation()
         ADA, "Ada Lovelace", jobs=[("Zuora", ZUORA, "PM", "2015-01", "2018-01")]
     )
     reader, page = _reader(
-        _body(theirs), _relationship("*connection"), ME_ANSWER, _body(MINE)
+        _body(theirs),
+        _relationship("*connection"),
+        CONTACT,
+        _mutual(2, total=33),
+        ME_ANSWER,
+        _body(MINE),
     )
 
     result = await reader.get_person("ada-lovelace")
@@ -321,7 +374,13 @@ async def test_a_profile_comes_back_whole_with_common_ground_and_no_navigation()
     assert len(result["common_ground"]["worked_together"]) == 1
     assert "PM at Zuora (2015-01 to 2018-01)" in result["sections"]["profile"]
     assert result["incomplete_sections"] == []
-    assert len(page.requests) == 4
+    assert result["contact"] == {"websites": [{"url": "https://ada.example/"}]}
+    assert result["mutual_connections"]["returned"] == 2
+    assert result["mutual_connections"]["total"] == 33
+    assert result["mutual_connections"]["complete"] is False
+    assert len(page.requests) == 6
+    assert "memberConnections?q=inCommon" in page.requests[3]
+    assert "/ACoAA-ada/" in page.requests[3]
     assert "FullProfileWithEntities" in page.requests[0]
     assert "memberIdentity=ada-lovelace" in page.requests[0]
 
@@ -331,44 +390,54 @@ async def test_your_own_profile_is_read_once_across_calls():
     reader, page = _reader(
         theirs,
         _relationship("*connection"),
+        CONTACT,
+        _mutual(0),
         ME_ANSWER,
         _body(MINE),
         theirs,
         _relationship("*connection"),
+        CONTACT,
+        _mutual(0),
     )
 
     await reader.get_person("ada-lovelace")
     second = await reader.get_person("ada-lovelace")
 
     assert "common_ground" in second
-    assert len(page.requests) == 6
+    assert len(page.requests) == 10
 
 
 async def test_your_own_profile_is_not_compared_with_itself():
-    reader, page = _reader(_body(MINE), _relationship("self"))
+    reader, page = _reader(_body(MINE), _relationship("self"), CONTACT)
 
     result = await reader.get_person("taylor-medford")
 
     assert result["relationship"] == "self"
     assert "common_ground" not in result
-    assert len(page.requests) == 2
+    assert "mutual_connections" not in result
+    assert len(page.requests) == 3
 
 
 async def test_skipping_the_comparison_reads_nothing_of_yours():
     reader, page = _reader(
-        _body(_profile(ADA, "Ada Lovelace")), _relationship("*connection")
+        _body(_profile(ADA, "Ada Lovelace")),
+        _relationship("*connection"),
+        CONTACT,
+        _mutual(1),
     )
 
     result = await reader.get_person("ada-lovelace", compare_to_me=False)
 
     assert "common_ground" not in result
-    assert len(page.requests) == 2
+    assert len(page.requests) == 4
 
 
 async def test_an_unreadable_relationship_is_unknown_and_the_profile_still_returns():
     reader, _ = _reader(
         _body(_profile(ADA, "Ada Lovelace")),
         {"error": "HTTP 400", "status": 400},
+        {"error": "HTTP 400", "status": 400},
+        _mutual(0),
         ME_ANSWER,
         _body(MINE),
     )
@@ -376,6 +445,8 @@ async def test_an_unreadable_relationship_is_unknown_and_the_profile_still_retur
     result = await reader.get_person("ada-lovelace")
 
     assert result["relationship"] is None
+    # A failed contact read is None; a successful empty one would be {}.
+    assert result["contact"] is None
     assert result["identity"]["name"] == "Ada Lovelace"
 
 
@@ -383,6 +454,8 @@ async def test_a_capped_section_is_named_in_incomplete_sections():
     reader, _ = _reader(
         _body(_profile(ADA, "Ada Lovelace", skills=["a"], skill_total=34)),
         _relationship("*connection"),
+        CONTACT,
+        _mutual(0),
     )
 
     result = await reader.get_person("ada-lovelace", compare_to_me=False)
@@ -472,3 +545,193 @@ def test_a_gap_between_stints_is_not_counted_and_ongoing_has_no_month_count():
         "end": None,
         "months": None,
     }
+
+
+async def test_mutual_connections_page_against_linkedins_own_total():
+    reader, page = _reader(
+        RESOLVED, _mutual(40, total=45), RESOLVED, _mutual(5, total=45, start=40)
+    )
+
+    first = await reader.get_mutual_connections("ada-lovelace")
+    second = await reader.get_mutual_connections("ada-lovelace", start=40)
+
+    assert first["count"] == 40
+    assert first["total"] == 45
+    assert first["at_end"] is False
+    assert second["at_end"] is True
+    assert first["mutual_connections"][0]["name"] == "M0 Mutual"
+    assert first["mutual_connections"][0]["suggested_ask"].startswith("Hi M0")
+    assert "start=40&count=40" in page.requests[3]
+
+
+async def test_no_mutual_connections_is_a_real_zero_and_a_missing_list_is_not():
+    none, _ = _reader(RESOLVED, _mutual(0))
+    result = await none.get_mutual_connections("ada-lovelace")
+    assert result["count"] == 0
+    assert result["at_end"] is None
+
+    moved, _ = _reader(
+        RESOLVED, {"body": json.dumps({"data": {"x": 1}, "included": []})}
+    )
+    with pytest.raises(LinkedInScraperException, match="changed shape"):
+        await moved.get_mutual_connections("ada-lovelace")
+
+
+def _update(
+    urn: str, activity: str, author: str, text: str, **extra: Any
+) -> dict[str, Any]:
+    return {
+        "$type": "com.linkedin.voyager.feed.render.UpdateV2",
+        "entityUrn": urn,
+        "updateMetadata": {"urn": f"urn:li:activity:{activity}"},
+        "actor": {"name": {"text": author}},
+        "commentary": {"text": {"text": text}},
+        **extra,
+    }
+
+
+async def test_posts_keep_the_servers_order_and_do_not_double_reshared_originals():
+    own, reshare, original, repost = (
+        "urn:li:fs_updateV2:own",
+        "urn:li:fs_updateV2:reshare",
+        "urn:li:fs_updateV2:original",
+        "urn:li:fs_updateV2:repost",
+    )
+    payload = {
+        # `included` also holds the original of the reshare. Only the three
+        # listed here are the member's activity.
+        "data": {"*elements": [reshare, own, repost]},
+        "included": [
+            _update(original, "7511096693753487361", "Kate Edwards", "the news"),
+            _update(own, "7457533446958170112", "Ada Lovelace", "we are hiring"),
+            _update(
+                reshare,
+                "7511130765242540032",
+                "Ada Lovelace",
+                "my comment",
+                **{"*resharedUpdate": original},
+            ),
+            _update(
+                repost,
+                "7440549452710449152",
+                "Mark Fleming",
+                "about agents",
+                header={"text": {"text": "Ada Lovelace reposted this"}},
+            ),
+            {
+                "$type": "com.linkedin.voyager.feed.shared.SocialActivityCounts",
+                "urn": "urn:li:activity:7457533446958170112",
+                "numLikes": 48,
+                "numComments": 0,
+                "numShares": 3,
+            },
+        ],
+    }
+    reader, page = _reader(RESOLVED, {"body": json.dumps(payload)})
+
+    result = await reader.get_person_posts("ada-lovelace", count=3)
+
+    posts = result["posts"]
+    assert [p["text"] for p in posts] == ["my comment", "we are hiring", "about agents"]
+    assert posts[0]["reshared_author"] == "Kate Edwards"
+    assert posts[0]["reshared_text"] == "the news"
+    assert posts[1]["likes"] == 48
+    # Read from the activity id, checked against LinkedIn's "5 months ago".
+    assert posts[1]["posted_at_iso"] == "2026-05-05T20:55+00:00"
+    assert posts[2]["repost_header"] == "Ada Lovelace reposted this"
+    assert posts[2]["author"] == "Mark Fleming"
+    assert result["at_end"] is False
+    assert "profileUrn=urn%3Ali%3Afsd_profile%3AACoAA-ada" in page.requests[1]
+
+
+async def test_a_short_page_of_posts_is_the_end_and_an_empty_one_proves_nothing():
+    payload = {
+        "data": {"*elements": ["urn:li:fs_updateV2:a"]},
+        "included": [
+            _update("urn:li:fs_updateV2:a", "7457533446958170112", "Ada", "hi")
+        ],
+    }
+    short, _ = _reader(RESOLVED, {"body": json.dumps(payload)})
+    assert (await short.get_person_posts("ada-lovelace", count=10))["at_end"] is True
+
+    empty, _ = _reader(
+        RESOLVED, {"body": json.dumps({"data": {"elements": []}, "included": []})}
+    )
+    assert (await empty.get_person_posts("ada-lovelace"))["at_end"] is None
+
+
+async def test_a_negative_offset_is_refused_before_any_request():
+    reader, page = _reader()
+
+    with pytest.raises(LinkedInScraperException, match="start must be"):
+        await reader.get_mutual_connections("ada-lovelace", start=-1)
+
+    assert page.requests == []
+
+
+async def test_posts_page_by_token_because_the_endpoint_ignores_an_offset():
+    def page_of(activity: str, token: str | None) -> dict[str, Any]:
+        payload = {
+            "data": {
+                "*elements": ["urn:li:fs_updateV2:a"],
+                "metadata": {"paginationToken": token},
+            },
+            "included": [_update("urn:li:fs_updateV2:a", activity, "Ada", "hi")],
+        }
+        return {"body": json.dumps(payload)}
+
+    reader, page = _reader(
+        RESOLVED,
+        page_of("7457533446958170112", "tok/1=="),
+        RESOLVED,
+        page_of("7446932199599370240", "tok/1=="),
+    )
+
+    first = await reader.get_person_posts("ada-lovelace", count=1)
+    second = await reader.get_person_posts(
+        "ada-lovelace", count=1, cursor=first["next_cursor"]
+    )
+
+    assert first["next_cursor"] == "tok/1=="
+    assert "paginationToken" not in page.requests[1]
+    assert "start=" not in page.requests[1]
+    assert "&paginationToken=tok%2F1%3D%3D" in page.requests[3]
+    # The server handed back the token it was given: that is the same page
+    # again, so it is withheld rather than offered as a way forward.
+    assert second["next_cursor"] is None
+
+
+async def test_a_blank_posts_cursor_is_refused_rather_than_read_as_page_one():
+    reader, page = _reader()
+
+    with pytest.raises(LinkedInScraperException, match="cursor was blank"):
+        await reader.get_person_posts("ada-lovelace", cursor="  ")
+
+    assert page.requests == []
+
+
+def test_contact_fields_the_member_does_not_share_are_absent_not_empty():
+    from linkedin_mcp_server.voyager.person import parse_contact
+
+    shared = {
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.dash.identity.profile.Profile",
+                "emailAddress": {"emailAddress": "ada@example.com"},
+                "phoneNumbers": [
+                    {"phoneNumber": {"number": "555-0100"}, "type": "MOBILE"}
+                ],
+                "twitterHandles": [{"name": "ada"}],
+                "websites": None,
+                "birthDateOn": {"month": 12, "day": 10},
+            }
+        ]
+    }
+
+    assert parse_contact(shared) == {
+        "email": "ada@example.com",
+        "phones": [{"number": "555-0100", "type": "MOBILE"}],
+        "twitter": ["ada"],
+        "birthday": "--12-10",
+    }
+    assert parse_contact({"included": []}) == {}
