@@ -20,8 +20,14 @@ It is a plain REST finder, so there is no query id to rotate.
 ``conversationUrn``, sent to two members, answered HTTP 200 with the created
 message and a NEW conversation URN. That conversation then read back through
 ``get_thread`` and appeared in ``get_conversations`` as a group chat with both
-members. A single recipient uses the same body with one URN and has not been
-sent separately. Where a message lands is never assumed: the server's answer
+members.
+
+**One recipient lands in the existing conversation when there is one.** Sent
+to a member with a one-to-one thread from 2022, the message went into that
+thread (its id came back, and the thread went from two messages to three). Sent
+to a member with no one-to-one thread, it opened a new one, separate from the
+group both were in. So LinkedIn picks the conversation by its exact set of
+members. Where a message lands is still never assumed: the server's answer
 names the conversation, and that is what is returned as ``thread_id``.
 """
 

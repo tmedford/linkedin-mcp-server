@@ -533,9 +533,11 @@ def install_voyager_overlay(
         """
         Send a message to a person through LinkedIn's messaging API.
 
-        Use this to write to someone by their profile, including when no
-        conversation with them exists yet. When you already have the thread,
-        prefer reply_to_thread, which is pinned to that exact conversation.
+        Use this to write to someone by their profile. If a one-to-one
+        conversation with them already exists the message goes into it;
+        otherwise a new one is opened. The result's thread_id says which
+        conversation it landed in. When you already have the thread, prefer
+        reply_to_thread, which is pinned to that exact conversation.
 
         Args:
             linkedin_username: The recipient's /in/ public identifier, or
