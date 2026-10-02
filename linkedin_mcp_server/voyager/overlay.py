@@ -31,6 +31,7 @@ from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
 from linkedin_mcp_server.core.exceptions import AuthenticationError
 from linkedin_mcp_server.dependencies import get_ready_extractor, handle_auth_error
 from linkedin_mcp_server.error_handler import raise_tool_error
+from linkedin_mcp_server.voyager.thread_reply import refuse_an_invalid_reply
 
 logger = logging.getLogger(__name__)
 
@@ -261,3 +262,94 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "get_invitations")
         except Exception as e:
             raise_tool_error(e, "get_invitations")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Reply to Thread",
+        # A write through the messaging API. Unlike the two readers above it
+        # sends, so it carries send_message's hints rather than theirs.
+        annotations={"destructiveHint": True, "openWorldHint": True},
+        tags={"messaging", "actions"},
+        exclude_args=["extractor"],
+    )
+    async def reply_to_thread(
+        thread_id: str,
+        message: str,
+        confirm_send: bool,
+        ctx: Context,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Reply inside an EXISTING LinkedIn messaging thread, and nowhere else.
+
+        Prefer this over send_message whenever the conversation already
+        exists. send_message goes through the recipient's profile, which can
+        be unavailable for an InMail or Open Profile contact and can open a
+        separate DM instead of continuing the thread. This sends through
+        LinkedIn's messaging API to the thread you name: no page is opened and
+        nothing is typed, so a dry run does not mark the thread read.
+
+        Args:
+            thread_id: The thread to reply in. Pass the `thread_url` that
+                get_conversations returned, a `/messaging/thread/{id}/`
+                reference from get_conversation, or the bare thread id.
+            message: Reply text. Line breaks (LF) are kept, so a greeting can
+                sit on its own line. Other C0 control characters and DEL are
+                rejected, including CR and tab.
+            confirm_send: Must be True to send. False is a dry run: nothing is
+                written, and the result shows what the thread currently holds
+                so you can check it is the conversation you mean.
+            ctx: FastMCP context for progress reporting
+
+        Returns:
+            Dict with url, status, message, thread_id, recipient_selected,
+            sent, and retry_safe.
+
+            A dry run adds thread_readable, participants, last_message_text
+            and last_message_at. thread_readable is True when the thread was
+            read, False when it holds nothing for this account (status
+            `thread_not_found`), and None when the preview itself was
+            unavailable, which says nothing about the thread.
+
+            `sent` is true only when LinkedIn answered the write with the
+            message it created; message_urn and delivered_at come from that
+            answer. It does not claim the recipient read it. `retry_safe` is
+            false whenever the reply was or may have been delivered, and
+            calling again while it is false can deliver the reply twice.
+            `send_rejected` means LinkedIn refused the request and nothing was
+            sent.
+        """
+        try:
+            # Answered before a session is acquired, for send_message's reason:
+            # acquiring one can spend a login attempt and come back as an
+            # authentication error instead of the refusal the caller can act
+            # on. Inside the `try` because an unusable thread_id raises.
+            refusal = refuse_an_invalid_reply(thread_id, message)
+            if refusal is not None:
+                return refusal
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="reply_to_thread"
+            )
+            logger.info(
+                "Replying to thread %s (confirm_send=%s)", thread_id, confirm_send
+            )
+
+            await ctx.report_progress(progress=0, total=100, message="Opening thread")
+
+            result = await extractor.reply_to_thread(
+                thread_id,
+                message,
+                confirm_send=confirm_send,
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "reply_to_thread")
+        except Exception as e:
+            raise_tool_error(e, "reply_to_thread")  # NoReturn

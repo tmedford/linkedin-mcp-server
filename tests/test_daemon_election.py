@@ -5108,7 +5108,8 @@ class TestRealOwner:
             assert "get_conversations" in names, sorted(names)
             assert "get_invitations" in names, sorted(names)
             assert "get_inbox" not in names, sorted(names)
-            assert len(names) == 20, sorted(names)
+            assert "reply_to_thread" in names, sorted(names)
+            assert len(names) == 21, sorted(names)
         finally:
             _stop(result.get("pid"))
 

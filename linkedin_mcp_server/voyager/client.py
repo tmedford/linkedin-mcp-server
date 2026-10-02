@@ -56,6 +56,29 @@ _FETCH_JS = (
     % _ACCEPT
 )
 
+#: One Voyager POST. Measured on 2026-10-02 against the messaging page: its own
+#: writes are JSON bodies posted to ``...?action=<name>`` with the csrf-token
+#: and ``x-restli-protocol-version`` headers. Unlike the GET, the status is
+#: handed back rather than collapsed into an error, because for a write "the
+#: server refused it" and "nobody knows whether it landed" are different
+#: answers and only the caller can say which one a status means.
+_POST_JS = """async ({url, body}) => {
+    const m = document.cookie.match(/JSESSIONID="?([^";]+)/);
+    if (!m) return {error: 'no JSESSIONID cookie in page context'};
+    const r = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+            'csrf-token': m[1],
+            'accept': 'application/json',
+            'content-type': 'text/plain;charset=UTF-8',
+            'x-restli-protocol-version': '2.0.0',
+        },
+        body: JSON.stringify(body),
+    });
+    return {status: r.status, body: await r.text()};
+}"""
+
 
 class VoyagerReader:
     """Base for readers that call LinkedIn's own API from the logged-in page."""
@@ -89,6 +112,21 @@ class VoyagerReader:
                 f"Voyager {self.surface} request failed: {detail}"
             )
         return json.loads(raw["body"])
+
+    async def _post(self, url: str, body: dict[str, Any]) -> tuple[int, str]:
+        """Issue one Voyager POST from inside the authenticated page.
+
+        Returns the status and the raw response text. Only a request that
+        provably never left raises here: without the session cookie nothing was
+        sent. Every status the server did answer with is the caller's to judge.
+        """
+        raw = await self._session.page.evaluate(_POST_JS, {"url": url, "body": body})
+        if not isinstance(raw, dict) or raw.get("error"):
+            detail = (raw or {}).get("error", "unknown")
+            raise AuthenticationError(
+                f"Voyager {self.surface} request was not sent: {detail}"
+            )
+        return int(raw["status"]), str(raw.get("body") or "")
 
     def _refuse_unexplained_zero(
         self,

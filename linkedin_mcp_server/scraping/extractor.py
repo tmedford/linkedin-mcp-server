@@ -20,6 +20,7 @@ from linkedin_mcp_server.scraping.contracts import (
 from linkedin_mcp_server.scraping.conversations import ConversationReader
 from linkedin_mcp_server.voyager.invitations import VoyagerInvitationsReader
 from linkedin_mcp_server.voyager.messaging import VoyagerMessagingReader
+from linkedin_mcp_server.voyager.thread_reply import VoyagerThreadReply
 from linkedin_mcp_server.scraping.feed import FeedScraper
 from linkedin_mcp_server.scraping.job_pages import JobPageReader
 from linkedin_mcp_server.scraping.jobs import JobScraper
@@ -76,6 +77,7 @@ class LinkedInExtractor:
         )
         self._voyager_messaging = VoyagerMessagingReader(session, navigator)
         self._voyager_invitations = VoyagerInvitationsReader(session, navigator)
+        self._thread_reply = VoyagerThreadReply(session, navigator)
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -287,4 +289,18 @@ class LinkedInExtractor:
             message,
             confirm_send=confirm_send,
             profile_urn=profile_urn,
+        )
+
+    async def reply_to_thread(
+        self,
+        thread_id: str,
+        message: str,
+        *,
+        confirm_send: bool,
+    ) -> dict[str, Any]:
+        """Reply inside an existing thread with explicit confirmation gating."""
+        return await self._thread_reply.reply_to_thread(
+            thread_id,
+            message,
+            confirm_send=confirm_send,
         )

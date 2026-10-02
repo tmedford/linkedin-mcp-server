@@ -84,6 +84,7 @@ a page-owning collaborator.
 - `get_page_text`
 - `get_saved_jobs`
 - `get_sidebar_profiles`
+- `reply_to_thread`
 - `scrape_company`
 - `scrape_job`
 - `scrape_person`
@@ -106,6 +107,7 @@ a page-owning collaborator.
 - `_message_sender`
 - `_person`
 - `_posts`
+- `_thread_reply`
 - `_voyager_invitations`
 - `_voyager_messaging`
 

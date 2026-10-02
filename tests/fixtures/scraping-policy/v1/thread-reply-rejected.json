@@ -1,0 +1,56 @@
+{
+  "call": {
+    "arguments": {
+      "confirm_send": true,
+      "outcome": "rejected"
+    },
+    "method": "reply_to_thread"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/me",
+      "call": "reply_to_thread",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "message"
+    },
+    {
+      "arg": {
+        "body": {
+          "dedupeByClientGeneratedToken": false,
+          "mailboxUrn": "urn:li:fsd_profile:ACoAA-me",
+          "message": {
+            "body": {
+              "attributes": [],
+              "text": "New text"
+            },
+            "conversationUrn": "urn:li:msg_conversation:(urn:li:fsd_profile:ACoAA-me,2-policy-thread==)",
+            "originToken": "policy-origin-token",
+            "renderContentUnions": []
+          },
+          "trackingId": "policy-tracking-id"
+        },
+        "url": "https://www.linkedin.com/voyager/api/voyagerMessagingDashMessengerMessages?action=createMessage"
+      },
+      "call": "reply_to_thread",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "3840cc729d4b",
+      "section": "message"
+    }
+  ],
+  "result": {
+    "http_status": 400,
+    "message": "LinkedIn refused the reply (HTTP 400). Nothing was sent.",
+    "recipient_selected": false,
+    "response_excerpt": "{\"status\":400}",
+    "retry_safe": true,
+    "sent": false,
+    "status": "send_rejected",
+    "thread_id": "2-policy-thread==",
+    "url": "https://www.linkedin.com/messaging/thread/2-policy-thread==/"
+  },
+  "scenario": "reply_to_thread__rejected",
+  "schema_version": 1
+}

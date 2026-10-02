@@ -1,0 +1,42 @@
+{
+  "call": {
+    "arguments": {
+      "confirm_send": false,
+      "outcome": "dry_run"
+    },
+    "method": "reply_to_thread"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/me",
+      "call": "reply_to_thread",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "message"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/voyagerMessagingGraphQL/graphql?queryId=messengerMessages.5846eeb71c981f11e0134cb6626cc314&variables=(conversationUrn:urn%3Ali%3Amsg_conversation%3A%28urn%3Ali%3Afsd_profile%3AACoAA-me%2C2-policy-thread%3D%3D%29)",
+      "call": "reply_to_thread",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "message"
+    }
+  ],
+  "result": {
+    "last_message_at": "2023-11-14T22:13:20+00:00",
+    "last_message_text": "Earlier message",
+    "message": "Set confirm_send=true to send the reply.",
+    "participants": [],
+    "recipient_selected": true,
+    "retry_safe": true,
+    "sent": false,
+    "status": "confirmation_required",
+    "thread_id": "2-policy-thread==",
+    "thread_readable": true,
+    "url": "https://www.linkedin.com/messaging/thread/2-policy-thread==/"
+  },
+  "scenario": "reply_to_thread__dry_run",
+  "schema_version": 1
+}

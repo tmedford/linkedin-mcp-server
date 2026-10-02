@@ -28,6 +28,7 @@ from linkedin_mcp_server.scraping import session as session_module
 from linkedin_mcp_server.scraping import LinkedInExtractor
 from linkedin_mcp_server.scraping.fields import COMPANY_SECTIONS, PERSON_SECTIONS
 from linkedin_mcp_server.server import create_mcp_server
+from linkedin_mcp_server.voyager import thread_reply
 
 from .support.policy_trace import (
     FakeClock,
@@ -1096,6 +1097,88 @@ async def _invitations_scenario() -> dict[str, Any]:
     )
 
 
+async def _thread_reply_scenario(outcome: str) -> dict[str, Any]:
+    """Record what `reply_to_thread` does to the page.
+
+    The claim being pinned is the side-effect profile. A reply never
+    navigates, never clicks and never types: a dry run is two reads and no
+    write, and a confirmed reply is one read and one write. The alternative
+    this replaces opened the thread, which marks it read, and typed into its
+    composer.
+
+    Every evaluate is classified as ``voyager_conversations_fetch`` for the
+    reason given on the invitations scenario: the classifier keys on the
+    csrf-token marker the shared client carries.
+    """
+    recorder = TraceRecorder(f"reply_to_thread__{outcome}", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    confirm_send = outcome != "dry_run"
+    me = {
+        "body": json.dumps(
+            {"included": [{"dashEntityUrn": "urn:li:fsd_profile:ACoAA-me"}]}
+        )
+    }
+    conversation = (
+        "urn:li:msg_conversation:(urn:li:fsd_profile:ACoAA-me,2-policy-thread==)"
+    )
+    if outcome == "dry_run":
+        thread = {
+            "included": [
+                {
+                    "$type": "com.linkedin.messenger.Message",
+                    "deliveredAt": 1_700_000_000_000,
+                    "body": {"text": "Earlier message"},
+                }
+            ]
+        }
+        page.script(
+            "evaluate:voyager_conversations_fetch",
+            me,
+            {"body": json.dumps(thread)},
+        )
+    elif outcome == "sent":
+        created = {
+            "value": {
+                "entityUrn": "urn:li:msg_message:(urn:li:fsd_profile:ACoAA-me,2-new)",
+                "conversationUrn": conversation,
+                "deliveredAt": 1_700_000_100_000,
+            }
+        }
+        page.script(
+            "evaluate:voyager_conversations_fetch",
+            me,
+            {"status": 200, "body": json.dumps(created)},
+        )
+    else:
+        page.script(
+            "evaluate:voyager_conversations_fetch",
+            me,
+            {"status": 400, "body": '{"status":400}'},
+        )
+
+    extractor = _extractor(page)
+    # The two per-send tokens are random by design, and a trace has to be
+    # reproducible, so they are pinned for the recording only.
+    with (
+        patch.object(thread_reply, "_origin_token", return_value="policy-origin-token"),
+        patch.object(thread_reply, "_tracking_id", return_value="policy-tracking-id"),
+    ):
+        async with boundaries(recorder, clock):
+            with recorder.context("reply_to_thread", "message"):
+                result = await extractor.reply_to_thread(
+                    _MESSAGE_ROUTE, "New text", confirm_send=confirm_send
+                )
+    page.assert_clean()
+    return recorder.trace(
+        {
+            "method": "reply_to_thread",
+            "arguments": {"confirm_send": confirm_send, "outcome": outcome},
+        },
+        result,
+    )
+
+
 class _ScriptedRequest:
     """The one Request attribute discovery reads."""
 
@@ -1192,6 +1275,7 @@ TOOL_FACADE_METHODS = {
     "search_people",
     "search_posts",
     "send_message",
+    "reply_to_thread",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1268,6 +1352,9 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "conversation.json": await _conversation_scenario("get_conversation"),
         "conversations-page.json": await _conversations_page_scenario(),
         "invitations.json": await _invitations_scenario(),
+        "thread-reply-dry-run.json": await _thread_reply_scenario("dry_run"),
+        "thread-reply-rejected.json": await _thread_reply_scenario("rejected"),
+        "thread-reply-sent.json": await _thread_reply_scenario("sent"),
         "search-conversations.json": await _conversation_scenario(
             "search_conversations"
         ),
