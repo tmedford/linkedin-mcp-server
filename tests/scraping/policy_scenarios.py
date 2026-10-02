@@ -1287,6 +1287,64 @@ _POLICY_MUTUAL = {
 }
 
 
+async def _profile_views_scenario() -> dict[str, Any]:
+    """Record what `get_profile_views` does to the page.
+
+    One evaluate and no navigation. The routine this serves has been opening
+    the member's own browser on the analytics page to read it.
+    """
+    recorder = TraceRecorder("get_profile_views__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    mini, card = "urn:li:fs_miniProfile:ACoAA-ada", "urn:li:fs_card:1"
+    payload = {
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.identity.me.WvmpCard",
+                "value": {
+                    "insightCards": [
+                        {
+                            "objectUrn": "urn:li:wvmp:summary",
+                            "value": {
+                                "numViews": 12,
+                                "timeFrame": "LAST_90_DAYS",
+                                "numViewsChangeInPercentage": 0,
+                                "*cards": [card],
+                            },
+                        }
+                    ]
+                },
+            },
+            {
+                "entityUrn": card,
+                "value": {
+                    "viewer": {
+                        "profile": {
+                            "*miniProfile": mini,
+                            "distance": {"value": "DISTANCE_2"},
+                        }
+                    },
+                    "viewedAt": 1_700_000_000_000,
+                },
+            },
+            {
+                "entityUrn": mini,
+                "firstName": "Ada",
+                "lastName": "Lovelace",
+                "publicIdentifier": "ada-lovelace",
+                "dashEntityUrn": "urn:li:fsd_profile:ACoAA-ada",
+            },
+        ]
+    }
+    page.script("evaluate:voyager_conversations_fetch", {"body": json.dumps(payload)})
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("get_profile_views", "views"):
+            result = await extractor.get_profile_views()
+    page.assert_clean()
+    return recorder.trace({"method": "get_profile_views", "arguments": {}}, result)
+
+
 async def _people_search_scenario() -> dict[str, Any]:
     """Record what the API people search does to the page.
 
@@ -1645,6 +1703,7 @@ TOOL_FACADE_METHODS = {
     "get_mutual_connections",
     "get_person_posts",
     "find_people",
+    "get_profile_views",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1724,6 +1783,7 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "thread.json": await _thread_scenario(),
         "person.json": await _person_scenario(),
         "people-search.json": await _people_search_scenario(),
+        "profile-views.json": await _profile_views_scenario(),
         "person-mutual.json": await _person_extra_scenario("get_mutual_connections"),
         "person-posts.json": await _person_extra_scenario("get_person_posts"),
         "message-search.json": await _message_search_scenario(),

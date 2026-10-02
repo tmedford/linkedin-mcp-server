@@ -1,0 +1,56 @@
+{
+  "call": {
+    "arguments": {},
+    "method": "get_profile_views"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/wvmpCards",
+      "call": "get_profile_views",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "views"
+    }
+  ],
+  "result": {
+    "aggregates": [],
+    "anonymous_viewers": [],
+    "change_percent": 0,
+    "complete": false,
+    "count": 1,
+    "groups": [
+      {
+        "identified": [
+          "ada-lovelace"
+        ],
+        "kind": "recent",
+        "label": "Most recent viewers",
+        "views": 12
+      }
+    ],
+    "returned": 1,
+    "sections": {
+      "profile_views": "Profile viewers: 12 (LAST_90_DAYS)\n\nAda Lovelace • 2nd - viewed 2023-11-14T22:13+00:00"
+    },
+    "time_frame": "LAST_90_DAYS",
+    "total_views": 12,
+    "url": "https://www.linkedin.com/analytics/profile-views/",
+    "viewers": [
+      {
+        "degree": "2nd",
+        "distance": "DISTANCE_2",
+        "name": "Ada Lovelace",
+        "profile_urn": "urn:li:fsd_profile:ACoAA-ada",
+        "public_identifier": "ada-lovelace",
+        "seen_in": [
+          "Most recent viewers"
+        ],
+        "viewed_at": 1700000000000,
+        "viewed_at_iso": "2023-11-14T22:13+00:00"
+      }
+    ]
+  },
+  "scenario": "get_profile_views__baseline",
+  "schema_version": 1
+}

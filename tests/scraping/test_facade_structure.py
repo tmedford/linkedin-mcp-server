@@ -54,6 +54,7 @@ PUBLIC_SIGNATURES = {
     "get_thread": "(self, thread_id: 'str | None' = None, linkedin_username: 'str | None' = None, index: 'int' = 0) -> 'dict[str, Any]'",
     "get_person": "(self, linkedin_username: 'str', compare_to_me: 'bool' = True) -> 'dict[str, Any]'",
     "get_mutual_connections": "(self, linkedin_username: 'str', start: 'int' = 0, count: 'int' = 40) -> 'dict[str, Any]'",
+    "get_profile_views": "(self) -> 'dict[str, Any]'",
     "find_people": "(self, keywords: 'str', location: 'str | None' = None, network: 'list[str] | None' = None, current_company: 'str | None' = None, start: 'int' = 0, count: 'int' = 10) -> 'dict[str, Any]'",
     "get_person_posts": "(self, linkedin_username: 'str', count: 'int' = 10, cursor: 'str | None' = None) -> 'dict[str, Any]'",
     "search_messages": "(self, keywords: 'str', cursor: 'str | None' = None) -> 'dict[str, Any]'",
@@ -89,6 +90,7 @@ DELEGATES = {
     "get_mutual_connections": ("_voyager_person", "get_mutual_connections"),
     "get_person_posts": ("_voyager_person", "get_person_posts"),
     "find_people": ("_people_search", "find_people"),
+    "get_profile_views": ("_profile_views", "get_profile_views"),
     "search_messages": ("_voyager_search", "search_messages"),
     "message_person": ("_person_message", "message_person"),
     "reply_to_thread": ("_thread_reply", "reply_to_thread"),
@@ -120,6 +122,7 @@ DELEGATE_CALLS = {
     "get_thread": "self._voyager_thread.get_thread(thread_id, linkedin_username=linkedin_username, index=index)",
     "get_person": "self._voyager_person.get_person(linkedin_username, compare_to_me=compare_to_me)",
     "get_mutual_connections": "self._voyager_person.get_mutual_connections(linkedin_username, start=start, count=count)",
+    "get_profile_views": "self._profile_views.get_profile_views()",
     "find_people": "self._people_search.find_people(keywords, location=location, network=network, current_company=current_company, start=start, count=count)",
     "get_person_posts": "self._voyager_person.get_person_posts(linkedin_username, count=count, cursor=cursor)",
     "search_messages": "self._voyager_search.search_messages(keywords, cursor=cursor)",
@@ -147,6 +150,7 @@ FACADE_STATE = {
     "_person_message",
     "_voyager_person",
     "_people_search",
+    "_profile_views",
 }
 
 PERMANENT_ALIASES = {

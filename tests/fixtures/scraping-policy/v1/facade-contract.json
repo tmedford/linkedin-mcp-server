@@ -72,6 +72,10 @@
         "coroutine": true,
         "signature": "(self, linkedin_username: 'str', count: 'int' = 10, cursor: 'str | None' = None) -> 'dict[str, Any]'"
       },
+      "get_profile_views": {
+        "coroutine": true,
+        "signature": "(self) -> 'dict[str, Any]'"
+      },
       "get_saved_jobs": {
         "coroutine": true,
         "signature": "(self, max_pages: 'int' = 3) -> 'dict[str, Any]'"
@@ -147,6 +151,7 @@
       "get_my_profile",
       "get_person",
       "get_person_posts",
+      "get_profile_views",
       "get_saved_jobs",
       "get_sidebar_profiles",
       "get_thread",
@@ -573,6 +578,17 @@
           "required": [
             "linkedin_username"
           ],
+          "type": "object"
+        },
+        "output": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "get_profile_views": {
+        "input": {
+          "additionalProperties": false,
+          "properties": {},
           "type": "object"
         },
         "output": {

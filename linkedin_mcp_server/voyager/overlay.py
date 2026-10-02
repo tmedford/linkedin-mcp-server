@@ -1033,3 +1033,72 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "search_people")
         except Exception as e:
             raise_tool_error(e, "search_people")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Profile Views",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_profile_views(
+        ctx: Context,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read who viewed YOUR profile, from LinkedIn's API. No browser page.
+
+        Returns the viewers LinkedIn currently surfaces, with the exact time
+        each one viewed. Call it regularly: the most recent viewers are always
+        included, so each new viewer is seen as they arrive.
+
+        Args:
+            ctx: FastMCP context for progress reporting
+
+        Returns:
+            Dict with url and sections (the standard scraping-tool shape), plus:
+
+            total_views, time_frame, change_percent: LinkedIn's own count for
+                the period (e.g. 529 in LAST_90_DAYS) and its change.
+            viewers: identified people, newest first. Each has name, headline,
+                public_identifier, profile_urn, distance and degree, viewed_at
+                and viewed_at_iso, plus referrer (where they came from),
+                pending_invite, notable_reason and seen_in where present. Pass
+                public_identifier to get_person_profile.
+            anonymous_viewers: private-mode viewers, as LinkedIn describes
+                them ("Recruiter at DualEntry"), with company and viewed_at.
+            aggregates: LinkedIn's roll-ups, such as "133 people with the job
+                title Recruiter".
+            groups: how LinkedIn grouped them (recent, notable, by company,
+                by title, by source), with each group's view count.
+            count, returned, complete.
+
+            **This is NOT every viewer.** LinkedIn returns the six most recent
+            plus its highlighted groups, around 30 cards against hundreds of
+            views. `complete` says whether everything counted was returned,
+            and it is normally false. Recruiter views are a separate surface
+            and are not included.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_profile_views"
+            )
+            logger.info("Reading profile views")
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Reading profile views"
+            )
+
+            result = await extractor.get_profile_views()
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_profile_views")
+        except Exception as e:
+            raise_tool_error(e, "get_profile_views")  # NoReturn
