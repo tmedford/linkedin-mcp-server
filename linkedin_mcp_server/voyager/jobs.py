@@ -639,15 +639,17 @@ class VoyagerSavedJobs(VoyagerJobs):
             )
         text = answer.get("text") or ""
         jobs = parse_tracker_jobs(text)
-        if not jobs and _RECORD_START in text:
-            raise LinkedInScraperException(
-                f"Voyager {self.surface} changed shape: the tracker names jobs "
-                "but none parsed. Refusing to report that as an empty stage."
-            )
+        # Asked first: an answer that is not the tracker at all can still
+        # embed a job id, and that is not the tracker changing shape.
         if "opportunity-tracker" not in text:
             raise LinkedInScraperException(
                 f"Voyager {self.surface} answered without the jobs tracker in "
                 "it. Refusing to report that as an empty stage."
+            )
+        if not jobs and _RECORD_START in text:
+            raise LinkedInScraperException(
+                f"Voyager {self.surface} changed shape: the tracker names jobs "
+                "but none parsed. Refusing to report that as an empty stage."
             )
         return {
             "url": f"{TRACKER_URL}?stage={stage}",

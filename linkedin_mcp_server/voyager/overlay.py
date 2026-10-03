@@ -1620,7 +1620,12 @@ def install_voyager_overlay(
             if unknown:
                 result["unknown_sections"] = unknown
             if "posts" in requested:
-                own = result["identity"]["public_identifier"]
+                # A profile with no public identifier is still read by id.
+                identity = result.get("identity") or {}
+                own = (
+                    identity.get("public_identifier")
+                    or (identity.get("profile_urn") or "").rsplit(":", 1)[-1]
+                )
                 posts = await extractor.get_person_posts(own, count=10)
                 result["sections"]["posts"] = posts["sections"]["posts"]
                 result["posts"] = posts["posts"]

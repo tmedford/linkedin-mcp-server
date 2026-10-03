@@ -1630,10 +1630,11 @@ async def _person_extra_scenario(method: str) -> dict[str, Any]:
 async def _person_scenario() -> dict[str, Any]:
     """Record what `get_person` does to the page.
 
-    Six evaluates and no navigation: the profile, how the signed-in member
-    relates to it, its contact fields, the connections the two share, who is
-    signed in, and that member's own profile for the comparison. The tool beside it loads the profile page and one more page
-    per section.
+    Seven evaluates and no navigation: the profile, how the signed-in member
+    relates to it, its contact fields, its follower and connection counts, the
+    connections the two share, who is signed in, and that member's own profile
+    for the comparison. The tool beside it loads the profile page and one more
+    page per section.
     """
     recorder = TraceRecorder("get_person__baseline", _COMMON_ALLOWED)
     clock = FakeClock(recorder)

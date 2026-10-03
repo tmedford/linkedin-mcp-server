@@ -258,3 +258,24 @@ async def test_connect_never_reaches_upstreams_full_flow(mock_context):
         )
 
     extractor.connect_with_person.assert_not_called()
+
+
+async def test_my_posts_are_read_by_id_when_the_profile_has_no_public_identifier(
+    mock_context,
+):
+    fake = MagicMock()
+    fake.my_person = AsyncMock(
+        return_value={
+            "sections": {"main_profile": "Me"},
+            "identity": {"profile_urn": "urn:li:fsd_profile:ACoAA-me"},
+        }
+    )
+    fake.get_person_posts = AsyncMock(
+        return_value={"sections": {"posts": "p"}, "posts": [], "next_cursor": None}
+    )
+    tool = await _tool("get_my_profile")
+
+    result = await tool.fn(mock_context, sections="posts", extractor=fake)
+
+    assert result["sections"]["posts"] == "p"
+    fake.get_person_posts.assert_awaited_once_with("ACoAA-me", count=10)

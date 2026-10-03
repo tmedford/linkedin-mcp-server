@@ -944,14 +944,9 @@ class VoyagerPersonReader(VoyagerReader):
             # A token equal to the one supplied is the server re-serving the
             # page just read; handing it back would loop the caller forever.
             token = None
-        lines = []
-        for post in posts:
-            who = post.get("repost_header") or post.get("author") or "?"
-            body = post.get("text") or post.get("reshared_text") or ""
-            lines.append(f"{who} - {post.get('posted_at_iso')}\n{body}")
         return {
             "url": f"{url}recent-activity/all/",
-            "sections": {"posts": "\n\n".join(lines)},
+            "sections": {"posts": render_posts(posts)},
             "posts": posts,
             "count": len(posts),
             "page_size": count,

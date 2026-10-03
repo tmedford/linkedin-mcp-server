@@ -142,3 +142,11 @@ def _no_cached_headers():
     jobs_module.forget_prefetch_headers()
     yield
     jobs_module.forget_prefetch_headers()
+
+
+async def test_a_non_tracker_answer_naming_a_job_is_not_called_a_shape_change():
+    # An error component can embed a job id without being the tracker.
+    stray = '0:{"viewName":"error","payload":{"jobId":"7"}}'
+
+    with pytest.raises(LinkedInScraperException, match="without the jobs tracker"):
+        await _reader(_Page(stray)).get_saved_jobs()
