@@ -172,7 +172,7 @@ def forget_cached_query() -> None:
 _OBFUSCATED_ID = re.compile(r"^ACoAA[A-Za-z0-9_-]+$")
 
 
-def _handle(profile_url: str) -> str:
+def _handle(profile_url: str | None) -> str:
     """Return the VANITY handle from a profile URL, or "" when there is none.
 
     An obfuscated member id is deliberately NOT returned here. It is a valid
