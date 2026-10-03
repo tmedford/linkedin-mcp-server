@@ -191,35 +191,24 @@ async def test_connect_sends_through_the_api_with_or_without_a_note(mock_context
         "dry_run": False,
     }
     # Upstream's page-driven flow is no longer reached for either.
-    extractor.connect_with_person.assert_not_awaited()
+    extractor.connect_with_person.assert_not_called()
 
 
-async def test_an_incoming_invitation_is_accepted_through_upstreams_flow(mock_context):
+async def test_connect_never_reaches_upstreams_full_flow(mock_context):
+    # An incoming invitation is accepted inside invite_person, accept-only.
+    # Upstream's whole flow could send a new request if the invitation had
+    # gone in between, so the tool must never call it, dry run or not.
     extractor = MagicMock()
-    extractor.invite_person = AsyncMock(return_value={"status": "invitation_received"})
-    extractor.connect_with_person = AsyncMock(return_value={"status": "accepted"})
-    tool = await _tool("connect_with_person")
-
-    result = await tool.fn(
-        linkedin_username="ada-lovelace", ctx=mock_context, extractor=extractor
-    )
-
-    assert result["status"] == "accepted"
-    extractor.connect_with_person.assert_awaited_once_with("ada-lovelace", note=None)
-
-
-async def test_a_dry_run_never_accepts(mock_context):
-    extractor = MagicMock()
-    extractor.invite_person = AsyncMock(return_value={"status": "invitation_received"})
+    extractor.invite_person = AsyncMock(return_value={"status": "accepted"})
     extractor.connect_with_person = AsyncMock()
     tool = await _tool("connect_with_person")
 
-    result = await tool.fn(
-        linkedin_username="ada-lovelace",
-        ctx=mock_context,
-        dry_run=True,
-        extractor=extractor,
-    )
+    for dry_run in (False, True):
+        await tool.fn(
+            linkedin_username="ada-lovelace",
+            ctx=mock_context,
+            dry_run=dry_run,
+            extractor=extractor,
+        )
 
-    assert result["status"] == "invitation_received"
-    extractor.connect_with_person.assert_not_awaited()
+    extractor.connect_with_person.assert_not_called()

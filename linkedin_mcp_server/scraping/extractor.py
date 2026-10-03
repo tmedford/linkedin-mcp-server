@@ -95,7 +95,9 @@ class LinkedInExtractor:
         self._people_search = VoyagerPeopleSearch(session, navigator)
         self._profile_views = VoyagerProfileViews(session, navigator)
         self._recruiter_views = VoyagerRecruiterViews(session, navigator)
-        self._voyager_connect = VoyagerConnect(session, navigator)
+        self._voyager_connect = VoyagerConnect(
+            session, navigator, connection=self._connection
+        )
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""

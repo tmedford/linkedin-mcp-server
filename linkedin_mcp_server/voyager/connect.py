@@ -231,6 +231,70 @@ class VoyagerConnect(VoyagerProfileViews):
 
     surface = "connect"
 
+    def __init__(self, session: Any, navigator: Any, *, connection: Any = None):
+        super().__init__(session, navigator)
+        # Upstream's page-driven connection helper, used for ONE thing:
+        # accepting an incoming invitation, which no API call has been
+        # measured for. Never for sending.
+        self._connection = connection
+
+    async def _accept_incoming(self, username: str, result: Any) -> dict[str, Any]:
+        """Accept an incoming invitation, and do nothing else.
+
+        Upstream's ``connect_with_person`` accepts an incoming invitation,
+        but it decides what to do from a fresh read of the page: if the
+        invitation was withdrawn in between, it finds a connectable profile
+        and sends a new request. This uses only its accept steps, re-checks
+        on the page that the incoming request is still there, and clicks
+        nothing otherwise. Success is read back from the API.
+        """
+        from linkedin_mcp_server.scraping import connection as upstream
+
+        if self._connection is None:
+            return result(
+                "invitation_received",
+                "This member has already invited you, and accepting is not "
+                "available here. Nothing was sent.",
+            )
+        await self._connection._read_main_profile(username)
+        signals = await self._connection._read_action_signals(username)
+        if upstream.detect_connection_state(signals) != "incoming_request":
+            return result(
+                "invitation_gone",
+                "The incoming invitation was no longer on the profile when it "
+                "was about to be accepted. Nothing was clicked or sent.",
+            )
+        if not await self._connection._click_incoming_accept():
+            return result(
+                "send_failed",
+                "Could not find or click the Accept button. Nothing was sent.",
+            )
+        # LinkedIn propagates an accept asynchronously (upstream measured an
+        # immediate re-read still showing the old state), so one settle retry.
+        after: dict[str, Any] = {"state": None}
+        for attempt in range(2):
+            if attempt:
+                await self._session.delay(3.0)
+            try:
+                after = await self._relationship(username)
+            except Exception as exc:  # the click happened; never an error
+                logger.warning(
+                    "Accept for %s clicked; read-back failed: %s", username, exc
+                )
+                break
+            if after["state"] == "connected":
+                return result(
+                    "accepted",
+                    "Accepted their invitation.",
+                    relationship_after="connected",
+                )
+        return result(
+            "send_unconfirmed",
+            "Accept was clicked but the relationship did not read back as "
+            "connected. Check the profile before trying again.",
+            relationship_after=after["state"],
+        )
+
     async def _relationship(self, identifier: str) -> dict[str, Any]:
         member = await self._resolve_member(identifier)
         payload = await self._fetch(
@@ -249,9 +313,9 @@ class VoyagerConnect(VoyagerProfileViews):
         """Send a request, with or without a note, unless the relationship
         rules it out.
 
-        ``invited_by_them`` comes back as ``invitation_received`` and nothing
-        is sent: accepting is a different action, not measured on the API, so
-        the tool hands that case to upstream's accept flow.
+        ``invited_by_them`` is accepted (see ``_accept_incoming``), or on a
+        dry run reported as ``invitation_received``. Nothing is ever sent to
+        someone who invited the signed-in member.
         """
         from linkedin_mcp_server.scraping.identifiers import (
             normalize_person_identifier,
@@ -281,11 +345,13 @@ class VoyagerConnect(VoyagerProfileViews):
         if before["state"] in _STATUS:
             return result(*_STATUS[before["state"]])
         if before["state"] == "invited_by_them":
-            return result(
-                "invitation_received",
-                "This member has already invited you. Nothing was sent: "
-                "accepting is a different action.",
-            )
+            if dry_run:
+                return result(
+                    "invitation_received",
+                    "This member has already invited you. A real call accepts "
+                    "their invitation. Nothing was done.",
+                )
+            return await self._accept_incoming(username, result)
         if before["state"] != "not_invited":
             return result(
                 "connect_unavailable",

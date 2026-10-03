@@ -275,3 +275,66 @@ async def test_a_note_dry_run_sends_nothing():
 
     assert result["request"]["customMessage"] == "Hi"
     assert page.posts == []
+
+
+CONNECTED = {"*connection": "urn:li:fsd_connection:1"}
+
+
+def _upstream(state: str, clicks: bool = True) -> MagicMock:
+    """Upstream's connection helper, as far as accepting uses it."""
+    helper = MagicMock()
+    helper._read_main_profile = AsyncMock(return_value={"sections": {}})
+    helper._read_action_signals = AsyncMock(return_value=state)
+    helper._click_incoming_accept = AsyncMock(return_value=clicks)
+    return helper
+
+
+def _accepting_reader(page: _Page, helper: MagicMock, monkeypatch) -> VoyagerConnect:
+    from linkedin_mcp_server.scraping import connection as upstream
+
+    # The signals stand in for the page; the state is what they detect to.
+    monkeypatch.setattr(upstream, "detect_connection_state", lambda signals: signals)
+    reader = _reader(page)
+    reader._connection = helper
+    return reader
+
+
+async def test_an_incoming_invitation_is_accepted_and_read_back(monkeypatch):
+    page = _Page(_top_card(INVITED_BY_THEM), _top_card(CONNECTED))
+    helper = _upstream("incoming_request")
+
+    result = await _accepting_reader(page, helper, monkeypatch).connect_with_person(
+        "ada-lovelace"
+    )
+
+    assert (result["status"], result["relationship_after"]) == ("accepted", "connected")
+    helper._click_incoming_accept.assert_awaited_once()
+    assert page.posts == []  # accepting sends no invitation
+
+
+async def test_an_invitation_gone_by_accept_time_clicks_nothing(monkeypatch):
+    # The race: their invitation was withdrawn between the API read and the
+    # page read. Upstream's full flow would now send a new request.
+    page = _Page(_top_card(INVITED_BY_THEM))
+    helper = _upstream("connectable")
+
+    result = await _accepting_reader(page, helper, monkeypatch).connect_with_person(
+        "ada-lovelace"
+    )
+
+    assert result["status"] == "invitation_gone"
+    helper._click_incoming_accept.assert_not_called()
+    assert page.posts == []
+
+
+async def test_a_dry_run_on_an_incoming_invitation_opens_nothing(monkeypatch):
+    page = _Page(_top_card(INVITED_BY_THEM))
+    helper = _upstream("incoming_request")
+
+    result = await _accepting_reader(page, helper, monkeypatch).connect_with_person(
+        "ada-lovelace", dry_run=True
+    )
+
+    assert result["status"] == "invitation_received"
+    helper._read_main_profile.assert_not_called()
+    helper._click_incoming_accept.assert_not_called()

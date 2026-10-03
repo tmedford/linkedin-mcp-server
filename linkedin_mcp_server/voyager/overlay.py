@@ -1254,11 +1254,13 @@ def install_voyager_overlay(
         the invitation to set note_sent.
 
         **Accepting is the one case still done on the page.** When the
-        member has already invited you, the call is handed to upstream's
-        flow, which accepts their invitation as upstream's tool of this name
-        always has (status accepted or connected). No API accept has been
-        measured yet. A dry run reports invitation_received and accepts
-        nothing.
+        member has already invited you, their invitation is accepted, as
+        upstream's tool of this name always has: the profile page is opened,
+        re-checked to still show the incoming request, and Accept clicked;
+        the result is read back from the API (status accepted). If the
+        invitation is gone by then, nothing is clicked or sent (status
+        invitation_gone). No API accept has been measured yet. A dry run
+        reports invitation_received and does nothing.
 
         The tool is annotated with destructiveHint so MCP clients will
         prompt for user confirmation before execution.
@@ -1304,14 +1306,6 @@ def install_voyager_overlay(
             result = await extractor.invite_person(
                 linkedin_username, note=note, dry_run=dry_run
             )
-            if result.get("status") == "invitation_received" and not dry_run:
-                # Upstream's tool of this name accepts an incoming invitation,
-                # and a replacement keeps that promise. No API accept has been
-                # measured, so this one case goes to upstream's page flow.
-                logger.info("Accepting %s's invitation via upstream", linkedin_username)
-                result = await extractor.connect_with_person(
-                    linkedin_username, note=note
-                )
 
             await ctx.report_progress(progress=100, total=100, message="Complete")
 
