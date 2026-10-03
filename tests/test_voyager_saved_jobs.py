@@ -4,14 +4,25 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
+from linkedin_mcp_server.core.exceptions import (
+    AuthenticationError,
+    LinkedInScraperException,
+    RateLimitError,
+)
 from linkedin_mcp_server.voyager import jobs as jobs_module
 from linkedin_mcp_server.voyager import profile_views as views_module
 from linkedin_mcp_server.voyager.jobs import VoyagerSavedJobs, parse_tracker_jobs
+
+
+@pytest.fixture(autouse=True)
+def _no_held_action_headers():
+    # `_reader` holds the page's action headers; nothing outlives the test.
+    yield
+    setattr(views_module, "_HEADER_CACHE", None)
 
 
 def _record(job_id: int, **extra: Any) -> dict[str, Any]:
@@ -189,3 +200,46 @@ async def test_each_saved_job_is_asked_for_its_network_contacts():
     assert jobs[0]["network_contacts"] == 10
     # Unread is absent, not zero.
     assert "network_contacts" not in jobs[1]
+
+
+async def test_action_headers_are_taken_once_and_their_failure_skips_every_job():
+    page = _Page(_stream([_record(7), _record(8), _record(9)]))
+    reader = _reader(page)
+    setattr(views_module, "_HEADER_CACHE", None)
+    taken = AsyncMock(side_effect=LinkedInScraperException("no action seen"))
+    with patch.object(views_module.VoyagerProfileViews, "_page_headers", taken):
+        jobs = (await reader.get_saved_jobs())["jobs"]
+
+    assert taken.await_count == 1
+    assert len(jobs) == 3 and not any("network_contacts" in job for job in jobs)
+    # Only the tracker itself was asked for.
+    assert len(page.sent) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "error"), [(403, AuthenticationError), (429, RateLimitError)]
+)
+async def test_a_rejected_or_limited_contacts_read_raises(status, error):
+    page = _Page(_stream([_record(7), _record(8)]))
+    tracker = page.evaluate
+
+    async def evaluate(program: str, argument: Any = None) -> Any:
+        if "opportunityContacts" in argument["url"]:
+            page.sent.append(argument)
+            return {"status": status, "text": ""}
+        return await tracker(program, argument)
+
+    setattr(page, "evaluate", evaluate)
+
+    with pytest.raises(error):
+        await _reader(page).get_saved_jobs()
+    # It stopped at the first job rather than asking for the second.
+    assert len(page.sent) == 2
+
+
+async def test_a_company_filter_holding_no_id_is_refused():
+    from linkedin_mcp_server.voyager.jobs import selected_filters
+
+    for blank in (" ", ",", " , "):
+        with pytest.raises(LinkedInScraperException, match="company_id was"):
+            selected_filters(company_id=blank)

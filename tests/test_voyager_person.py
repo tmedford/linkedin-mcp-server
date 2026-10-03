@@ -225,6 +225,8 @@ def _no_cached_profile():
     person_module.forget_my_profile()
     yield
     person_module.forget_my_profile()
+    # `_reader` holds route headers for its page; nothing outlives the test.
+    jobs_module.forget_prefetch_headers()
 
 
 MINE = _profile(
@@ -996,3 +998,20 @@ def test_interests_name_each_kind_of_entity_and_carry_the_total():
         {"name": "Rails"},
     ]
     assert (section["total"], section["complete"]) == (35, False)
+
+
+async def test_a_card_read_that_throws_does_not_fail_the_profile():
+    reader, page = _reader(_body(MINE), _relationship("self"), CONTACT)
+    answer = page.evaluate
+
+    async def evaluate(program: str, argument: Any) -> Any:
+        if isinstance(argument, dict):
+            raise RuntimeError("Target page, context or browser has been closed")
+        return await answer(program, argument)
+
+    setattr(page, "evaluate", evaluate)
+
+    result = await reader.get_person("taylor-medford")
+
+    assert result["identity"]["name"] == "Taylor Medford"
+    assert "analytics" not in result

@@ -124,7 +124,9 @@ def selected_filters(**arguments: Any) -> str:
     company = arguments.get("company_id")
     if company:
         ids = [c.strip() for c in str(company).split(",") if c.strip()]
-        if not all(c.isdigit() for c in ids):
+        # " " and "," are truthy and hold no id: without this the filter
+        # would be sent as an empty list and the search would run unfiltered.
+        if not ids or not all(c.isdigit() for c in ids):
             raise LinkedInScraperException(
                 f"company_id was {company!r}. Pass LinkedIn's numeric company "
                 "id (get_recruiter_views and search_jobs report it), not a name."
@@ -615,20 +617,18 @@ class VoyagerSavedJobs(VoyagerJobs):
         _PREFETCH_HEADERS = (page, headers)
         return headers
 
-    async def _contacts(self, job_id: str) -> int | None:
-        """People in your network at a saved job's company, or None if unread.
+    async def _action_headers(self) -> dict[str, str] | None:
+        """The headers a component action wants, or None when untakeable.
 
-        Best effort: the list is worth returning without its faces.
+        The route-prefetch headers were refused for the contacts component
+        (measured), so these are the ones the page sends with its own actions.
+        Taken once per call: a capture that fails waits out its whole window,
+        and repeating that per job would cost minutes.
         """
-        from linkedin_mcp_server.voyager.profile_views import (
-            _POST_STREAM_JS,
-            VoyagerProfileViews,
-        )
+        from linkedin_mcp_server.voyager.profile_views import VoyagerProfileViews
 
-        # A component action wants the headers the page sends with its own
-        # actions; the route-prefetch headers were refused here (measured).
         try:
-            headers = await VoyagerProfileViews(
+            return await VoyagerProfileViews(
                 self._session, self._navigator
             )._page_headers()
         except (AuthenticationError, RateLimitError):
@@ -636,6 +636,15 @@ class VoyagerSavedJobs(VoyagerJobs):
         except LinkedInScraperException as exc:
             logger.info("Saved-job contacts unavailable: %s", exc)
             return None
+
+    async def _contacts(self, job_id: str, headers: dict[str, str]) -> int | None:
+        """People in your network at a saved job's company, or None if unread.
+
+        Best effort: the list is worth returning without its faces. A
+        rejected session or a rate limit is not that, and raises.
+        """
+        from linkedin_mcp_server.voyager.profile_views import _POST_STREAM_JS
+
         answer = await self._session.page.evaluate(
             _POST_STREAM_JS,
             {
@@ -658,7 +667,14 @@ class VoyagerSavedJobs(VoyagerJobs):
                 ),
             },
         )
-        if not isinstance(answer, dict) or answer.get("status") != 200:
+        status = answer.get("status") if isinstance(answer, dict) else None
+        if status in (401, 403):
+            raise AuthenticationError(
+                f"Voyager {self.surface} request rejected: HTTP {status}"
+            )
+        if status == 429:
+            raise RateLimitError(f"Voyager {self.surface} rate limited: HTTP {status}")
+        if status != 200:
             logger.info("Saved-job contacts unavailable for %s", job_id)
             return None
         return parse_contacts(answer.get("text") or "")
@@ -720,10 +736,11 @@ class VoyagerSavedJobs(VoyagerJobs):
                 f"Voyager {self.surface} changed shape: the tracker names jobs "
                 "but none parsed. Refusing to report that as an empty stage."
             )
-        for index, job in enumerate(jobs):
+        headers = await self._action_headers() if jobs else None
+        for index, job in enumerate(jobs if headers is not None else []):
             if index:
                 await self._session.delay(0.4)
-            contacts = await self._contacts(job["job_id"])
+            contacts = await self._contacts(job["job_id"], headers or {})
             if contacts is not None:
                 job["network_contacts"] = contacts
         return {

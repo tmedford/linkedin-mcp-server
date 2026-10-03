@@ -958,27 +958,33 @@ class VoyagerPersonReader(VoyagerReader):
         except LinkedInScraperException as exc:
             logger.info("Profile cards unavailable: %s", exc)
             return None
-        answer = await self._session.page.evaluate(
-            _POST_STREAM_JS,
-            {
-                "url": f"{_PROFILE_ROUTE}{quote(identifier, safe='')}/",
-                "headers": headers,
-                "body": json.dumps(
-                    {
-                        "requestedArguments": {
-                            "payload": {"vanityName": identifier},
-                            "states": [],
-                            "requestMetadata": {
-                                "$type": "proto.sdui.common.RequestMetadata"
+        # Best effort to the end: the profile itself is already read, so a
+        # page that navigated away or closed must not fail the whole call.
+        try:
+            answer = await self._session.page.evaluate(
+                _POST_STREAM_JS,
+                {
+                    "url": f"{_PROFILE_ROUTE}{quote(identifier, safe='')}/",
+                    "headers": headers,
+                    "body": json.dumps(
+                        {
+                            "requestedArguments": {
+                                "payload": {"vanityName": identifier},
+                                "states": [],
+                                "requestMetadata": {
+                                    "$type": "proto.sdui.common.RequestMetadata"
+                                },
+                                "screenId": "",
+                                "knownTemplateIds": [],
                             },
-                            "screenId": "",
-                            "knownTemplateIds": [],
-                        },
-                        "isPrefetch": True,
-                    }
-                ),
-            },
-        )
+                            "isPrefetch": True,
+                        }
+                    ),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Profile cards unavailable for %s: %s", identifier, exc)
+            return None
         if not isinstance(answer, dict) or answer.get("status") != 200:
             logger.info("Profile cards unavailable for %s", identifier)
             return None
