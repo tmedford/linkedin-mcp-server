@@ -105,6 +105,29 @@ def parse_people(
                 for insight in entity.get("insights") or []
                 if isinstance(insight, dict)
             ]
+            # The faces beside "N mutual connections": the answer names those
+            # members by id only, and an id is accepted wherever a public
+            # identifier is. The action type marks the insight, not its words.
+            mutual = [
+                str(urn).rsplit(":", 1)[-1]
+                for insight in entity.get("insights") or []
+                if isinstance(insight, dict)
+                and (insight.get("simpleInsight") or {}).get("searchActionType")
+                == "SEE_MUTUAL_CONNECTIONS"
+                for attribute in (
+                    (insight["simpleInsight"].get("image") or {}).get("attributes")
+                    or []
+                )
+                for urn in [
+                    (
+                        (attribute.get("detailDataUnion") or {}).get(
+                            "nonEntityProfilePicture"
+                        )
+                        or {}
+                    ).get("*profile")
+                ]
+                if urn
+            ]
             person = {
                 "name": _text(entity.get("title")),
                 "headline": _text(entity.get("primarySubtitle")),
@@ -118,8 +141,9 @@ def parse_people(
                 "degree": _DISTANCE.get(distance or ""),
                 "summary": _text(entity.get("summary")),
                 "insight": next((text for text in insights if text), None),
+                "mutual_connection_ids": mutual,
             }
-            people.append({k: v for k, v in person.items() if v not in (None, "")})
+            people.append({k: v for k, v in person.items() if v not in (None, "", [])})
     return people, found, items_seen
 
 

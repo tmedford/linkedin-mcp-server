@@ -15,7 +15,7 @@
       "section": "api"
     },
     {
-      "arg": "https://www.linkedin.com/voyager/api/search/dash/clusters?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175&origin=FACETED_SEARCH&q=all&query=(flagshipSearchIntent:ORGANIZATIONS_PEOPLE_ALUMNI,queryParameters:(currentCompany:List(1001),resultType:List(ORGANIZATION_ALUMNI)),includeFiltersInResponse:true)&start=0&count=12",
+      "arg": "https://www.linkedin.com/voyager/api/search/dash/clusters?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-186&origin=FACETED_SEARCH&q=all&query=(flagshipSearchIntent:ORGANIZATIONS_PEOPLE_ALUMNI,queryParameters:(currentCompany:List(1001),resultType:List(ORGANIZATION_ALUMNI)),includeFiltersInResponse:true)&start=0&count=12",
       "call": "company_people",
       "kind": "evaluate",
       "operation": "voyager_conversations_fetch",

@@ -17,6 +17,20 @@
       "operation": "voyager_stream_post",
       "program_digest": "f959d86e614d",
       "section": "saved_jobs"
+    },
+    {
+      "arg": {
+        "body": "{\"componentId\": \"com.linkedin.sdui.generated.jobseeker.dsl.impl.opportunityContacts\", \"clientArguments\": {\"payload\": {\"jobId\": \"123\"}, \"states\": [], \"requestMetadata\": {\"$type\": \"proto.sdui.common.RequestMetadata\"}, \"screenId\": \"com.linkedin.sdui.flagshipnav.jobs.OpportunityTrackerPage\", \"knownTemplateIds\": []}}",
+        "headers": {
+          "x-li-track": "{}"
+        },
+        "url": "https://www.linkedin.com/flagship-web/rsc-action/actions/component?componentId=com.linkedin.sdui.generated.jobseeker.dsl.impl.opportunityContacts&sduiid=com.linkedin.sdui.generated.jobseeker.dsl.impl.opportunityContacts"
+      },
+      "call": "saved_jobs",
+      "kind": "evaluate",
+      "operation": "voyager_stream_post",
+      "program_digest": "f959d86e614d",
+      "section": "saved_jobs"
     }
   ],
   "result": {
@@ -28,13 +42,14 @@
       {
         "company": "Acme",
         "job_id": "123",
+        "network_contacts": 3,
         "stage": "Saved",
         "title": "Python Engineer",
         "url": "https://www.linkedin.com/jobs/view/123/"
       }
     ],
     "sections": {
-      "saved_jobs": "Python Engineer - Acme (123)"
+      "saved_jobs": "Python Engineer - Acme (123)\n    3 in your network"
     },
     "stage": "saved",
     "url": "https://www.linkedin.com/jobs-tracker/?stage=saved"

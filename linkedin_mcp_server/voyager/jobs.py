@@ -38,11 +38,16 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
+from linkedin_mcp_server.core.exceptions import (
+    AuthenticationError,
+    LinkedInScraperException,
+    RateLimitError,
+)
 from linkedin_mcp_server.voyager.people_search import VoyagerPeopleSearch
 
 logger = logging.getLogger(__name__)
@@ -465,6 +470,11 @@ class VoyagerJobs(VoyagerPeopleSearch):
 #   ``isVerified``. Those records are read, not the rendered text.
 # - The stream carried no pager, and its ten records matched the ten rows the
 #   page showed. A tab heading read 11; what the eleventh is was not found.
+# - The faces beside a row ("+8") are not in that answer. Each row loads them
+#   as a component, ``...jobseeker.dsl.impl.opportunityContacts`` with the
+#   job's id: an image pile of ``sortableImages`` and an ``overflowCount``.
+#   Two faces and "+8" is ten people in your network at that company. The
+#   pile names nobody; ``search_people`` on the company does.
 # - The prefetch needs the client's own ``x-li-*`` headers, so they are copied
 #   once per browser session from a prefetch the feed page sends.
 
@@ -472,6 +482,11 @@ TRACKER_URL = "https://www.linkedin.com/jobs-tracker/"
 _TRACKER_ROUTE = "https://www.linkedin.com/flagship-web/jobs-tracker/"
 STAGES = ("saved", "draft", "clicked_apply", "applied", "interview", "archived")
 _RECORD_START = '{"jobId":"'
+_ACTIONS = "https://www.linkedin.com/flagship-web/rsc-action/actions/"
+_CONTACTS = "com.linkedin.sdui.generated.jobseeker.dsl.impl.opportunityContacts"
+_TRACKER_SCREEN = "com.linkedin.sdui.flagshipnav.jobs.OpportunityTrackerPage"
+_PILE = re.compile(r'"sortableImages":\[(.*?)\],"maxVisibleItems"', re.S)
+_OVERFLOW = re.compile(r'"overflowCount":\["\D*(\d+)"\]')
 
 # Valid for as long as the page that issued them, as in profile_views.
 _PREFETCH_HEADERS: tuple[Any, dict[str, str]] | None = None
@@ -520,6 +535,14 @@ def parse_tracker_jobs(text: str) -> list[dict[str, Any]]:
     return list(jobs.values())
 
 
+def parse_contacts(text: str) -> int:
+    """How many people in your network the row's image pile stands for."""
+    pile = _PILE.search(text)
+    overflow = _OVERFLOW.search(text)
+    shown = pile.group(1).count('"image"') if pile else 0
+    return shown + (int(overflow.group(1)) if overflow else 0)
+
+
 def _number(value: Any) -> float | None:
     """LinkedIn sends these timestamps as strings of digits."""
     try:
@@ -537,6 +560,8 @@ def render_tracker(jobs: list[dict[str, Any]]) -> str:
         lines.append(f"{job.get('title')} - {job.get('company')} ({job.get('job_id')})")
         if place:
             lines.append(f"    {place}")
+        if job.get("network_contacts"):
+            lines.append(f"    {job['network_contacts']} in your network")
         if job.get("note"):
             lines.append(f"    Note: {job['note']}")
     return "\n".join(lines)
@@ -590,15 +615,59 @@ class VoyagerSavedJobs(VoyagerJobs):
         _PREFETCH_HEADERS = (page, headers)
         return headers
 
+    async def _contacts(self, job_id: str) -> int | None:
+        """People in your network at a saved job's company, or None if unread.
+
+        Best effort: the list is worth returning without its faces.
+        """
+        from linkedin_mcp_server.voyager.profile_views import (
+            _POST_STREAM_JS,
+            VoyagerProfileViews,
+        )
+
+        # A component action wants the headers the page sends with its own
+        # actions; the route-prefetch headers were refused here (measured).
+        try:
+            headers = await VoyagerProfileViews(
+                self._session, self._navigator
+            )._page_headers()
+        except (AuthenticationError, RateLimitError):
+            raise
+        except LinkedInScraperException as exc:
+            logger.info("Saved-job contacts unavailable: %s", exc)
+            return None
+        answer = await self._session.page.evaluate(
+            _POST_STREAM_JS,
+            {
+                "url": f"{_ACTIONS}component?componentId={_CONTACTS}"
+                f"&sduiid={_CONTACTS}",
+                "headers": headers,
+                "body": json.dumps(
+                    {
+                        "componentId": _CONTACTS,
+                        "clientArguments": {
+                            "payload": {"jobId": job_id},
+                            "states": [],
+                            "requestMetadata": {
+                                "$type": "proto.sdui.common.RequestMetadata"
+                            },
+                            "screenId": _TRACKER_SCREEN,
+                            "knownTemplateIds": [],
+                        },
+                    }
+                ),
+            },
+        )
+        if not isinstance(answer, dict) or answer.get("status") != 200:
+            logger.info("Saved-job contacts unavailable for %s", job_id)
+            return None
+        return parse_contacts(answer.get("text") or "")
+
     async def get_saved_jobs(
         self, max_pages: int = 3, stage: str = "saved"
     ) -> dict[str, Any]:
         """The jobs in one stage of the tracker. ``max_pages`` is upstream's
         argument and has nothing to page: a stage arrives in one answer."""
-        from linkedin_mcp_server.core.exceptions import (
-            AuthenticationError,
-            RateLimitError,
-        )
         from linkedin_mcp_server.voyager.profile_views import _POST_STREAM_JS
 
         if stage not in STAGES:
@@ -651,6 +720,12 @@ class VoyagerSavedJobs(VoyagerJobs):
                 f"Voyager {self.surface} changed shape: the tracker names jobs "
                 "but none parsed. Refusing to report that as an empty stage."
             )
+        for index, job in enumerate(jobs):
+            if index:
+                await self._session.delay(0.4)
+            contacts = await self._contacts(job["job_id"])
+            if contacts is not None:
+                job["network_contacts"] = contacts
         return {
             "url": f"{TRACKER_URL}?stage={stage}",
             "sections": {"saved_jobs": render_tracker(jobs)},

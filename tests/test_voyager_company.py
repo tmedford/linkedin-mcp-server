@@ -238,3 +238,64 @@ async def test_company_search_reports_how_many_the_search_matched():
     )
 
     assert (await reader.find_companies("fintech"))["total"] == 5534
+
+
+def test_a_company_lists_its_offices_and_showcase_pages():
+    payload = _company()
+    company = next(e for e in payload["included"] if e["entityUrn"] == URN)
+    company["confirmedLocations"] = [
+        {
+            "description": "HQ",
+            "city": "San Francisco",
+            "country": "US",
+            "headquarter": True,
+        },
+        {"city": "London", "country": "GB"},
+    ]
+    company["showcasePages"] = ["urn:li:fs_normalized_company:55"]
+    payload["included"].append(
+        {"entityUrn": "urn:li:fs_normalized_company:55", "name": "Acme IT"}
+    )
+
+    parsed = parse_company(payload)
+
+    assert parsed is not None
+    assert parsed["locations"] == [
+        {
+            "description": "HQ",
+            "city": "San Francisco",
+            "country": "US",
+            "headquarter": True,
+        },
+        {"city": "London", "country": "GB", "headquarter": False},
+    ]
+    assert parsed["showcase_pages"] == [{"name": "Acme IT", "company_id": "55"}]
+
+
+def test_a_company_result_carries_linkedins_line_about_your_tie_to_it():
+    result = {
+        "entityUrn": "urn:li:fsd_entityResultViewModel:(urn:li:fsd_company:1001,X,Y)",
+        "trackingUrn": "urn:li:company:1001",
+        "title": {"text": "Acme"},
+        "navigationUrl": "https://www.linkedin.com/company/acme/",
+        "insights": [
+            {
+                "simpleInsight": {
+                    "title": {"text": "1 person from your school was hired here"}
+                }
+            }
+        ],
+    }
+    payload = {
+        "data": {
+            "elements": [
+                {"items": [{"itemUnion": {"*entityResult": result["entityUrn"]}}]}
+            ]
+        },
+        "included": [result],
+    }
+
+    assert (
+        parse_companies(payload)[0][0]["insight"]
+        == "1 person from your school was hired here"
+    )

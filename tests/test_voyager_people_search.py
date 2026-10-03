@@ -14,7 +14,7 @@ from linkedin_mcp_server.core.exceptions import LinkedInScraperException
 from linkedin_mcp_server.scraping.contracts import FilterValidationError
 from linkedin_mcp_server.server import create_mcp_server
 from linkedin_mcp_server.voyager import overlay
-from linkedin_mcp_server.voyager.people_search import VoyagerPeopleSearch
+from linkedin_mcp_server.voyager.people_search import VoyagerPeopleSearch, parse_people
 
 
 def _result(index: int, *, distance: str = "DISTANCE_2") -> dict[str, Any]:
@@ -271,3 +271,46 @@ async def test_a_full_page_with_a_promo_in_it_is_not_the_end():
 
     assert result["count"] == 9
     assert result["at_end"] is False
+
+
+def test_the_faces_beside_mutual_connections_are_named_by_id():
+    def picture(member: str) -> dict[str, Any]:
+        return {
+            "detailDataUnion": {
+                "nonEntityProfilePicture": {"*profile": f"urn:li:fsd_profile:{member}"}
+            }
+        }
+
+    entity = _result(1)
+    entity["insights"] = [
+        {
+            "simpleInsight": {
+                "searchActionType": "SEE_MUTUAL_CONNECTIONS",
+                "title": {"text": "2 mutual connections"},
+                "image": {"attributes": [picture("ACoAA-x"), picture("ACoAA-y")]},
+            }
+        },
+        # Another kind of insight has faces too; they are not mutuals.
+        {
+            "simpleInsight": {
+                "searchActionType": "SEE_FOLLOWERS",
+                "image": {"attributes": [picture("ACoAA-z")]},
+            }
+        },
+    ]
+    payload = {
+        "data": {
+            "elements": [
+                {"items": [{"itemUnion": {"*entityResult": entity["entityUrn"]}}]}
+            ]
+        },
+        "included": [entity],
+    }
+
+    people, _, _ = parse_people(payload)
+
+    assert people[0]["mutual_connection_ids"] == ["ACoAA-x", "ACoAA-y"]
+    assert (
+        "mutual_connection_ids"
+        not in parse_people(json.loads(_page_of([2])["body"]))[0][0]
+    )

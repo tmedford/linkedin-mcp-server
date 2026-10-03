@@ -97,6 +97,7 @@ def _post(
                                 "VP of Product",
                                 "Claravine",
                                 "United States (Remote)",
+                                "$$185K/yr - $245K/yr",
                             )
                         ],
                     },
@@ -193,6 +194,8 @@ def test_the_authors_headline_and_a_shared_job_are_read():
         "title": "VP of Product",
         "company": "Claravine",
         "location": "United States (Remote)",
+        # A leading dollar sign arrives escaped as "$$".
+        "details": ["$185K/yr - $245K/yr"],
         "job_id": "4471534204",
     }
 

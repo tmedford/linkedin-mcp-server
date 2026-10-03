@@ -58,7 +58,10 @@ _POSTS = (
 )
 _CLUSTERS = (
     f"{_API}search/dash/clusters?decorationId="
-    "com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175"
+    # -186, not the -175 people search uses: measured on 2026-10-03, a
+    # company result carries its insight line ("1 person from your school
+    # was hired here") under this version and null under the older one.
+    "com.linkedin.voyager.dash.deco.search.SearchClusterCollection-186"
 )
 _COMPANY_SLUG = re.compile(r"/company/([^/?#]+)")
 
@@ -128,6 +131,28 @@ def parse_company(payload: dict[str, Any]) -> dict[str, Any] | None:
             "specialities": company.get("specialities"),
             "followers": following.get("followerCount"),
             "url": company.get("url"),
+            # Every office the page lists, the headquarters flagged.
+            "locations": [
+                _clean(
+                    {
+                        "description": place.get("description"),
+                        "line1": place.get("line1"),
+                        "city": place.get("city"),
+                        "area": place.get("geographicArea"),
+                        "postal_code": place.get("postalCode"),
+                        "country": place.get("country"),
+                        "headquarter": bool(place.get("headquarter")),
+                    }
+                )
+                for place in company.get("confirmedLocations") or []
+                if isinstance(place, dict)
+            ],
+            "showcase_pages": [
+                {"name": page.get("name"), "company_id": company_id(urn)}
+                for urn in company.get("showcasePages") or []
+                for page in [by_urn.get(urn) or {}]
+                if page.get("name")
+            ],
         }
     )
 
@@ -225,6 +250,19 @@ def parse_companies(
                         "detail": _text(entity.get("primarySubtitle")),
                         "followers_text": _text(entity.get("secondarySubtitle")),
                         "summary": _text(entity.get("summary")),
+                        # LinkedIn's line about your tie to the company.
+                        "insight": next(
+                            (
+                                text
+                                for text in (
+                                    _text((row.get("simpleInsight") or {}).get("title"))
+                                    for row in entity.get("insights") or []
+                                    if isinstance(row, dict)
+                                )
+                                if text
+                            ),
+                            None,
+                        ),
                         "url": f"/company/{slug.group(1)}/",
                     }
                 )
@@ -407,6 +445,12 @@ class VoyagerCompany(VoyagerPeopleSearch):
                 "search_results": "\n".join(
                     f"{c.get('name')} ({c.get('company_id')})"
                     + (f"\n    {c['detail']}" if c.get("detail") else "")
+                    + (
+                        f"\n    {c['followers_text']}"
+                        if c.get("followers_text")
+                        else ""
+                    )
+                    + (f"\n    {c['insight']}" if c.get("insight") else "")
                     for c in companies
                 )
             },

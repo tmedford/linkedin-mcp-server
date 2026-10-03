@@ -43,6 +43,52 @@
       "operation": "voyager_conversations_fetch",
       "program_digest": "9d8f473bd12b",
       "section": "person"
+    },
+    {
+      "arg": {
+        "body": "{\"requestedArguments\": {\"payload\": {\"vanityName\": \"taylor\"}, \"states\": [], \"requestMetadata\": {\"$type\": \"proto.sdui.common.RequestMetadata\"}, \"screenId\": \"\", \"knownTemplateIds\": []}, \"isPrefetch\": true}",
+        "headers": {
+          "x-li-track": "{}"
+        },
+        "url": "https://www.linkedin.com/flagship-web/in/taylor/"
+      },
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_stream_post",
+      "program_digest": "f959d86e614d",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/profiles/ACoAA-me/following?q=followedEntities&count=50&entityType=INFLUENCER",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/profiles/ACoAA-me/following?q=followedEntities&count=50&entityType=COMPANY",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/profiles/ACoAA-me/following?q=followedEntities&count=50&entityType=GROUP",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/profiles/ACoAA-me/following?q=followedEntities&count=50&entityType=SCHOOL",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
     }
   ],
   "result": {
@@ -77,6 +123,32 @@
       "public_identifier": "taylor"
     },
     "incomplete_sections": [],
+    "interests": {
+      "companies": {
+        "complete": null,
+        "items": [],
+        "returned": 0,
+        "total": null
+      },
+      "groups": {
+        "complete": null,
+        "items": [],
+        "returned": 0,
+        "total": null
+      },
+      "schools": {
+        "complete": null,
+        "items": [],
+        "returned": 0,
+        "total": null
+      },
+      "top_voices": {
+        "complete": null,
+        "items": [],
+        "returned": 0,
+        "total": null
+      }
+    },
     "languages": {
       "complete": null,
       "items": [],

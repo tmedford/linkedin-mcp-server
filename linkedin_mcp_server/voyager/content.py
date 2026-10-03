@@ -137,7 +137,11 @@ def _text_under(node: Any, out: list[str], inside: bool = False) -> list[str]:
     ``children``, and an element array contributes only through its props.
     """
     if isinstance(node, str):
-        if inside and not node.startswith("$"):
+        # "$..." is a reference; "$$..." is the stream's escape for text that
+        # itself begins with a dollar sign ("$185K/yr - $245K/yr").
+        if inside and node.startswith("$$"):
+            out.append(node[1:])
+        elif inside and not node.startswith("$"):
             out.append(node)
     elif isinstance(node, list):
         if len(node) >= 4 and node[0] == "$" and isinstance(node[1], str):
@@ -200,12 +204,14 @@ def parse_content_posts(text: str) -> list[dict[str, Any]]:
         if card:
             job_id = _JOB_LINK.search(json.dumps(card[0]))
             shown = [t.strip() for t in _text_under(card[0], []) if t.strip()]
-            job = {
-                key: value
-                for key, value in zip(
-                    ("title", "company", "location", "insight"), shown, strict=False
-                )
-            }
+            # The first three lines are always these; what follows varies
+            # (a salary range, LinkedIn's "top applicant" line) and is kept
+            # as written rather than guessed at.
+            job: dict[str, Any] = dict(
+                zip(("title", "company", "location"), shown, strict=False)
+            )
+            if shown[3:]:
+                job["details"] = shown[3:]
             if job_id:
                 job["job_id"] = job_id.group(1)
         said = json.dumps(commentary[0]) if commentary else ""

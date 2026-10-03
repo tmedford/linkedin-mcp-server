@@ -28,6 +28,7 @@ from linkedin_mcp_server.scraping import session as session_module
 from linkedin_mcp_server.scraping import LinkedInExtractor
 from linkedin_mcp_server.scraping.fields import COMPANY_SECTIONS, PERSON_SECTIONS
 from linkedin_mcp_server.server import create_mcp_server
+from linkedin_mcp_server.voyager import jobs as voyager_jobs
 from linkedin_mcp_server.voyager import person as voyager_person
 from linkedin_mcp_server.voyager import thread_reply
 
@@ -1504,11 +1505,13 @@ async def _get_job_scenario() -> dict[str, Any]:
 async def _jobs_tracker_scenario() -> dict[str, Any]:
     """Record what reading the jobs tracker does to the page.
 
-    One POST and nothing else: the tracker route is prefetched, not opened.
+    One POST for the tracker route, prefetched rather than opened, and one
+    per job for the people in your network there. Nothing else.
     The client's headers come from a cache seeded here; taking them loads the
     feed once per browser session, which the reader's unit tests cover.
     """
     from linkedin_mcp_server.voyager import jobs as jobs_module
+    from linkedin_mcp_server.voyager import profile_views as views_module
 
     recorder = TraceRecorder("saved_jobs__baseline", _COMMON_ALLOWED)
     clock = FakeClock(recorder)
@@ -1523,15 +1526,22 @@ async def _jobs_tracker_scenario() -> dict[str, Any]:
         {"viewName": "opportunity-tracker-add-note", "payload": record},
         separators=(",", ":"),
     )
-    page.script("evaluate:voyager_stream_post", {"status": 200, "text": stream})
+    page.script(
+        "evaluate:voyager_stream_post",
+        {"status": 200, "text": stream},
+        # The faces beside the row: one component read per job.
+        {"status": 200, "text": '8:{"overflowCount":["+3"]}'},
+    )
     extractor = _extractor(page)
     jobs_module._PREFETCH_HEADERS = (page, {"x-li-track": "{}"})
+    views_module._HEADER_CACHE = (page, {"x-li-track": "{}"})
     try:
         async with boundaries(recorder, clock):
             with recorder.context("saved_jobs", "saved_jobs"):
                 result = await extractor.saved_jobs()
     finally:
         jobs_module.forget_prefetch_headers()
+        views_module._HEADER_CACHE = None
     page.assert_clean()
     return recorder.trace({"method": "saved_jobs", "arguments": {}}, result)
 
@@ -1630,10 +1640,12 @@ async def _person_extra_scenario(method: str) -> dict[str, Any]:
 async def _person_scenario() -> dict[str, Any]:
     """Record what `get_person` does to the page.
 
-    Seven evaluates and no navigation: the profile, how the signed-in member
+    Twelve evaluates and no navigation: the profile, how the signed-in member
     relates to it, its contact fields, its follower and connection counts, the
+    profile page's cards, four reads of what the member follows, the
     connections the two share, who is signed in, and that member's own profile
-    for the comparison. The tool beside it loads the profile page and one more
+    for the comparison. The headers for the cards come from a cache seeded
+    here; taking them loads the feed once per browser session. The tool beside it loads the profile page and one more
     page per section.
     """
     recorder = TraceRecorder("get_person__baseline", _COMMON_ALLOWED)
@@ -1656,12 +1668,17 @@ async def _person_scenario() -> dict[str, Any]:
         {"body": json.dumps({"included": []})},
         # Follower and connection counts: one more read, still no page.
         {"body": json.dumps({"included": []})},
+        # What the member follows, one read per kind.
+        *({"body": json.dumps(_POLICY_EMPTY)} for _ in range(4)),
         {"body": json.dumps(_POLICY_MUTUAL)},
         {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
         {"body": json.dumps(_policy_profile(me, "Taylor", company, 2013))},
     )
+    # The profile page's own cards, asked for as the client prefetches them.
+    page.script("evaluate:voyager_stream_post", {"status": 200, "text": ""})
     extractor = _extractor(page)
     voyager_person.forget_my_profile()
+    voyager_jobs._PREFETCH_HEADERS = (page, {"x-li-track": "{}"})
     try:
         async with boundaries(recorder, clock):
             with recorder.context("get_person", "person"):
@@ -1669,6 +1686,7 @@ async def _person_scenario() -> dict[str, Any]:
                 result = await extractor.get_person("ada")
     finally:
         voyager_person.forget_my_profile()
+        voyager_jobs.forget_prefetch_headers()
     page.assert_clean()
     return recorder.trace({"method": "get_person", "arguments": arguments}, result)
 
@@ -1676,8 +1694,9 @@ async def _person_scenario() -> dict[str, Any]:
 async def _my_person_scenario() -> dict[str, Any]:
     """Record what reading one's own profile from the API does.
 
-    Five evaluates and no navigation: who is signed in, that profile, the
-    relationship (self), the contact fields and the network counts. The tool it replaces loads
+    Ten evaluates and no navigation: who is signed in, that profile, the
+    relationship (self), the contact fields, the network counts, the profile
+    page's cards and four reads of what the member follows. The tool it replaces loads
     the profile page and one more page per section.
     """
     recorder = TraceRecorder("my_person__baseline", _COMMON_ALLOWED)
@@ -1704,11 +1723,17 @@ async def _my_person_scenario() -> dict[str, Any]:
         {"body": json.dumps({"included": []})},
         # Follower and connection counts: one more read, still no page.
         {"body": json.dumps({"included": []})},
+        *({"body": json.dumps(_POLICY_EMPTY)} for _ in range(4)),
     )
+    page.script("evaluate:voyager_stream_post", {"status": 200, "text": ""})
     extractor = _extractor(page)
-    async with boundaries(recorder, clock):
-        with recorder.context("my_person", "person"):
-            result = await extractor.my_person()
+    voyager_jobs._PREFETCH_HEADERS = (page, {"x-li-track": "{}"})
+    try:
+        async with boundaries(recorder, clock):
+            with recorder.context("my_person", "person"):
+                result = await extractor.my_person()
+    finally:
+        voyager_jobs.forget_prefetch_headers()
     page.assert_clean()
     return recorder.trace({"method": "my_person", "arguments": {}}, result)
 

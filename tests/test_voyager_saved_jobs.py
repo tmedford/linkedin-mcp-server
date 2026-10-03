@@ -10,6 +10,7 @@ import pytest
 
 from linkedin_mcp_server.core.exceptions import LinkedInScraperException
 from linkedin_mcp_server.voyager import jobs as jobs_module
+from linkedin_mcp_server.voyager import profile_views as views_module
 from linkedin_mcp_server.voyager.jobs import VoyagerSavedJobs, parse_tracker_jobs
 
 
@@ -90,6 +91,8 @@ def _reader(page: _Page) -> VoyagerSavedJobs:
     session.delay = AsyncMock()
     reader = VoyagerSavedJobs(session, MagicMock())
     setattr(reader, "_prefetch_headers", AsyncMock(return_value={"x-li-track": "{}"}))
+    # The contacts read uses the page's action headers, held here already.
+    setattr(views_module, "_HEADER_CACHE", (page, {"x-li-track": "{}"}))
     return reader
 
 
@@ -150,3 +153,39 @@ async def test_a_non_tracker_answer_naming_a_job_is_not_called_a_shape_change():
 
     with pytest.raises(LinkedInScraperException, match="without the jobs tracker"):
         await _reader(_Page(stray)).get_saved_jobs()
+
+
+_PILE = (
+    '8:["$","$L14",null,{"children":[["$","$L16",null,{"sortableImages":'
+    '[{"sortingKey":"$undefined","image":"$L17"},{"sortingKey":"$undefined","image":"$L18"}],'
+    '"maxVisibleItems":2,"overflowCount":["+8"],"itemSize":24}]]}]'
+)
+
+
+def test_a_rows_image_pile_counts_its_faces_and_its_overflow():
+    from linkedin_mcp_server.voyager.jobs import parse_contacts
+
+    assert parse_contacts(_PILE) == 10
+    assert parse_contacts(_PILE.replace(',"overflowCount":["+8"]', "")) == 2
+    assert parse_contacts("7:null") == 0
+
+
+async def test_each_saved_job_is_asked_for_its_network_contacts():
+    page = _Page(_stream([_record(7), _record(8)]))
+    answers = {"7": {"status": 200, "text": _PILE}, "8": {"status": 500, "text": ""}}
+    tracker = page.evaluate
+
+    async def evaluate(program: str, argument: Any = None) -> Any:
+        if "opportunityContacts" in argument["url"]:
+            page.sent.append(argument)
+            job = json.loads(argument["body"])["clientArguments"]["payload"]["jobId"]
+            return answers[job]
+        return await tracker(program, argument)
+
+    setattr(page, "evaluate", evaluate)
+
+    jobs = (await _reader(page).get_saved_jobs())["jobs"]
+
+    assert jobs[0]["network_contacts"] == 10
+    # Unread is absent, not zero.
+    assert "network_contacts" not in jobs[1]
