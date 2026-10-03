@@ -752,3 +752,21 @@ def test_a_position_carries_the_company_id_company_filters_take():
     # One field for a company's id, and it is the one the filters take.
     assert position["company_id"] == "229978"
     assert "company_urn" not in position
+
+
+async def test_my_own_profile_is_get_person_on_the_signed_in_member():
+    from unittest.mock import AsyncMock, MagicMock
+
+    reader = VoyagerPersonReader(MagicMock(), MagicMock())
+    setattr(
+        reader, "_mailbox_urn", AsyncMock(return_value="urn:li:fsd_profile:ACoAA-me")
+    )
+    setattr(reader, "get_person", AsyncMock(return_value={"relationship": "self"}))
+
+    result = await reader.get_me()
+
+    # No comparison against oneself, and the id is taken from /me, not asked for.
+    getattr(reader, "get_person").assert_awaited_once_with(
+        "ACoAA-me", compare_to_me=False
+    )
+    assert result == {"relationship": "self"}

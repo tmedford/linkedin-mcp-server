@@ -99,6 +99,7 @@ SUPERSEDED: dict[str, str] = {
     "search_jobs": "search_jobs",
     "get_job_details": "get_job_details",
     "get_saved_jobs": "get_saved_jobs",
+    "get_my_profile": "get_my_profile",
 }
 
 #: The section names upstream's get_person_profile accepts.
@@ -1555,3 +1556,76 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "get_saved_jobs")
         except Exception as e:
             raise_tool_error(e, "get_saved_jobs")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get My Profile",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_my_profile(
+        ctx: Context,
+        sections: str | None = None,
+        max_scrolls: Annotated[int, Field(ge=1, le=50)] | None = None,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read YOUR OWN LinkedIn profile, whole, from LinkedIn's API.
+
+        The same record get_person_profile returns for anyone else, for the
+        signed-in member: no username is needed.
+
+        Args:
+            ctx: FastMCP context for progress reporting
+            sections: Comma-separated section names, kept for compatibility.
+                Every profile section is ALWAYS returned, so naming them
+                changes nothing. Only "posts" adds something: your ten most
+                recent posts. Unrecognised names come back in
+                unknown_sections.
+            max_scrolls: Kept for compatibility and ignored.
+
+        Returns:
+            Dict with url (your real profile URL) and sections (main_profile
+            -> text), plus identity (with public_identifier and profile_urn),
+            contact, positions, education, skills, certifications and the
+            other sections, each {items, returned, total, complete}, as in
+            get_person_profile. relationship is "self"; there are no mutual
+            connections or common_ground for your own profile.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_my_profile"
+            )
+            logger.info("Reading own profile")
+
+            await ctx.report_progress(progress=0, total=100, message="Reading profile")
+
+            result = await extractor.my_person()
+
+            requested = {
+                name.strip().lower()
+                for name in (sections or "").split(",")
+                if name.strip()
+            }
+            unknown = sorted(requested - _PERSON_SECTIONS)
+            if unknown:
+                result["unknown_sections"] = unknown
+            if "posts" in requested:
+                own = result["identity"]["public_identifier"]
+                posts = await extractor.get_person_posts(own, count=10)
+                result["sections"]["posts"] = posts["sections"]["posts"]
+                result["posts"] = posts["posts"]
+                result["posts_next_cursor"] = posts["next_cursor"]
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_my_profile")
+        except Exception as e:
+            raise_tool_error(e, "get_my_profile")  # NoReturn

@@ -95,6 +95,7 @@ a page-owning collaborator.
 - `get_thread`
 - `invite_person`
 - `message_person`
+- `my_person`
 - `reply_to_thread`
 - `saved_jobs`
 - `scrape_company`

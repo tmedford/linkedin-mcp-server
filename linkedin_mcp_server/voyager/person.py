@@ -941,6 +941,16 @@ class VoyagerPersonReader(VoyagerReader):
                 result["common_ground"] = common_ground(mine, profile)
         return result
 
+    async def get_me(self) -> dict[str, Any]:
+        """The signed-in member's own profile, whole.
+
+        ``/me`` names the member, and their id resolves like any other, so
+        this is ``get_person`` on oneself: no mutual connections and nothing
+        to compare against.
+        """
+        own_id = (await self._mailbox_urn()).rsplit(":", 1)[-1]
+        return await self.get_person(own_id, compare_to_me=False)
+
 
 def render_profile(profile: dict[str, Any], relationship: str | None = None) -> str:
     """The profile as readable text, for consumers that read `sections`."""

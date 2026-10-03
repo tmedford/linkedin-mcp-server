@@ -26,6 +26,7 @@ REPLACED_IN_PLACE = (
     "search_jobs",
     "get_job_details",
     "get_saved_jobs",
+    "get_my_profile",
 )
 
 
@@ -69,6 +70,7 @@ async def test_the_served_tool_of_that_name_is_this_forks(name):
         ),
         ("get_job_details", {"job_id"}),
         ("get_saved_jobs", {"max_pages"}),
+        ("get_my_profile", {"sections", "max_scrolls"}),
     ],
 )
 async def test_every_argument_upstream_accepted_is_still_accepted(
@@ -89,6 +91,7 @@ async def test_every_argument_upstream_accepted_is_still_accepted(
         ("search_jobs", ["keywords"]),
         ("get_job_details", ["job_id"]),
         ("get_saved_jobs", []),
+        ("get_my_profile", []),
     ],
 )
 async def test_nothing_new_became_required(name, required):

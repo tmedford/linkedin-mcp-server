@@ -472,6 +472,10 @@ class LinkedInExtractor:
         """Read one job posting through LinkedIn's API."""
         return await self._voyager_jobs.get_job(job_id)
 
+    async def my_person(self) -> dict[str, Any]:
+        """Read the signed-in member's own profile through LinkedIn's API."""
+        return await self._voyager_person.get_me()
+
     async def saved_jobs(
         self, max_pages: int = 3, stage: str = "saved"
     ) -> dict[str, Any]:

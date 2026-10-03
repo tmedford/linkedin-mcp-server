@@ -75,6 +75,7 @@ TOOL_DELEGATES = {
     "find_jobs": "find_jobs",
     "get_job": "get_job",
     "saved_jobs": "saved_jobs",
+    "my_person": "my_person",
 }
 
 
@@ -174,8 +175,9 @@ async def test_registered_tools_and_extractor_delegates_are_counted_separately()
         "find_jobs",
         "get_job",
         "saved_jobs",
+        "my_person",
     }
-    assert len(TOOL_DELEGATES) == 34
+    assert len(TOOL_DELEGATES) == 35
     assert set(TOOL_DELEGATES.values()) == TOOL_FACADE_METHODS
     assert "close_session" not in TOOL_DELEGATES
 
@@ -551,7 +553,7 @@ def test_facade_methods_are_exactly_the_frozen_coroutine_surface():
     }
 
     assert actual == expected
-    assert len(TOOL_FACADE_METHODS) == 34
+    assert len(TOOL_FACADE_METHODS) == 35
     assert len(COMPATIBILITY_METHODS) == 2
 
 

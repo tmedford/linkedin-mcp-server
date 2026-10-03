@@ -1670,6 +1670,44 @@ async def _person_scenario() -> dict[str, Any]:
     return recorder.trace({"method": "get_person", "arguments": arguments}, result)
 
 
+async def _my_person_scenario() -> dict[str, Any]:
+    """Record what reading one's own profile from the API does.
+
+    Four evaluates and no navigation: who is signed in, that profile, the
+    relationship (self) and the contact fields. The tool it replaces loads
+    the profile page and one more page per section.
+    """
+    recorder = TraceRecorder("my_person__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    me = "urn:li:fsd_profile:ACoAA-me"
+    relationship = {
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.dash.relationships.MemberRelationship",
+                "memberRelationshipUnion": {"self": {}},
+            }
+        ]
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
+        {
+            "body": json.dumps(
+                _policy_profile(me, "Taylor", "urn:li:fsd_company:1", 2013)
+            )
+        },
+        {"body": json.dumps(relationship)},
+        {"body": json.dumps({"included": []})},
+    )
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("my_person", "person"):
+            result = await extractor.my_person()
+    page.assert_clean()
+    return recorder.trace({"method": "my_person", "arguments": {}}, result)
+
+
 async def _message_search_scenario() -> dict[str, Any]:
     """Record what `search_messages` does to the page.
 
@@ -1900,6 +1938,7 @@ TOOL_FACADE_METHODS = {
     "find_jobs",
     "get_job",
     "saved_jobs",
+    "my_person",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1985,6 +2024,7 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "find-jobs.json": await _find_jobs_scenario(),
         "get-job.json": await _get_job_scenario(),
         "jobs-tracker.json": await _jobs_tracker_scenario(),
+        "my-person.json": await _my_person_scenario(),
         "person-mutual.json": await _person_extra_scenario("get_mutual_connections"),
         "person-posts.json": await _person_extra_scenario("get_person_posts"),
         "message-search.json": await _message_search_scenario(),
