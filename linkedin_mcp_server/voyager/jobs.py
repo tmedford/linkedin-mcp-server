@@ -36,6 +36,7 @@ endpoints those pages are built from and returns records.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -330,9 +331,12 @@ class VoyagerJobs(VoyagerPeopleSearch):
         """Read up to ``max_pages`` pages of 25 jobs matching a search."""
         from linkedin_mcp_server.scraping.search_urls import build_job_search_url
 
-        if not keywords.strip():
+        if not keywords.strip() and not company_id:
+            # Measured: a search on a company alone answers (494 roles for
+            # one company with no keywords), so words are optional then.
             raise LinkedInScraperException(
-                "keywords was blank. Pass the words to search for."
+                "keywords was blank. Pass the words to search for, or a "
+                "company_id to list that company's jobs."
             )
         if not 1 <= max_pages <= 10:
             raise LinkedInScraperException(
@@ -356,9 +360,12 @@ class VoyagerJobs(VoyagerPeopleSearch):
             # is the filter for remote work.
             resolved, candidates = await self._geo(location)
             place = f",locationUnion:(geoId:{resolved['geo_id']})"
+        words = (
+            f"keywords:{quote(keywords.strip(), safe='')}" if keywords.strip() else ""
+        )
+        head = ",".join(part for part in (words, place.lstrip(",")) if part)
         query = (
-            f"(origin:JOB_SEARCH_PAGE_OTHER_ENTRY,"
-            f"keywords:{quote(keywords.strip(), safe='')}{place},"
+            f"(origin:JOB_SEARCH_PAGE_OTHER_ENTRY,{head + ',' if head else ''}"
             f"selectedFilters:({filters}),spellCorrectionEnabled:true)"
         )
 
@@ -434,4 +441,219 @@ class VoyagerJobs(VoyagerPeopleSearch):
             "url": job["url"],
             "sections": {"job_posting": render_posting(job)},
             "job": job,
+        }
+
+
+# --- Saved jobs (the jobs tracker) ----------------------------------------
+#
+# LinkedIn moved saved jobs to ``/jobs-tracker/``, a server-rendered page with
+# a tab per stage. Measured on 2026-10-03, one account:
+#
+# - The page issues no data request for its list: the rows arrive with the
+#   page. The client loads a server-rendered route by POSTing to
+#   ``/flagship-web/<route>/`` with ``isPrefetch: true`` (observed for the
+#   feed and the member's own profile), and the same call on
+#   ``/flagship-web/jobs-tracker/`` answered with the tracker as a component
+#   stream, without the page being opened.
+# - ``stage`` selects the tab, in the query string and the payload: ``saved``,
+#   ``draft`` and ``clicked_apply`` (shown together as "In Progress"),
+#   ``applied``, ``interview``, ``archived``. ``applied`` answered with no rows
+#   on an account whose Applied tab read 0.
+# - Each row's "Add note" action carries the job as a record: ``jobId``,
+#   ``jobTitle``, ``companyName``, ``locationPrimary``, ``workplaceTypeName``,
+#   ``listedAt``, ``originallyListedAt``, ``existingNote``, ``currentStageKey``,
+#   ``isVerified``. Those records are read, not the rendered text.
+# - The stream carried no pager, and its ten records matched the ten rows the
+#   page showed. A tab heading read 11; what the eleventh is was not found.
+# - The prefetch needs the client's own ``x-li-*`` headers, so they are copied
+#   once per browser session from a prefetch the feed page sends.
+
+TRACKER_URL = "https://www.linkedin.com/jobs-tracker/"
+_TRACKER_ROUTE = "https://www.linkedin.com/flagship-web/jobs-tracker/"
+STAGES = ("saved", "draft", "clicked_apply", "applied", "interview", "archived")
+_RECORD_START = '{"jobId":"'
+
+# Valid for as long as the page that issued them, as in profile_views.
+_PREFETCH_HEADERS: tuple[Any, dict[str, str]] | None = None
+
+
+def forget_prefetch_headers() -> None:
+    """Drop the copied prefetch headers so the next read takes them again."""
+    global _PREFETCH_HEADERS
+    _PREFETCH_HEADERS = None
+
+
+def parse_tracker_jobs(text: str) -> list[dict[str, Any]]:
+    """Jobs from a tracker stream, in the order listed, one per job id."""
+    decoder = json.JSONDecoder()
+    jobs: dict[str, dict[str, Any]] = {}
+    position = text.find(_RECORD_START)
+    while position >= 0:
+        try:
+            record, _ = decoder.raw_decode(text, position)
+        except ValueError:
+            record = None
+        # A row also carries smaller {"jobId": ...} payloads for its other
+        # actions; the record is the one that names the job.
+        if isinstance(record, dict) and record.get("jobTitle"):
+            job_id = str(record.get("jobId") or "")
+            if job_id.isdigit() and job_id not in jobs:
+                location = record.get("locationPrimary")
+                jobs[job_id] = _clean(
+                    {
+                        "job_id": job_id,
+                        "title": str(record.get("jobTitle") or "").strip(),
+                        "company": record.get("companyName"),
+                        "location": location,
+                        "workplace": record.get("workplaceTypeName"),
+                        "listed_at_iso": _iso(_number(record.get("listedAt"))),
+                        "original_listed_at_iso": _iso(
+                            _number(record.get("originallyListedAt"))
+                        ),
+                        "stage": record.get("currentStageKey"),
+                        "note": record.get("existingNote"),
+                        "verified": record.get("isVerified"),
+                        "url": f"https://www.linkedin.com/jobs/view/{job_id}/",
+                    }
+                )
+        position = text.find(_RECORD_START, position + 1)
+    return list(jobs.values())
+
+
+def _number(value: Any) -> float | None:
+    """LinkedIn sends these timestamps as strings of digits."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def render_tracker(jobs: list[dict[str, Any]]) -> str:
+    lines = []
+    for job in jobs:
+        place = " · ".join(
+            part for part in (job.get("location"), job.get("workplace")) if part
+        )
+        lines.append(f"{job.get('title')} - {job.get('company')} ({job.get('job_id')})")
+        if place:
+            lines.append(f"    {place}")
+        if job.get("note"):
+            lines.append(f"    Note: {job['note']}")
+    return "\n".join(lines)
+
+
+class VoyagerSavedJobs(VoyagerJobs):
+    """Read the jobs tracker without opening it."""
+
+    surface = "saved-jobs"
+
+    async def _prefetch_headers(self) -> dict[str, str]:
+        """The headers the client sends when it prefetches a route."""
+        from linkedin_mcp_server.voyager.profile_views import _BROWSER_OWNED
+
+        global _PREFETCH_HEADERS
+        page = self._session.page
+        if _PREFETCH_HEADERS is not None and _PREFETCH_HEADERS[0] is page:
+            return _PREFETCH_HEADERS[1]
+        seen: list[Any] = []
+
+        def _capture(request: Any) -> None:
+            if (
+                "/flagship-web/" in request.url
+                and "/rsc-action/" not in request.url
+                and request.method == "POST"
+            ):
+                seen.append(request)
+
+        page.on("request", _capture)
+        try:
+            await self._navigator._navigate_to_page("https://www.linkedin.com/feed/")
+            await self._session.check_rate_limit()
+            for _ in range(25):
+                if seen:
+                    break
+                await self._session.delay(1.0)
+        finally:
+            page.remove_listener("request", _capture)
+        if not seen:
+            raise LinkedInScraperException(
+                "LinkedIn's feed sent no route prefetch to copy headers from, so "
+                "the jobs tracker cannot be asked for. The page did not load, or "
+                "LinkedIn changed how it loads routes."
+            )
+        headers = {
+            name: value
+            for name, value in seen[0].headers.items()
+            if name.lower() not in _BROWSER_OWNED
+            and not name.lower().startswith(("sec-", ":"))
+        }
+        _PREFETCH_HEADERS = (page, headers)
+        return headers
+
+    async def get_saved_jobs(
+        self, max_pages: int = 3, stage: str = "saved"
+    ) -> dict[str, Any]:
+        """The jobs in one stage of the tracker. ``max_pages`` is upstream's
+        argument and has nothing to page: a stage arrives in one answer."""
+        from linkedin_mcp_server.core.exceptions import (
+            AuthenticationError,
+            RateLimitError,
+        )
+        from linkedin_mcp_server.voyager.profile_views import _POST_STREAM_JS
+
+        if stage not in STAGES:
+            raise LinkedInScraperException(
+                f"stage was {stage!r}. Pass one of: {', '.join(STAGES)}."
+            )
+        answer = await self._session.page.evaluate(
+            _POST_STREAM_JS,
+            {
+                "url": f"{_TRACKER_ROUTE}?stage={stage}",
+                "headers": await self._prefetch_headers(),
+                "body": json.dumps(
+                    {
+                        "requestedArguments": {
+                            "payload": {"stage": stage},
+                            "states": [],
+                            "requestMetadata": {
+                                "$type": "proto.sdui.common.RequestMetadata"
+                            },
+                            "screenId": "",
+                            "knownTemplateIds": [],
+                        },
+                        "isPrefetch": True,
+                    }
+                ),
+            },
+        )
+        status = answer.get("status") if isinstance(answer, dict) else None
+        if status in (401, 403):
+            raise AuthenticationError(
+                f"Voyager {self.surface} request rejected: HTTP {status}"
+            )
+        if status == 429:
+            raise RateLimitError(f"Voyager {self.surface} rate limited: HTTP {status}")
+        if status != 200:
+            raise LinkedInScraperException(
+                f"Voyager {self.surface} request failed: HTTP {status}"
+            )
+        text = answer.get("text") or ""
+        jobs = parse_tracker_jobs(text)
+        if not jobs and _RECORD_START in text:
+            raise LinkedInScraperException(
+                f"Voyager {self.surface} changed shape: the tracker names jobs "
+                "but none parsed. Refusing to report that as an empty stage."
+            )
+        if "opportunity-tracker" not in text:
+            raise LinkedInScraperException(
+                f"Voyager {self.surface} answered without the jobs tracker in "
+                "it. Refusing to report that as an empty stage."
+            )
+        return {
+            "url": f"{TRACKER_URL}?stage={stage}",
+            "sections": {"saved_jobs": render_tracker(jobs)},
+            "job_ids": [job["job_id"] for job in jobs],
+            "jobs": jobs,
+            "count": len(jobs),
+            "stage": stage,
         }

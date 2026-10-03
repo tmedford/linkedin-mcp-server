@@ -1,0 +1,39 @@
+{
+  "call": {
+    "arguments": {
+      "keywords": "hiring",
+      "max_pages": 1
+    },
+    "method": "find_posts"
+  },
+  "events": [
+    {
+      "arg": {
+        "body": "{\"pagerId\": \"com.linkedin.sdui.search.contentSearchResults\", \"clientArguments\": {\"$type\": \"proto.sdui.actions.requests.RequestedArguments\", \"requestedStateKeys\": [], \"payload\": {\"startIndex\": 0, \"keywords\": \"hiring\", \"count\": 10, \"sortBy\": [], \"postedBy\": [], \"datePosted\": [], \"contentType\": [], \"fromMember\": [], \"mentionsOrganization\": [], \"mentionsMember\": [], \"fromOrganization\": [], \"authorCompany\": [], \"authorIndustry\": [], \"authorJobTitle\": [], \"spellCheckEnabled\": true, \"clusterStartPosition\": 0, \"searchId\": \"policy-search-id\"}, \"requestMetadata\": {\"$type\": \"proto.sdui.common.RequestMetadata\"}, \"states\": [], \"screenId\": \"com.linkedin.sdui.flagshipnav.search.SearchResultsContent\", \"knownTemplateIds\": []}, \"paginationRequest\": {\"$type\": \"proto.sdui.actions.requests.PaginationRequest\", \"pagerId\": \"com.linkedin.sdui.search.contentSearchResults\", \"trigger\": {\"$case\": \"itemDistanceTrigger\", \"itemDistanceTrigger\": {\"$type\": \"proto.sdui.actions.requests.ItemDistanceTrigger\", \"preloadDistance\": 3, \"preloadLength\": 1500}}, \"retryCount\": 2, \"requestedArguments\": {\"$type\": \"proto.sdui.actions.requests.RequestedArguments\", \"requestedStateKeys\": [], \"payload\": {\"startIndex\": 0, \"keywords\": \"hiring\", \"count\": 10, \"sortBy\": [], \"postedBy\": [], \"datePosted\": [], \"contentType\": [], \"fromMember\": [], \"mentionsOrganization\": [], \"mentionsMember\": [], \"fromOrganization\": [], \"authorCompany\": [], \"authorIndustry\": [], \"authorJobTitle\": [], \"spellCheckEnabled\": true, \"clusterStartPosition\": 0, \"searchId\": \"policy-search-id\"}, \"requestMetadata\": {\"$type\": \"proto.sdui.common.RequestMetadata\"}}}}",
+        "headers": {
+          "x-li-track": "{}"
+        },
+        "url": "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.search.contentSearchResults"
+      },
+      "call": "find_posts",
+      "kind": "evaluate",
+      "operation": "voyager_stream_post",
+      "program_digest": "f959d86e614d",
+      "section": "api"
+    }
+  ],
+  "result": {
+    "complete": true,
+    "count": 0,
+    "posts": [],
+    "references": {
+      "search_results": []
+    },
+    "sections": {
+      "search_results": ""
+    },
+    "url": "https://www.linkedin.com/search/results/content/?keywords=hiring&origin=FACETED_SEARCH"
+  },
+  "scenario": "find_posts__baseline",
+  "schema_version": 1
+}

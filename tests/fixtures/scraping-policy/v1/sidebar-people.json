@@ -1,0 +1,58 @@
+{
+  "call": {
+    "arguments": {
+      "linkedin_username": "ada-lovelace"
+    },
+    "method": "sidebar_people"
+  },
+  "events": [
+    {
+      "arg": {
+        "body": "{\"componentId\": \"com.linkedin.sdui.generated.profile.dsl.impl.browsemapRecommendedEntitySection\", \"clientArguments\": {\"payload\": {\"vanityName\": \"ada-lovelace\", \"isDetailView\": false, \"hideProfileCards\": false}, \"states\": [], \"requestMetadata\": {\"$type\": \"proto.sdui.common.RequestMetadata\"}, \"screenId\": \"com.linkedin.sdui.flagshipnav.profile.Profile\", \"knownTemplateIds\": []}}",
+        "headers": {
+          "x-li-track": "{}"
+        },
+        "url": "https://www.linkedin.com/flagship-web/rsc-action/actions/component?componentId=com.linkedin.sdui.generated.profile.dsl.impl.browsemapRecommendedEntitySection&sduiid=com.linkedin.sdui.generated.profile.dsl.impl.browsemapRecommendedEntitySection"
+      },
+      "call": "sidebar_people",
+      "kind": "evaluate",
+      "operation": "voyager_stream_post",
+      "program_digest": "f959d86e614d",
+      "section": "api"
+    },
+    {
+      "call": "sidebar_people",
+      "kind": "sleep",
+      "reason": "sleep",
+      "seconds": 1.0,
+      "section": "api"
+    },
+    {
+      "arg": {
+        "body": "{\"componentId\": \"com.linkedin.sdui.generated.profile.dsl.impl.pymkRecommendedEntitySection\", \"clientArguments\": {\"payload\": {\"vanityName\": \"ada-lovelace\", \"isDetailView\": false, \"hideProfileCards\": false}, \"states\": [], \"requestMetadata\": {\"$type\": \"proto.sdui.common.RequestMetadata\"}, \"screenId\": \"com.linkedin.sdui.flagshipnav.profile.Profile\", \"knownTemplateIds\": []}}",
+        "headers": {
+          "x-li-track": "{}"
+        },
+        "url": "https://www.linkedin.com/flagship-web/rsc-action/actions/component?componentId=com.linkedin.sdui.generated.profile.dsl.impl.pymkRecommendedEntitySection&sduiid=com.linkedin.sdui.generated.profile.dsl.impl.pymkRecommendedEntitySection"
+      },
+      "call": "sidebar_people",
+      "kind": "evaluate",
+      "operation": "voyager_stream_post",
+      "program_digest": "f959d86e614d",
+      "section": "api"
+    }
+  ],
+  "result": {
+    "sidebar_profiles": {
+      "more_profiles_for_you": [
+        "/in/grace-hopper/"
+      ],
+      "people_you_may_know": [
+        "/in/alan-turing/"
+      ]
+    },
+    "url": "https://www.linkedin.com/in/ada-lovelace/"
+  },
+  "scenario": "sidebar_people__baseline",
+  "schema_version": 1
+}

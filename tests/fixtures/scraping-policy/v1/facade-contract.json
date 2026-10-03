@@ -16,6 +16,18 @@
         "coroutine": true,
         "signature": "(self, text: 'str', *, scope: 'str' = 'main', timeout: 'int' = 5000) -> 'bool'"
       },
+      "company_people": {
+        "coroutine": true,
+        "signature": "(self, company_name: 'str', keywords: 'str | None' = None, start: 'int' = 0, count: 'int' = 12) -> 'dict[str, Any]'"
+      },
+      "company_posts": {
+        "coroutine": true,
+        "signature": "(self, company_name: 'str', count: 'int' = 10, start: 'int' = 0) -> 'dict[str, Any]'"
+      },
+      "company_record": {
+        "coroutine": true,
+        "signature": "(self, company_name: 'str') -> 'dict[str, Any]'"
+      },
       "connect_with_person": {
         "coroutine": true,
         "signature": "(self, username: 'str', *, note: 'str | None' = None) -> 'dict[str, Any]'"
@@ -28,6 +40,10 @@
         "coroutine": true,
         "signature": "(self, url: 'str', section_name: 'str', max_scrolls: 'int | None' = None) -> 'ExtractedSection'"
       },
+      "find_companies": {
+        "coroutine": true,
+        "signature": "(self, keywords: 'str', start: 'int' = 0, count: 'int' = 10) -> 'dict[str, Any]'"
+      },
       "find_jobs": {
         "coroutine": true,
         "signature": "(self, keywords: 'str', location: 'str | None' = None, max_pages: 'int' = 3, date_posted: 'str | None' = None, job_type: 'str | None' = None, experience_level: 'str | None' = None, work_type: 'str | None' = None, easy_apply: 'bool' = False, sort_by: 'str | None' = None, company_id: 'str | None' = None) -> 'dict[str, Any]'"
@@ -35,6 +51,10 @@
       "find_people": {
         "coroutine": true,
         "signature": "(self, keywords: 'str', location: 'str | None' = None, network: 'list[str] | None' = None, current_company: 'str | None' = None, start: 'int' = 0, count: 'int' = 10) -> 'dict[str, Any]'"
+      },
+      "find_posts": {
+        "coroutine": true,
+        "signature": "(self, keywords: 'str', date_posted: 'str | None' = None, max_pages: 'int' = 3) -> 'dict[str, Any]'"
       },
       "get_company_employees": {
         "coroutine": true,
@@ -100,6 +120,10 @@
         "coroutine": true,
         "signature": "(self, thread_id: 'str | None' = None, linkedin_username: 'str | None' = None, index: 'int' = 0) -> 'dict[str, Any]'"
       },
+      "home_feed": {
+        "coroutine": true,
+        "signature": "(self, num_posts: 'int' = 10) -> 'dict[str, Any]'"
+      },
       "invite_person": {
         "coroutine": true,
         "signature": "(self, linkedin_username: 'str', *, note: 'str | None' = None, dry_run: 'bool' = False) -> 'dict[str, Any]'"
@@ -108,9 +132,17 @@
         "coroutine": true,
         "signature": "(self, linkedin_username: 'str', message: 'str', *, confirm_send: 'bool', profile_urn: 'str | None' = None) -> 'dict[str, Any]'"
       },
+      "my_person": {
+        "coroutine": true,
+        "signature": "(self) -> 'dict[str, Any]'"
+      },
       "reply_to_thread": {
         "coroutine": true,
         "signature": "(self, thread_id: 'str', message: 'str', *, confirm_send: 'bool') -> 'dict[str, Any]'"
+      },
+      "saved_jobs": {
+        "coroutine": true,
+        "signature": "(self, max_pages: 'int' = 3, stage: 'str' = 'saved') -> 'dict[str, Any]'"
       },
       "scrape_company": {
         "coroutine": true,
@@ -151,14 +183,23 @@
       "send_message": {
         "coroutine": true,
         "signature": "(self, linkedin_username: 'str', message: 'str', *, confirm_send: 'bool', profile_urn: 'str | None' = None) -> 'dict[str, Any]'"
+      },
+      "sidebar_people": {
+        "coroutine": true,
+        "signature": "(self, linkedin_username: 'str') -> 'dict[str, Any]'"
       }
     },
     "tool_methods": [
+      "company_people",
+      "company_posts",
+      "company_record",
       "connect_with_person",
       "extract_feed",
       "extract_page",
+      "find_companies",
       "find_jobs",
       "find_people",
+      "find_posts",
       "get_company_employees",
       "get_conversation",
       "get_conversations",
@@ -174,9 +215,12 @@
       "get_saved_jobs",
       "get_sidebar_profiles",
       "get_thread",
+      "home_feed",
       "invite_person",
       "message_person",
+      "my_person",
       "reply_to_thread",
+      "saved_jobs",
       "scrape_company",
       "scrape_job",
       "scrape_person",
@@ -186,7 +230,8 @@
       "search_messages",
       "search_people",
       "search_posts",
-      "send_message"
+      "send_message",
+      "sidebar_people"
     ],
     "tool_schemas": {
       "close_session": {
@@ -241,8 +286,13 @@
           "additionalProperties": false,
           "properties": {
             "company_name": {
-              "description": "LinkedIn company URL slug (e.g., \"docker\", \"anthropicresearch\", \"microsoft\"). A full company URL is accepted too and is reduced to the slug.",
+              "description": "LinkedIn company name from its URL, or a company URL.",
               "type": "string"
+            },
+            "count": {
+              "default": 12,
+              "description": "how many people to ask for, 1 to 50. Defaults to 12.",
+              "type": "integer"
             },
             "keywords": {
               "anyOf": [
@@ -254,7 +304,12 @@
                 }
               ],
               "default": null,
-              "description": "Optional filter by name, job title, or skill (e.g., \"engineer\", \"sales\")"
+              "description": "Optional filter by name, title or skill."
+            },
+            "start": {
+              "default": 0,
+              "description": "0-based offset. Paging is the caller's loop.",
+              "type": "integer"
             }
           },
           "required": [
@@ -272,8 +327,18 @@
           "additionalProperties": false,
           "properties": {
             "company_name": {
-              "description": "LinkedIn company name (e.g., \"docker\", \"anthropic\", \"microsoft\"). A full company URL is accepted too and is reduced to the slug.",
+              "description": "LinkedIn company name from its URL, or a company URL.",
               "type": "string"
+            },
+            "count": {
+              "default": 10,
+              "description": "how many to ask for, 1 to 50. Defaults to 10.",
+              "type": "integer"
+            },
+            "start": {
+              "default": 0,
+              "description": "0-based offset. Paging is the caller's loop.",
+              "type": "integer"
             }
           },
           "required": [
@@ -291,7 +356,7 @@
           "additionalProperties": false,
           "properties": {
             "company_name": {
-              "description": "LinkedIn company name (e.g., \"docker\", \"anthropic\", \"microsoft\"). A full company URL is accepted too and is reduced to the slug.",
+              "description": "LinkedIn company name from its URL (e.g., \"docker\",\n\"anthropic\"). A full company URL is accepted too.",
               "type": "string"
             },
             "sections": {
@@ -304,7 +369,7 @@
                 }
               ],
               "default": null,
-              "description": "Comma-separated list of extra sections to scrape.\nThe about page is always included.\nAvailable sections: posts, jobs\nExamples: \"posts\", \"posts,jobs\"\nDefault (None) scrapes only the about page."
+              "description": "Comma-separated extras: \"posts\" (its ten most recent\nposts) and \"jobs\" (its open jobs, first page). The company\nitself is always returned. Unrecognised names come back in\nunknown_sections."
             }
           },
           "required": [
@@ -400,7 +465,7 @@
           "properties": {
             "num_posts": {
               "default": 10,
-              "description": "Number of posts to fetch (1-50, default 10).\n       Posts are loaded in batches of ~5 as the page scrolls,\n       so the actual count may slightly exceed the target.",
+              "description": "How many feed entries to ask for (1-50, default 10).\nPromoted entries are dropped, so fewer can come back.",
               "maximum": 50,
               "minimum": 1,
               "type": "integer"
@@ -504,7 +569,7 @@
                 }
               ],
               "default": null,
-              "description": "Maximum pagination attempts per section (same as get_person_profile)."
+              "description": "Kept for compatibility and ignored."
             },
             "sections": {
               "anyOf": [
@@ -516,7 +581,7 @@
                 }
               ],
               "default": null,
-              "description": "Comma-separated list of extra sections to scrape.\nThe main profile page is always included.\nAvailable sections: experience, education, interests, honors, languages, certifications, skills, projects, contact_info, posts\nExamples: \"experience,education\", \"contact_info\", \"skills,projects\"\nDefault (None) scrapes only the main profile page."
+              "description": "Comma-separated section names, kept for compatibility.\nEvery profile section is ALWAYS returned, so naming them\nchanges nothing. Only \"posts\" adds something: your ten most\nrecent posts. Unrecognised names come back in\nunknown_sections."
             }
           },
           "type": "object"
@@ -722,10 +787,15 @@
           "properties": {
             "max_pages": {
               "default": 3,
-              "description": "Maximum number of saved-jobs pages to load (1-10, default 3)",
+              "description": "Kept for compatibility and not used: a stage arrives in\none answer.",
               "maximum": 10,
               "minimum": 1,
               "type": "integer"
+            },
+            "stage": {
+              "default": "saved",
+              "description": "Which tab of the tracker: \"saved\" (default), \"draft\" or\n\"clicked_apply\" (LinkedIn shows these two together as In\nProgress), \"applied\", \"interview\" or \"archived\".",
+              "type": "string"
             }
           },
           "type": "object"
@@ -740,7 +810,7 @@
           "additionalProperties": false,
           "properties": {
             "linkedin_username": {
-              "description": "LinkedIn username of the profile page to scrape; a full profile URL is accepted too\n(e.g., \"stickerdaniel\", \"williamhgates\")",
+              "description": "The /in/ public identifier or a profile URL.",
               "type": "string"
             }
           },
@@ -787,9 +857,19 @@
         "input": {
           "additionalProperties": false,
           "properties": {
+            "count": {
+              "default": 10,
+              "description": "how many to ask for, 1 to 50. Defaults to 10.",
+              "type": "integer"
+            },
             "keywords": {
-              "description": "Search keywords (e.g., \"fintech\", \"anthropic\", \"electric vehicles\")",
+              "description": "Search keywords (e.g., \"fintech\", \"anthropic\").",
               "type": "string"
+            },
+            "start": {
+              "default": 0,
+              "description": "0-based offset. Paging is the caller's loop.",
+              "type": "integer"
             }
           },
           "required": [
@@ -896,7 +976,7 @@
               "description": "Comma-separated: full_time, part_time, contract,\ntemporary, volunteer, internship, other."
             },
             "keywords": {
-              "description": "Search keywords (e.g., \"vice president product\")",
+              "description": "Search keywords (e.g., \"vice president product\"). May\nbe \"\" when company_id is given, to list that company's jobs.",
               "type": "string"
             },
             "location": {
@@ -1035,15 +1115,15 @@
                 }
               ],
               "default": null,
-              "description": "Optional recency filter. One of \"past-24h\",\n\"past-week\", \"past-month\"; the \"past_24_hours\" / \"past_week\" /\n\"past_month\" spellings used by search_jobs are accepted too.\nOmit for any time."
+              "description": "Optional recency filter: \"past-24h\", \"past-week\" or\n\"past-month\" (the \"past_24_hours\" / \"past_week\" /\n\"past_month\" spellings are accepted too). Anything else is\nrefused."
             },
             "keywords": {
-              "description": "Search keywords (e.g., \"Buscamos Unity\", \"AI automation hiring\")",
+              "description": "Search keywords (e.g., \"AI automation hiring\").",
               "type": "string"
             },
             "max_pages": {
               "default": 3,
-              "description": "Scroll depth as result \"pages\" of ~5 scrolls each\n(1-10, default 3). Content search is an infinite scroll, so\nthis caps how far the page is scrolled rather than fetching\ndiscrete pages.",
+              "description": "Pages of 10 posts to read (1-10, default 3).",
               "maximum": 10,
               "minimum": 1,
               "type": "integer"

@@ -72,11 +72,16 @@ a page-owning collaborator.
 ## `LinkedInExtractor` public coroutine surface
 
 - `click_button_by_text`
+- `company_people`
+- `company_posts`
+- `company_record`
 - `connect_with_person`
 - `extract_feed`
 - `extract_page`
+- `find_companies`
 - `find_jobs`
 - `find_people`
+- `find_posts`
 - `get_company_employees`
 - `get_conversation`
 - `get_conversations`
@@ -93,9 +98,12 @@ a page-owning collaborator.
 - `get_saved_jobs`
 - `get_sidebar_profiles`
 - `get_thread`
+- `home_feed`
 - `invite_person`
 - `message_person`
+- `my_person`
 - `reply_to_thread`
+- `saved_jobs`
 - `scrape_company`
 - `scrape_job`
 - `scrape_person`
@@ -106,6 +114,7 @@ a page-owning collaborator.
 - `search_people`
 - `search_posts`
 - `send_message`
+- `sidebar_people`
 
 ## `LinkedInExtractor` construction-state allowlist
 
@@ -124,11 +133,14 @@ a page-owning collaborator.
 - `_profile_views`
 - `_recruiter_views`
 - `_thread_reply`
+- `_voyager_company`
 - `_voyager_connect`
+- `_voyager_content`
 - `_voyager_invitations`
 - `_voyager_jobs`
 - `_voyager_messaging`
 - `_voyager_person`
+- `_voyager_saved_jobs`
 - `_voyager_search`
 - `_voyager_thread`
 

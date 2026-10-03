@@ -1,0 +1,45 @@
+{
+  "call": {
+    "arguments": {
+      "company_name": "acme"
+    },
+    "method": "company_people"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/organization/companies?decorationId=com.linkedin.voyager.deco.organization.web.WebFullCompanyMain-12&q=universalName&universalName=acme",
+      "call": "company_people",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "api"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/search/dash/clusters?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175&origin=FACETED_SEARCH&q=all&query=(flagshipSearchIntent:ORGANIZATIONS_PEOPLE_ALUMNI,queryParameters:(currentCompany:List(1001),resultType:List(ORGANIZATION_ALUMNI)),includeFiltersInResponse:true)&start=0&count=12",
+      "call": "company_people",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "api"
+    }
+  ],
+  "result": {
+    "at_end": null,
+    "company_id": "1001",
+    "count": 0,
+    "demographics": {},
+    "page_size": 12,
+    "people": [],
+    "references": {
+      "employees": []
+    },
+    "sections": {
+      "employees": ""
+    },
+    "start": 0,
+    "total": null,
+    "url": "https://www.linkedin.com/company/acme/people/"
+  },
+  "scenario": "company_people__baseline",
+  "schema_version": 1
+}

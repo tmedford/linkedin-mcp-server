@@ -1501,6 +1501,41 @@ async def _get_job_scenario() -> dict[str, Any]:
     return recorder.trace({"method": "get_job", "arguments": {"job_id": "123"}}, result)
 
 
+async def _jobs_tracker_scenario() -> dict[str, Any]:
+    """Record what reading the jobs tracker does to the page.
+
+    One POST and nothing else: the tracker route is prefetched, not opened.
+    The client's headers come from a cache seeded here; taking them loads the
+    feed once per browser session, which the reader's unit tests cover.
+    """
+    from linkedin_mcp_server.voyager import jobs as jobs_module
+
+    recorder = TraceRecorder("saved_jobs__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    record = {
+        "jobId": "123",
+        "jobTitle": "Python Engineer",
+        "companyName": "Acme",
+        "currentStageKey": "Saved",
+    }
+    stream = "0:" + json.dumps(
+        {"viewName": "opportunity-tracker-add-note", "payload": record},
+        separators=(",", ":"),
+    )
+    page.script("evaluate:voyager_stream_post", {"status": 200, "text": stream})
+    extractor = _extractor(page)
+    jobs_module._PREFETCH_HEADERS = (page, {"x-li-track": "{}"})
+    try:
+        async with boundaries(recorder, clock):
+            with recorder.context("saved_jobs", "saved_jobs"):
+                result = await extractor.saved_jobs()
+    finally:
+        jobs_module.forget_prefetch_headers()
+    page.assert_clean()
+    return recorder.trace({"method": "saved_jobs", "arguments": {}}, result)
+
+
 async def _people_search_scenario() -> dict[str, Any]:
     """Record what the API people search does to the page.
 
@@ -1618,6 +1653,8 @@ async def _person_scenario() -> dict[str, Any]:
         {"body": json.dumps(_policy_profile(ada, "Ada", company, 2015))},
         {"body": json.dumps(relationship)},
         {"body": json.dumps({"included": []})},
+        # Follower and connection counts: one more read, still no page.
+        {"body": json.dumps({"included": []})},
         {"body": json.dumps(_POLICY_MUTUAL)},
         {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
         {"body": json.dumps(_policy_profile(me, "Taylor", company, 2013))},
@@ -1633,6 +1670,107 @@ async def _person_scenario() -> dict[str, Any]:
         voyager_person.forget_my_profile()
     page.assert_clean()
     return recorder.trace({"method": "get_person", "arguments": arguments}, result)
+
+
+async def _my_person_scenario() -> dict[str, Any]:
+    """Record what reading one's own profile from the API does.
+
+    Five evaluates and no navigation: who is signed in, that profile, the
+    relationship (self), the contact fields and the network counts. The tool it replaces loads
+    the profile page and one more page per section.
+    """
+    recorder = TraceRecorder("my_person__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    me = "urn:li:fsd_profile:ACoAA-me"
+    relationship = {
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.dash.relationships.MemberRelationship",
+                "memberRelationshipUnion": {"self": {}},
+            }
+        ]
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
+        {
+            "body": json.dumps(
+                _policy_profile(me, "Taylor", "urn:li:fsd_company:1", 2013)
+            )
+        },
+        {"body": json.dumps(relationship)},
+        {"body": json.dumps({"included": []})},
+        # Follower and connection counts: one more read, still no page.
+        {"body": json.dumps({"included": []})},
+    )
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("my_person", "person"):
+            result = await extractor.my_person()
+    page.assert_clean()
+    return recorder.trace({"method": "my_person", "arguments": {}}, result)
+
+
+_POLICY_COMPANY = {
+    "data": {"*elements": ["urn:li:fs_normalized_company:1001"]},
+    "included": [
+        {
+            "entityUrn": "urn:li:fs_normalized_company:1001",
+            "name": "Acme",
+            "universalName": "acme",
+        }
+    ],
+}
+_POLICY_EMPTY = {"data": {"elements": []}, "included": []}
+
+
+async def _api_read_scenario(
+    method: str,
+    arguments: dict[str, Any],
+    *,
+    fetches: tuple[dict[str, Any], ...] = (),
+    streams: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Record what one API-backed read does to the page.
+
+    Every tool below replaces one that loaded a LinkedIn page. Each is a
+    fixed number of reads and nothing else: no navigation, no click. The
+    stream reads post to LinkedIn's own component and paging actions with
+    headers from a cache seeded here; taking those headers opens one page per
+    browser session, which the readers' unit tests cover.
+    """
+    from linkedin_mcp_server.voyager import content as content_module
+    from linkedin_mcp_server.voyager import profile_views as views_module
+
+    recorder = TraceRecorder(f"{method}__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    if fetches:
+        page.script(
+            "evaluate:voyager_conversations_fetch",
+            *({"body": json.dumps(payload)} for payload in fetches),
+        )
+    if streams:
+        page.script(
+            "evaluate:voyager_stream_post",
+            *({"status": 200, "text": text} for text in streams),
+        )
+    extractor = _extractor(page)
+    if streams:
+        views_module._HEADER_CACHE = (page, {"x-li-track": "{}"})
+    # A search carries a random id; pinned so the trace is reproducible.
+    minted = content_module._search_id
+    setattr(content_module, "_search_id", lambda: "policy-search-id")
+    try:
+        async with boundaries(recorder, clock):
+            with recorder.context(method, "api"):
+                result = await getattr(extractor, method)(**arguments)
+    finally:
+        setattr(content_module, "_search_id", minted)
+        views_module.forget_cached_headers()
+    page.assert_clean()
+    return recorder.trace({"method": method, "arguments": arguments}, result)
 
 
 async def _message_search_scenario() -> dict[str, Any]:
@@ -1864,6 +2002,15 @@ TOOL_FACADE_METHODS = {
     "invite_person",
     "find_jobs",
     "get_job",
+    "saved_jobs",
+    "my_person",
+    "company_record",
+    "company_posts",
+    "company_people",
+    "find_companies",
+    "find_posts",
+    "home_feed",
+    "sidebar_people",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1948,6 +2095,36 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "invite-person.json": await _invite_person_scenario(),
         "find-jobs.json": await _find_jobs_scenario(),
         "get-job.json": await _get_job_scenario(),
+        "jobs-tracker.json": await _jobs_tracker_scenario(),
+        "my-person.json": await _my_person_scenario(),
+        "company-record.json": await _api_read_scenario(
+            "company_record", {"company_name": "acme"}, fetches=(_POLICY_COMPANY,)
+        ),
+        "company-posts-api.json": await _api_read_scenario(
+            "company_posts", {"company_name": "acme"}, fetches=(_POLICY_EMPTY,)
+        ),
+        "company-people.json": await _api_read_scenario(
+            "company_people",
+            {"company_name": "acme"},
+            fetches=(_POLICY_COMPANY, _POLICY_EMPTY),
+        ),
+        "find-companies.json": await _api_read_scenario(
+            "find_companies", {"keywords": "acme"}, fetches=(_POLICY_EMPTY,)
+        ),
+        "home-feed.json": await _api_read_scenario(
+            "home_feed", {"num_posts": 5}, fetches=(_POLICY_EMPTY,)
+        ),
+        "find-posts.json": await _api_read_scenario(
+            "find_posts", {"keywords": "hiring", "max_pages": 1}, streams=("",)
+        ),
+        "sidebar-people.json": await _api_read_scenario(
+            "sidebar_people",
+            {"linkedin_username": "ada-lovelace"},
+            streams=(
+                '0:{"url":"https://www.linkedin.com/in/grace-hopper"}',
+                '0:{"url":"https://www.linkedin.com/in/alan-turing"}',
+            ),
+        ),
         "person-mutual.json": await _person_extra_scenario("get_mutual_connections"),
         "person-posts.json": await _person_extra_scenario("get_person_posts"),
         "message-search.json": await _message_search_scenario(),

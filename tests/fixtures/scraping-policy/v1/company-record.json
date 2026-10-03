@@ -1,0 +1,32 @@
+{
+  "call": {
+    "arguments": {
+      "company_name": "acme"
+    },
+    "method": "company_record"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/organization/companies?decorationId=com.linkedin.voyager.deco.organization.web.WebFullCompanyMain-12&q=universalName&universalName=acme",
+      "call": "company_record",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "api"
+    }
+  ],
+  "result": {
+    "company": {
+      "company_id": "1001",
+      "name": "Acme",
+      "universal_name": "acme"
+    },
+    "company_id": "1001",
+    "sections": {
+      "about": "Acme"
+    },
+    "url": "https://www.linkedin.com/company/acme/"
+  },
+  "scenario": "company_record__baseline",
+  "schema_version": 1
+}
