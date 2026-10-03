@@ -1443,6 +1443,64 @@ async def _invite_person_scenario() -> dict[str, Any]:
     )
 
 
+async def _find_jobs_scenario() -> dict[str, Any]:
+    """Record what the API job search does to the page.
+
+    One evaluate per page of results and nothing else: no navigation, and no
+    write. The search page it replaces posts every query to the member's
+    job-search history.
+    """
+    recorder = TraceRecorder("find_jobs__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    card = {
+        "$type": "com.linkedin.voyager.dash.jobs.JobPostingCard",
+        "entityUrn": "urn:li:fsd_jobPostingCard:(123,JOBS_SEARCH)",
+        "jobPostingUrn": "urn:li:fsd_jobPosting:123",
+        "jobPostingTitle": "Python Engineer",
+        "primaryDescription": {"text": "Acme"},
+    }
+    payload = {
+        "data": {
+            "paging": {"total": 1},
+            "elements": [{"jobCardUnion": {"*jobPostingCard": card["entityUrn"]}}],
+        },
+        "included": [card],
+    }
+    page.script("evaluate:voyager_conversations_fetch", {"body": json.dumps(payload)})
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("find_jobs", "search_results"):
+            result = await extractor.find_jobs("python", max_pages=1)
+    page.assert_clean()
+    return recorder.trace(
+        {"method": "find_jobs", "arguments": {"keywords": "python", "max_pages": 1}},
+        result,
+    )
+
+
+async def _get_job_scenario() -> dict[str, Any]:
+    """Record what reading one posting from the API does: one evaluate."""
+    recorder = TraceRecorder("get_job__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    payload = {
+        "data": {
+            "jobPostingId": 123,
+            "title": "Python Engineer",
+            "formattedLocation": "Remote",
+            "jobState": "LISTED",
+        }
+    }
+    page.script("evaluate:voyager_conversations_fetch", {"body": json.dumps(payload)})
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("get_job", "job_posting"):
+            result = await extractor.get_job("123")
+    page.assert_clean()
+    return recorder.trace({"method": "get_job", "arguments": {"job_id": "123"}}, result)
+
+
 async def _people_search_scenario() -> dict[str, Any]:
     """Record what the API people search does to the page.
 
@@ -1804,6 +1862,8 @@ TOOL_FACADE_METHODS = {
     "get_profile_views",
     "get_recruiter_views",
     "invite_person",
+    "find_jobs",
+    "get_job",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1886,6 +1946,8 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "profile-views.json": await _profile_views_scenario(),
         "recruiter-views.json": await _recruiter_views_scenario(),
         "invite-person.json": await _invite_person_scenario(),
+        "find-jobs.json": await _find_jobs_scenario(),
+        "get-job.json": await _get_job_scenario(),
         "person-mutual.json": await _person_extra_scenario("get_mutual_connections"),
         "person-posts.json": await _person_extra_scenario("get_person_posts"),
         "message-search.json": await _message_search_scenario(),

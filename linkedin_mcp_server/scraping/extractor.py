@@ -25,6 +25,7 @@ from linkedin_mcp_server.voyager.people_search import VoyagerPeopleSearch
 from linkedin_mcp_server.voyager.person import VoyagerPersonReader
 from linkedin_mcp_server.voyager.person_message import VoyagerPersonMessage
 from linkedin_mcp_server.voyager.connect import VoyagerConnect
+from linkedin_mcp_server.voyager.jobs import VoyagerJobs
 from linkedin_mcp_server.voyager.profile_views import (
     VoyagerProfileViews,
     VoyagerRecruiterViews,
@@ -98,6 +99,7 @@ class LinkedInExtractor:
         self._voyager_connect = VoyagerConnect(
             session, navigator, connection=self._connection
         )
+        self._voyager_jobs = VoyagerJobs(session, navigator)
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -437,3 +439,34 @@ class LinkedInExtractor:
         return await self._voyager_connect.connect_with_person(
             linkedin_username, note=note, dry_run=dry_run
         )
+
+    async def find_jobs(
+        self,
+        keywords: str,
+        location: str | None = None,
+        max_pages: int = 3,
+        date_posted: str | None = None,
+        job_type: str | None = None,
+        experience_level: str | None = None,
+        work_type: str | None = None,
+        easy_apply: bool = False,
+        sort_by: str | None = None,
+        company_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Search jobs through LinkedIn's API."""
+        return await self._voyager_jobs.find_jobs(
+            keywords,
+            location,
+            max_pages=max_pages,
+            date_posted=date_posted,
+            job_type=job_type,
+            experience_level=experience_level,
+            work_type=work_type,
+            easy_apply=easy_apply,
+            sort_by=sort_by,
+            company_id=company_id,
+        )
+
+    async def get_job(self, job_id: str) -> dict[str, Any]:
+        """Read one job posting through LinkedIn's API."""
+        return await self._voyager_jobs.get_job(job_id)

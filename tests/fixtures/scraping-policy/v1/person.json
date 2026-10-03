@@ -67,11 +67,11 @@
       "companies": [
         {
           "company": "Analytical Engine",
-          "company_urn": "urn:li:fsd_company:1",
-          "matched_by": "urn",
+          "company_id": "1",
+          "matched_by": "id",
           "mine": {
             "company": "Analytical Engine",
-            "company_urn": "urn:li:fsd_company:1",
+            "company_id": "1",
             "start": "2013-01",
             "title": "Engineer"
           },
@@ -82,7 +82,7 @@
           },
           "theirs": {
             "company": "Analytical Engine",
-            "company_urn": "urn:li:fsd_company:1",
+            "company_id": "1",
             "start": "2015-01",
             "title": "Engineer"
           }
@@ -98,11 +98,11 @@
       "worked_together": [
         {
           "company": "Analytical Engine",
-          "company_urn": "urn:li:fsd_company:1",
-          "matched_by": "urn",
+          "company_id": "1",
+          "matched_by": "id",
           "mine": {
             "company": "Analytical Engine",
-            "company_urn": "urn:li:fsd_company:1",
+            "company_id": "1",
             "start": "2013-01",
             "title": "Engineer"
           },
@@ -113,7 +113,7 @@
           },
           "theirs": {
             "company": "Analytical Engine",
-            "company_urn": "urn:li:fsd_company:1",
+            "company_id": "1",
             "start": "2015-01",
             "title": "Engineer"
           }
@@ -190,7 +190,7 @@
       "items": [
         {
           "company": "Analytical Engine",
-          "company_urn": "urn:li:fsd_company:1",
+          "company_id": "1",
           "start": "2015-01",
           "title": "Engineer"
         }

@@ -73,7 +73,7 @@ from linkedin_mcp_server.core.exceptions import (
     LinkedInScraperException,
     RateLimitError,
 )
-from linkedin_mcp_server.voyager.client import VoyagerReader
+from linkedin_mcp_server.voyager.client import VoyagerReader, company_id
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +220,7 @@ def parse_profile(payload: dict[str, Any]) -> dict[str, Any]:
                     {
                         "title": row.get("title"),
                         "company": row.get("companyName"),
-                        "company_urn": company["urn"],
+                        "company_id": company_id(company["urn"]),
                         "company_url": company["url"],
                         **_range(row),
                         "location": row.get("locationName"),
@@ -283,7 +283,7 @@ def parse_profile(payload: dict[str, Any]) -> dict[str, Any]:
             lambda r: {
                 "name": r.get("name"),
                 "authority": r.get("authority"),
-                "company_urn": r.get("*company"),
+                "company_id": company_id(r.get("*company")),
                 **_range(r),
                 "url": r.get("url"),
             },
@@ -315,7 +315,7 @@ def parse_profile(payload: dict[str, Any]) -> dict[str, Any]:
             lambda r: {
                 "role": r.get("role"),
                 "organization": r.get("companyName"),
-                "company_urn": r.get("*company"),
+                "company_id": company_id(r.get("*company")),
                 "cause": r.get("cause"),
                 **_range(r),
                 "description": r.get("description"),
@@ -373,6 +373,7 @@ def _shared(
     *,
     urn_key: str,
     name_key: str,
+    id_label: str = "urn",
 ) -> list[dict[str, Any]]:
     """Entries at the same organisation, matched by URN and by name otherwise.
 
@@ -404,7 +405,9 @@ def _shared(
                 {
                     name_key: their.get(name_key) or my.get(name_key),
                     urn_key: their.get(urn_key) or my.get(urn_key),
-                    "matched_by": "urn"
+                    # What the identity was: "id" for a company_id, "urn"
+                    # for a school, "name" for free text.
+                    "matched_by": id_label
                     if my.get(urn_key) and their.get(urn_key)
                     else "name",
                     "mine": my,
@@ -486,8 +489,9 @@ def common_ground(mine: dict[str, Any], theirs: dict[str, Any]) -> dict[str, Any
     companies = _shared(
         items(mine, "positions"),
         items(theirs, "positions"),
-        urn_key="company_urn",
+        urn_key="company_id",
         name_key="company",
+        id_label="id",
     )
     my_location = (mine.get("identity") or {}).get("location")
     their_location = (theirs.get("identity") or {}).get("location")

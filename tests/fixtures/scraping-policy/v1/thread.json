@@ -40,7 +40,8 @@
       {
         "name": "Ada Lovelace",
         "profile_url": "https://www.linkedin.com/in/ada-lovelace",
-        "profile_urn": "urn:li:fsd_profile:ACoAA-ada"
+        "profile_urn": "urn:li:fsd_profile:ACoAA-ada",
+        "public_identifier": "ada-lovelace"
       }
     ],
     "query_id_renewed": false,

@@ -23,6 +23,8 @@ REPLACED_IN_PLACE = (
     "send_message",
     "get_person_profile",
     "connect_with_person",
+    "search_jobs",
+    "get_job_details",
 )
 
 
@@ -50,6 +52,21 @@ async def test_the_served_tool_of_that_name_is_this_forks(name):
         ),
         ("get_person_profile", {"linkedin_username", "sections", "max_scrolls"}),
         ("connect_with_person", {"linkedin_username", "note"}),
+        (
+            "search_jobs",
+            {
+                "keywords",
+                "location",
+                "max_pages",
+                "date_posted",
+                "job_type",
+                "experience_level",
+                "work_type",
+                "easy_apply",
+                "sort_by",
+            },
+        ),
+        ("get_job_details", {"job_id"}),
     ],
 )
 async def test_every_argument_upstream_accepted_is_still_accepted(
@@ -67,6 +84,8 @@ async def test_every_argument_upstream_accepted_is_still_accepted(
         ("send_message", ["linkedin_username", "message", "confirm_send"]),
         ("get_person_profile", ["linkedin_username"]),
         ("connect_with_person", ["linkedin_username"]),
+        ("search_jobs", ["keywords"]),
+        ("get_job_details", ["job_id"]),
     ],
 )
 async def test_nothing_new_became_required(name, required):

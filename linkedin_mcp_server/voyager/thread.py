@@ -51,7 +51,7 @@ from linkedin_mcp_server.core.exceptions import (
     LinkedInScraperException,
     RateLimitError,
 )
-from linkedin_mcp_server.voyager.client import VoyagerReader
+from linkedin_mcp_server.voyager.client import VoyagerReader, person_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +164,10 @@ def parse_thread(
             "name": f"{first} {last}".strip(),
             "profile_urn": entity.get("hostIdentityUrn") or "",
             "profile_url": member.get("profileUrl") or "",
+            # Pass this as linkedin_username to any person tool.
+            "public_identifier": person_identifier(
+                member.get("profileUrl"), entity.get("hostIdentityUrn")
+            ),
         }
 
     messages = []
@@ -249,7 +253,8 @@ class VoyagerThreadReader(VoyagerReader):
         rows = [
             row
             for row in found["conversations"]
-            if member["urn"] in (row.get("participant_urns") or [])
+            if member["urn"]
+            in [person.get("profile_urn") for person in row.get("people") or []]
         ]
         return sorted(
             rows,

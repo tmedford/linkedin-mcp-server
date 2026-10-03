@@ -24,11 +24,12 @@
         "headline": "Engineer",
         "invitation_type": "CONNECTION",
         "invitation_urn": "urn:li:invitation:1",
+        "mutual_connections": null,
         "name": "Ada Lovelace",
         "note": "Happy to connect",
         "note_length": 16,
-        "profile_slug": "ada-lovelace",
         "profile_urn": "urn:li:member:1",
+        "public_identifier": "ada-lovelace",
         "sent_at_iso": "2023-11-14T22:13:20Z",
         "shared_secret": "s3cret",
         "state": "PENDING"

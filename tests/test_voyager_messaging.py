@@ -667,22 +667,8 @@ class TestPageSizeIsAlwaysPinned:
 # --------------------------------------------------------------------------- #
 
 
-def test_handle_is_returned_only_for_a_real_vanity_url():
-    from linkedin_mcp_server.voyager.messaging import _handle
-
-    assert _handle("https://www.linkedin.com/in/ada-lovelace/") == "ada-lovelace"
-    # THE CASE THAT MATTERS: measured against a live mailbox, every one of 25
-    # rows carried an obfuscated member id here, not a handle. Returning it as
-    # a handle would file the person under a key no handle-keyed record can
-    # ever match, which is worse than reporting nothing.
-    assert _handle("https://www.linkedin.com/in/ACoAADAv-8oBRorLph0IeTTiyH7") == ""
-    assert _handle("https://www.linkedin.com/company/zuora/") == ""
-    assert _handle("") == ""
-    assert _handle(None) == ""
-
-
-def test_participants_keep_urn_and_handle_apart():
-    """The urn is always present; the handle is absent far more often than not."""
+def test_a_participant_carries_one_id_to_pass_on():
+    """Messaging gives the obfuscated id, not a handle, and that id is passed on."""
     from linkedin_mcp_server.voyager.messaging import VoyagerMessagingReader
 
     payload = {
@@ -706,4 +692,6 @@ def test_participants_keep_urn_and_handle_apart():
     ryan = people["urn:li:msg_messagingParticipant:1"]
     assert ryan["name"] == "Ryan Dart"
     assert ryan["profile_urn"] == "urn:li:fsd_profile:ACoAADAv"
-    assert ryan["profile_handle"] == ""
+    # What chains into the person tools: the id, since there is no handle.
+    assert ryan["public_identifier"] == "ACoAADAv"
+    assert "profile_handle" not in ryan

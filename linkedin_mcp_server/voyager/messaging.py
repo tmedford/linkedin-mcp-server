@@ -27,7 +27,7 @@ from typing import Any
 
 from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from linkedin_mcp_server.voyager.client import VoyagerReader
+from linkedin_mcp_server.voyager.client import VoyagerReader, person_identifier
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
     LinkedInScraperException,
@@ -166,24 +166,9 @@ def forget_cached_query() -> None:
 # LinkedIn puts an OBFUSCATED member id where a vanity handle would go:
 # /in/ACoAADAv-8oB... rather than /in/ryan-dart. Measured against a live
 # mailbox, all 25 rows came back in the obfuscated form and none as a handle.
-# The two are not interchangeable - a vanity handle is what a human-facing
-# record files under, while the obfuscated id is stable and unique but opaque -
-# so they are reported separately and never conflated.
-_OBFUSCATED_ID = re.compile(r"^ACoAA[A-Za-z0-9_-]+$")
-
-
-def _handle(profile_url: str | None) -> str:
-    """Return the VANITY handle from a profile URL, or "" when there is none.
-
-    An obfuscated member id is deliberately NOT returned here. It is a valid
-    identifier but it is not a handle, and reporting it as one would file a
-    person under a key that cannot match any handle-keyed record.
-    """
-    match = re.search(r"/in/([^/?#]+)", profile_url or "")
-    if not match:
-        return ""
-    candidate = match.group(1)
-    return "" if _OBFUSCATED_ID.match(candidate) else candidate
+# Each participant therefore carries one id, public_identifier, from
+# client.person_identifier: the handle when there is one, else that id, which
+# the profile finder resolves to the same member.
 
 
 class VoyagerMessagingReader(VoyagerReader):
@@ -432,10 +417,12 @@ class VoyagerMessagingReader(VoyagerReader):
                 # it only exists when LinkedIn hands back a profile URL.
                 "profile_urn": item.get("hostIdentityUrn") or "",
                 "profile_url": profile_url,
-                # Populated only when LinkedIn actually returns a vanity URL.
-                # In practice it usually does not; profile_urn is the reliable
-                # identifier and this is the convenience when it exists.
-                "profile_handle": _handle(profile_url),
+                # The one id to pass as linkedin_username to any person tool:
+                # the vanity name when LinkedIn gave one, which it usually
+                # does not, otherwise the profile id.
+                "public_identifier": person_identifier(
+                    profile_url, item.get("hostIdentityUrn")
+                ),
             }
         return out
 
@@ -486,7 +473,6 @@ class VoyagerMessagingReader(VoyagerReader):
             # The identifier that is always present. Handles are reported per
             # person in `people` and are frequently absent, so a list of them
             # would silently under-represent the participants.
-            "participant_urns": [p["profile_urn"] for p in people if p["profile_urn"]],
             "last_activity_at": conversation.get("lastActivityAt"),
             "last_activity_iso": self._iso(conversation.get("lastActivityAt")),
             "last_read_at": conversation.get("lastReadAt"),

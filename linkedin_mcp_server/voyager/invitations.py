@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from linkedin_mcp_server.core.exceptions import LinkedInScraperException
-from linkedin_mcp_server.voyager.client import VoyagerReader
+from linkedin_mcp_server.voyager.client import VoyagerReader, person_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +50,14 @@ PAGE_SIZE = 50
 _RECEIVED = "https://www.linkedin.com/voyager/api/relationships/invitationViews"
 _SENT = "https://www.linkedin.com/voyager/api/relationships/sentInvitationViewsV2"
 
-#: Where the rows live. Named as a constant because getting it wrong is the
-#: documented failure and a constant is greppable in a way a literal is not.
+#: Where the rows live. The board was first measured wrapped (``data.data``,
+#: rows inline). Re-measured 2026-10-02 both boards answered NORMALIZED: rows
+#: at ``data['*elements']`` as ids of views in ``included``, each view
+#: pointing (``*invitation``) at an Invitation that points at MiniProfiles.
+#: Reading only the old depth refused every call as a shape change, and
+#: reading the new depth while keeping only inline rows returned zero against
+#: 15 sent and 31 received. Both shapes are read; nothing else is.
+_ELEMENTS_PATHS = (("data", "data"), ("data",))
 _ELEMENTS_PATH = "data.data['*elements']"
 
 
@@ -110,12 +116,12 @@ class VoyagerInvitationsReader(VoyagerReader):
         self._refuse_unexplained_zero(
             rows=rows,
             payload=payload,
-            path=_ELEMENTS_PATH,
+            path="data['*elements'] (or data.data['*elements'])",
             container_found=container_found,
         )
 
         by_urn = self._by_urn(payload)
-        invitations = [self._normalize(row, by_urn) for row in rows]
+        invitations = [self._normalize(row, by_urn, direction) for row in rows]
 
         # Measured against what was asked for. paging.total is deliberately not
         # consulted: it has read 0 against a full board on every run it was
@@ -154,22 +160,54 @@ class VoyagerInvitationsReader(VoyagerReader):
         reported as a shape change. Without that second value the two are the
         same answer.
         """
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            return [], False
-        inner = data.get("data")
-        if not isinstance(inner, dict):
-            return [], False
-        if "*elements" not in inner:
-            return [], False
-        elements = inner.get("*elements") or []
-        return [e for e in elements if isinstance(e, dict)], True
+        by_urn = {
+            entity.get("entityUrn"): entity
+            for entity in payload.get("included") or []
+            if isinstance(entity, dict)
+        }
+        for path in _ELEMENTS_PATHS:
+            inner: Any = payload
+            for key in path:
+                inner = inner.get(key) if isinstance(inner, dict) else None
+            if not isinstance(inner, dict):
+                continue
+            if "*elements" not in inner and "elements" not in inner:
+                continue
+            # An empty board answers with ``elements: []`` rather than a
+            # pointer list, as on every other collection read here.
+            elements = inner.get("*elements") or inner.get("elements") or []
+            rows = []
+            for element in elements:
+                row = by_urn.get(element) if isinstance(element, str) else element
+                if not isinstance(row, dict):
+                    # Dropping it would under-report the board quietly, the
+                    # same class of failure as a false zero.
+                    raise LinkedInScraperException(
+                        f"Voyager invitations row {element!r} is not in the "
+                        "answer it was listed in. Refusing to report a board "
+                        "with rows missing."
+                    )
+                rows.append(row)
+            return rows, True
+        return [], False
 
     def _normalize(
-        self, row: dict[str, Any], by_urn: dict[str, dict[str, Any]]
+        self,
+        row: dict[str, Any],
+        by_urn: dict[str, dict[str, Any]],
+        direction: str = "received",
     ) -> dict[str, Any]:
         """One invitation, flattened to what a decision actually needs."""
         invitation = row.get("invitation") if isinstance(row, dict) else None
+        if not isinstance(invitation, dict) and row.get("*invitation"):
+            invitation = by_urn.get(row["*invitation"])
+            if not isinstance(invitation, dict):
+                # The view alone has no state, time or members: read as the
+                # invitation it would become a blank row passed off as one.
+                raise LinkedInScraperException(
+                    f"Voyager invitations: {row['*invitation']!r} is not in the "
+                    "answer that pointed at it."
+                )
         invitation = invitation if isinstance(invitation, dict) else row
 
         message = invitation.get("message")
@@ -180,12 +218,28 @@ class VoyagerInvitationsReader(VoyagerReader):
         # preferring one.
         has_note_flag = invitation.get("customMessage")
 
-        profile = self._profile_of(row, by_urn)
+        # The member sits inside the Invitation in the normalized shape and
+        # beside it in the inline one.
+        profile = self._profile_of(invitation, by_urn, direction) or (
+            self._profile_of(row, by_urn, direction)
+        )
+        mutual = next(
+            (
+                (insight.get("sharedInsight") or {}).get("totalCount")
+                for insight in row.get("insights") or []
+                if isinstance(insight, dict)
+            ),
+            None,
+        )
         return {
             "invitation_urn": invitation.get("entityUrn"),
             "shared_secret": invitation.get("sharedSecret"),
             "invitation_type": invitation.get("invitationType"),
-            "state": invitation.get("invitationState") or invitation.get("state"),
+            # The normalized Invitation has no state field; its type (SENT,
+            # PENDING) is the state LinkedIn shows.
+            "state": invitation.get("invitationState")
+            or invitation.get("state")
+            or invitation.get("invitationType"),
             "sent_at_iso": _iso(invitation.get("sentTime")),
             "has_note": bool(has_note_flag) or bool(note),
             "has_note_flag": has_note_flag,
@@ -193,13 +247,20 @@ class VoyagerInvitationsReader(VoyagerReader):
             "note_length": len(note),
             "name": profile.get("name"),
             "headline": profile.get("headline"),
-            "profile_slug": profile.get("slug"),
             "profile_urn": profile.get("urn"),
+            # The one id to pass as linkedin_username to any person tool:
+            # the slug, or the profile id when there is none.
+            "public_identifier": profile.get("slug")
+            or person_identifier(None, profile.get("urn")),
+            # LinkedIn's count of connections in common, on received rows.
+            "mutual_connections": mutual,
         }
 
     @staticmethod
     def _profile_of(
-        row: dict[str, Any], by_urn: dict[str, dict[str, Any]]
+        row: dict[str, Any],
+        by_urn: dict[str, dict[str, Any]],
+        direction: str = "received",
     ) -> dict[str, Any]:
         """Resolve the other party, whichever shape this board used.
 
@@ -208,8 +269,17 @@ class VoyagerInvitationsReader(VoyagerReader):
         URN pointing into ``included``. Both are handled rather than assuming
         the shape of whichever board was read first.
         """
+        # The OTHER party: who sent it on the received board, who it went to
+        # on the sent board. Both members are present on every invitation, so
+        # taking the first one found named the signed-in member on every
+        # sent row.
+        keys = (
+            ("toMember", "*toMember")
+            if direction == "sent"
+            else ("fromMember", "*fromMember")
+        )
         candidate: Any = None
-        for key in ("fromMember", "toMember", "*fromMember", "*toMember"):
+        for key in keys:
             value = row.get(key) if isinstance(row, dict) else None
             if value:
                 candidate = value
@@ -225,7 +295,8 @@ class VoyagerInvitationsReader(VoyagerReader):
             "name": " ".join(p for p in (first, last) if p) or None,
             "headline": candidate.get("occupation") or candidate.get("headline"),
             "slug": candidate.get("publicIdentifier"),
-            "urn": candidate.get("entityUrn"),
+            # The profile URN every other tool returns, not the mini one.
+            "urn": candidate.get("dashEntityUrn") or candidate.get("entityUrn"),
         }
 
     @staticmethod
@@ -237,7 +308,7 @@ class VoyagerInvitationsReader(VoyagerReader):
         for item in invitations:
             note = f" — note ({item['note_length']} chars)" if item["has_note"] else ""
             lines.append(
-                f"{item.get('name') or 'Unknown'} ({item.get('profile_slug') or '?'})"
+                f"{item.get('name') or 'Unknown'} ({item.get('public_identifier') or '?'})"
                 f" — {item.get('headline') or 'no headline'}"
                 f" — {item.get('state') or 'unknown state'}"
                 f" — sent {item.get('sent_at_iso') or 'unknown'}{note}"

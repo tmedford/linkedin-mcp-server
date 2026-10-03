@@ -72,6 +72,8 @@ TOOL_DELEGATES = {
     "get_profile_views": "get_profile_views",
     "get_recruiter_views": "get_recruiter_views",
     "invite_person": "invite_person",
+    "find_jobs": "find_jobs",
+    "get_job": "get_job",
 }
 
 
@@ -121,6 +123,7 @@ async def test_constructor_export_and_dependency_use_the_same_facade(monkeypatch
         "_profile_views",
         "_recruiter_views",
         "_voyager_connect",
+        "_voyager_jobs",
     }
     assert set(vars(extractor)) == expected_state
     assert type(constructed) is LinkedInExtractor
@@ -166,8 +169,10 @@ async def test_registered_tools_and_extractor_delegates_are_counted_separately()
         "get_person",
         "find_people",
         "invite_person",
+        "find_jobs",
+        "get_job",
     }
-    assert len(TOOL_DELEGATES) == 31
+    assert len(TOOL_DELEGATES) == 33
     assert set(TOOL_DELEGATES.values()) == TOOL_FACADE_METHODS
     assert "close_session" not in TOOL_DELEGATES
 
@@ -543,7 +548,7 @@ def test_facade_methods_are_exactly_the_frozen_coroutine_surface():
     }
 
     assert actual == expected
-    assert len(TOOL_FACADE_METHODS) == 31
+    assert len(TOOL_FACADE_METHODS) == 33
     assert len(COMPATIBILITY_METHODS) == 2
 
 
