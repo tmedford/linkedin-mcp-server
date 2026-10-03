@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from linkedin_mcp_server.core.exceptions import LinkedInScraperException
-from linkedin_mcp_server.voyager.client import VoyagerReader
+from linkedin_mcp_server.voyager.client import VoyagerReader, person_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +195,10 @@ class VoyagerInvitationsReader(VoyagerReader):
             "headline": profile.get("headline"),
             "profile_slug": profile.get("slug"),
             "profile_urn": profile.get("urn"),
+            # The name every other tool uses for what to pass as
+            # linkedin_username: the slug, or the id when there is none.
+            "public_identifier": profile.get("slug")
+            or person_identifier(None, profile.get("urn")),
         }
 
     @staticmethod

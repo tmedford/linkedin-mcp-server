@@ -186,6 +186,10 @@ def install_voyager_overlay(
         means paging backwards until `last_activity_iso` is old enough; that is
         deliberately the caller's loop, since only the caller knows when to stop.
 
+        `participants` is the names; `people` is the same people as records,
+        each with public_identifier: pass that as linkedin_username to
+        get_person_profile, send_message or connect_with_person.
+
         Each conversation carries thread_urn, participants, last_activity_iso,
         read, unread_count, last_message_text and awaiting_my_reply, so
         "have I replied to everyone" is a field rather than an inference.
@@ -286,7 +290,9 @@ def install_voyager_overlay(
             invitations, count, page_size, start, direction, at_end and
             zero_reason.
 
-            Each invitation carries name, headline, profile_slug, state,
+            Each invitation carries public_identifier (pass it as
+            linkedin_username to any person tool), name, headline,
+            profile_slug, state,
             sent_at_iso, and both `has_note` and the raw `has_note_flag`.
             **`customMessage` is a boolean flag, not the note** -- the text is
             in `note`, and both are reported so a disagreement is visible
@@ -736,8 +742,11 @@ def install_voyager_overlay(
             positions, education, skills, certifications, honors, languages,
                 organizations, volunteering, projects, publications, patents,
                 courses, test_scores: each is {items, returned, total,
-                complete}. Positions carry title, company, company_urn, start,
+                complete}. Positions carry title, company, company_id, start,
                 end, location and description, one entry per title held.
+                company_id is what search_people(current_company=...),
+                search_jobs(company_id=...) and get_profile_views(company_id=...)
+                take.
             incomplete_sections: names of sections where the server returned
                 fewer than it has. **Skills are capped at 20**, so skills is
                 usually listed; every other section normally comes back whole.

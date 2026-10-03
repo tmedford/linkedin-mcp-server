@@ -737,3 +737,17 @@ def test_contact_fields_the_member_does_not_share_are_absent_not_empty():
         "birthday": "--12-10",
     }
     assert parse_contact({"included": []}) == {}
+
+
+def test_a_position_carries_the_company_id_company_filters_take():
+    parsed = parse_profile(
+        _profile(
+            ADA,
+            "Ada Lovelace",
+            jobs=[("Zuora", ZUORA, "PM", "2015-01", "2018-01")],
+        )
+    )
+
+    position = parsed["positions"]["items"][0]
+    assert position["company_urn"] == ZUORA
+    assert position["company_id"] == "229978"

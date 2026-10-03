@@ -49,7 +49,8 @@
             "name": "Ada Lovelace",
             "profile_handle": "",
             "profile_url": "",
-            "profile_urn": "urn:li:fsd_profile:ACoAA-ada"
+            "profile_urn": "urn:li:fsd_profile:ACoAA-ada",
+            "public_identifier": "ACoAA-ada"
           }
         ],
         "read": null,

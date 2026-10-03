@@ -73,7 +73,7 @@ from linkedin_mcp_server.core.exceptions import (
     LinkedInScraperException,
     RateLimitError,
 )
-from linkedin_mcp_server.voyager.client import VoyagerReader
+from linkedin_mcp_server.voyager.client import VoyagerReader, company_id
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +221,7 @@ def parse_profile(payload: dict[str, Any]) -> dict[str, Any]:
                         "title": row.get("title"),
                         "company": row.get("companyName"),
                         "company_urn": company["urn"],
+                        "company_id": company_id(company["urn"]),
                         "company_url": company["url"],
                         **_range(row),
                         "location": row.get("locationName"),
@@ -284,6 +285,7 @@ def parse_profile(payload: dict[str, Any]) -> dict[str, Any]:
                 "name": r.get("name"),
                 "authority": r.get("authority"),
                 "company_urn": r.get("*company"),
+                "company_id": company_id(r.get("*company")),
                 **_range(r),
                 "url": r.get("url"),
             },
@@ -316,6 +318,7 @@ def parse_profile(payload: dict[str, Any]) -> dict[str, Any]:
                 "role": r.get("role"),
                 "organization": r.get("companyName"),
                 "company_urn": r.get("*company"),
+                "company_id": company_id(r.get("*company")),
                 "cause": r.get("cause"),
                 **_range(r),
                 "description": r.get("description"),

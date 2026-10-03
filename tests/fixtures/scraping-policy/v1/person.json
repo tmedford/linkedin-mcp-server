@@ -71,6 +71,7 @@
           "matched_by": "urn",
           "mine": {
             "company": "Analytical Engine",
+            "company_id": "1",
             "company_urn": "urn:li:fsd_company:1",
             "start": "2013-01",
             "title": "Engineer"
@@ -82,6 +83,7 @@
           },
           "theirs": {
             "company": "Analytical Engine",
+            "company_id": "1",
             "company_urn": "urn:li:fsd_company:1",
             "start": "2015-01",
             "title": "Engineer"
@@ -102,6 +104,7 @@
           "matched_by": "urn",
           "mine": {
             "company": "Analytical Engine",
+            "company_id": "1",
             "company_urn": "urn:li:fsd_company:1",
             "start": "2013-01",
             "title": "Engineer"
@@ -113,6 +116,7 @@
           },
           "theirs": {
             "company": "Analytical Engine",
+            "company_id": "1",
             "company_urn": "urn:li:fsd_company:1",
             "start": "2015-01",
             "title": "Engineer"
@@ -190,6 +194,7 @@
       "items": [
         {
           "company": "Analytical Engine",
+          "company_id": "1",
           "company_urn": "urn:li:fsd_company:1",
           "start": "2015-01",
           "title": "Engineer"

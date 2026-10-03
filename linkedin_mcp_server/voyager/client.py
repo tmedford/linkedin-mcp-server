@@ -85,6 +85,32 @@ _POST_JS = """async ({url, body}) => {
 }"""
 
 
+def person_identifier(profile_url: str | None, profile_urn: str | None) -> str | None:
+    """What to pass as ``linkedin_username`` to every person tool.
+
+    The vanity name when LinkedIn gave a profile URL with one, otherwise the
+    profile id from the URN (``ACoAA...``). Measured on 2026-10-02: the
+    profile finder resolves that id to the same member as the vanity name, so
+    either chains into get_person_profile, send_message or connect_with_person.
+    Messaging participants usually carry only the id.
+    """
+    import re
+
+    match = re.search(r"/in/([^/?#]+)", profile_url or "")
+    if match and not match.group(1).startswith("ACoAA"):
+        return match.group(1)
+    urn = profile_urn or ""
+    if urn.startswith(_PROFILE_URN_PREFIX):
+        return urn[len(_PROFILE_URN_PREFIX) :]
+    return match.group(1) if match else None
+
+
+def company_id(company_urn: str | None) -> str | None:
+    """The numeric id that company filters take, from a company URN."""
+    tail = str(company_urn or "").rsplit(":", 1)[-1]
+    return tail if tail.isdigit() else None
+
+
 class VoyagerReader:
     """Base for readers that call LinkedIn's own API from the logged-in page."""
 

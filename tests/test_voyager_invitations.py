@@ -86,6 +86,7 @@ class TestTheWrappedPayload:
         result = await reader.get_invitations()
         assert result["count"] == 1
         assert result["invitations"][0]["profile_slug"] == SLUG
+        assert result["invitations"][0]["public_identifier"] == SLUG
 
     async def test_the_unwrapped_shape_raises_instead_of_reporting_zero(self):
         """A payload nested one level shallower must not read as an empty board.

@@ -707,3 +707,5 @@ def test_participants_keep_urn_and_handle_apart():
     assert ryan["name"] == "Ryan Dart"
     assert ryan["profile_urn"] == "urn:li:fsd_profile:ACoAADAv"
     assert ryan["profile_handle"] == ""
+    # What chains into the person tools: the id, since there is no handle.
+    assert ryan["public_identifier"] == "ACoAADAv"

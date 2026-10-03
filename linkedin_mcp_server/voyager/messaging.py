@@ -27,7 +27,7 @@ from typing import Any
 
 from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from linkedin_mcp_server.voyager.client import VoyagerReader
+from linkedin_mcp_server.voyager.client import VoyagerReader, person_identifier
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
     LinkedInScraperException,
@@ -436,6 +436,10 @@ class VoyagerMessagingReader(VoyagerReader):
                 # In practice it usually does not; profile_urn is the reliable
                 # identifier and this is the convenience when it exists.
                 "profile_handle": _handle(profile_url),
+                # Pass this as linkedin_username to any person tool.
+                "public_identifier": person_identifier(
+                    profile_url, item.get("hostIdentityUrn")
+                ),
             }
         return out
 
