@@ -94,7 +94,7 @@
       },
       "invite_person": {
         "coroutine": true,
-        "signature": "(self, linkedin_username: 'str', *, dry_run: 'bool' = False) -> 'dict[str, Any]'"
+        "signature": "(self, linkedin_username: 'str', *, note: 'str | None' = None, dry_run: 'bool' = False) -> 'dict[str, Any]'"
       },
       "message_person": {
         "coroutine": true,
@@ -196,7 +196,7 @@
           "properties": {
             "dry_run": {
               "default": false,
-              "description": "True reads the relationship and returns the request\nthat would be sent, without sending it. No note only.",
+              "description": "True reads the relationship and returns the request\nthat would be sent, without sending it.",
               "type": "boolean"
             },
             "linkedin_username": {
@@ -213,7 +213,7 @@
                 }
               ],
               "default": null,
-              "description": "Optional note to include with the invitation"
+              "description": "Optional note to include with the invitation, up to 300\ncharacters (Premium; LinkedIn allows free accounts fewer and\nrefuses the rest at send time)."
             }
           },
           "required": [

@@ -425,9 +425,13 @@ class LinkedInExtractor:
         return await self._recruiter_views.get_recruiter_views(days=days)
 
     async def invite_person(
-        self, linkedin_username: str, *, dry_run: bool = False
+        self,
+        linkedin_username: str,
+        *,
+        note: str | None = None,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Send a connection request without a note, through LinkedIn's action."""
+        """Send a connection request through LinkedIn's API, with or without a note."""
         return await self._voyager_connect.connect_with_person(
-            linkedin_username, dry_run=dry_run
+            linkedin_username, note=note, dry_run=dry_run
         )

@@ -27,8 +27,18 @@ from the API. Measured on 2026-10-02, one account:
   what counts is the relationship afterwards. A send the server accepted but
   that left ``noInvitation`` in place is reported as unconfirmed.
 
-A note is not part of this action. With a note the call goes to upstream's
-implementation, which types it into the custom-invite page.
+**A note uses the other client's call.** The ``addaAddConnection`` action has
+no note field. The custom-invite dialog (``/preload/custom-invite/``) belongs
+to LinkedIn's older web client, and its Send calls
+``voyagerRelationshipsDashMemberRelationships?action=verifyQuotaAndCreateV2``,
+read from that client's own bundle: the body is
+``{invitee: {inviteeUnion: {memberProfile: <profile URN>}}, customMessage,
+trackingId}``, and its ``recipe`` becomes ``decorationId=
+...InvitationCreationResultWithInvitee-3``. Checked with a request that cannot
+succeed, inviting oneself: that body answered 500 where a malformed one
+answered 400, so the shape is the one the server reads. The dialog's counter
+read ``0/300`` on a Premium account; LinkedIn allows free accounts fewer
+characters and fewer notes, which it refuses at send time.
 """
 
 from __future__ import annotations
@@ -47,6 +57,7 @@ from linkedin_mcp_server.voyager.profile_views import (
     _POST_STREAM_JS,
     VoyagerProfileViews,
 )
+from linkedin_mcp_server.voyager.thread_reply import _tracking_id
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +71,13 @@ _SERVER_REQUEST = (
 #: The screen the viewer list belongs to, whose headers are sent with it.
 _SCREEN = "com.linkedin.sdui.flagshipnav.premium.wvmp.WVMP"
 _MEMBER_PREFIX = "urn:li:member:"
+_CREATE_WITH_NOTE = (
+    "https://www.linkedin.com/voyager/api/voyagerRelationshipsDashMemberRelationships"
+    "?action=verifyQuotaAndCreateV2&decorationId="
+    "com.linkedin.voyager.dash.deco.relationships.InvitationCreationResultWithInvitee-3"
+)
+#: The note box's limit, as the dialog counts it (``0/300``) on Premium.
+NOTE_LIMIT = 300
 
 
 def parse_relationship(payload: dict[str, Any], urn: str) -> dict[str, Any]:
@@ -87,6 +105,7 @@ def parse_relationship(payload: dict[str, Any], urn: str) -> dict[str, Any]:
     union = (relationship or {}).get("memberRelationshipUnion") or {}
     state = "unknown"
     detail: str | None = None
+    message: str | None = None
     if "self" in union:
         state = "self"
     elif "connection" in union or "*connection" in union:
@@ -105,6 +124,8 @@ def parse_relationship(payload: dict[str, Any], urn: str) -> dict[str, Any]:
             if isinstance(inner, str):
                 inner = by_urn.get(inner)
             invitee = (inner or {}).get("inviteeMember")
+            note = (inner or {}).get("message")
+            message = note.get("text") if isinstance(note, dict) else note
             if invitee:
                 state = "invited_by_me" if invitee == urn else "invited_by_them"
     elif union:
@@ -120,6 +141,7 @@ def parse_relationship(payload: dict[str, Any], urn: str) -> dict[str, Any]:
         "public_identifier": profile.get("publicIdentifier"),
         "state": state,
         "state_detail": detail,
+        "invitation_message": message,
     }
 
 
@@ -218,9 +240,14 @@ class VoyagerConnect(VoyagerProfileViews):
         return parse_relationship(payload, member["urn"])
 
     async def connect_with_person(
-        self, linkedin_username: str, *, dry_run: bool = False
+        self,
+        linkedin_username: str,
+        *,
+        note: str | None = None,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Send a request without a note, unless the relationship rules it out.
+        """Send a request, with or without a note, unless the relationship
+        rules it out.
 
         ``invited_by_them`` is returned to the caller rather than acted on:
         accepting is a different action and is not measured here.
@@ -230,6 +257,12 @@ class VoyagerConnect(VoyagerProfileViews):
             person_profile_url,
         )
 
+        note = (note or "").strip() or None
+        if note is not None and len(note) > NOTE_LIMIT:
+            raise LinkedInScraperException(
+                f"The note is {len(note)} characters; LinkedIn's invitation "
+                f"note holds {NOTE_LIMIT}. Shorten it by {len(note) - NOTE_LIMIT}."
+            )
         username = normalize_person_identifier(linkedin_username)
         url = person_profile_url(username, "/")
         before = await self._relationship(username)
@@ -257,6 +290,8 @@ class VoyagerConnect(VoyagerProfileViews):
                 f"Voyager {self.surface} profile for {username!r} has no member "
                 "id or public identifier, which the request is built from."
             )
+        if note is not None:
+            return await self._send_with_note(username, before, note, dry_run, result)
         payload = connect_payload(before)
         if dry_run:
             return result(
@@ -285,6 +320,50 @@ class VoyagerConnect(VoyagerProfileViews):
                 "send_failed", f"LinkedIn answered the request with HTTP {status}."
             )
 
+        return await self._confirm(username, result)
+
+    async def _send_with_note(
+        self,
+        username: str,
+        before: dict[str, Any],
+        note: str,
+        dry_run: bool,
+        result: Any,
+    ) -> dict[str, Any]:
+        """The custom-invite dialog's own call, with the note as its message."""
+        body = {
+            "invitee": {"inviteeUnion": {"memberProfile": before["urn"]}},
+            "customMessage": note,
+            "trackingId": _tracking_id(),
+        }
+        if dry_run:
+            return result(
+                "dry_run",
+                "Nothing was sent. This is the request that would be.",
+                request={key: body[key] for key in ("invitee", "customMessage")},
+            )
+        status, text = await self._post(_CREATE_WITH_NOTE, body)
+        if status in (401, 403):
+            raise AuthenticationError(
+                f"Voyager {self.surface} request rejected: HTTP {status}"
+            )
+        if status == 429:
+            raise RateLimitError(f"Voyager {self.surface} rate limited: HTTP {status}")
+        if status not in (200, 201):
+            # LinkedIn's refusal is passed on as it came: a note quota or a
+            # length it will not take are both refused here, and only its own
+            # words say which.
+            return result(
+                "send_failed",
+                f"LinkedIn refused the invitation with HTTP {status}.",
+                response_excerpt=text[:500],
+            )
+        return await self._confirm(username, result, note=note)
+
+    async def _confirm(
+        self, username: str, result: Any, *, note: str | None = None
+    ) -> dict[str, Any]:
+        """Read the relationship back: what counts is whether it changed."""
         await self._session.delay(1.5)
         try:
             after = await self._relationship(username)
@@ -302,11 +381,25 @@ class VoyagerConnect(VoyagerProfileViews):
                 relationship_after=None,
             )
         if after["state"] == "invited_by_me":
-            return result(
-                "pending",
-                "Connection request sent.",
-                relationship_after=after["state"],
-            )
+            if note is None:
+                return result(
+                    "pending",
+                    "Connection request sent.",
+                    relationship_after=after["state"],
+                )
+            # The invitation carries its note; matching it is what makes
+            # note_sent a measurement rather than a hope.
+            sent = after.get("invitation_message")
+            return {
+                **result(
+                    "pending",
+                    "Connection request sent with a note."
+                    if sent == note
+                    else "Connection request sent; its note could not be read back.",
+                    relationship_after=after["state"],
+                ),
+                "note_sent": sent == note,
+            }
         logger.warning(
             "Connect to %s answered 200 but the relationship is %s",
             username,
@@ -317,5 +410,4 @@ class VoyagerConnect(VoyagerProfileViews):
             "LinkedIn accepted the request but the relationship did not change. "
             "Check the sent invitations before trying again.",
             relationship_after=after["state"],
-            response_excerpt=(answer.get("text") or "")[:500],
         )

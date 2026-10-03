@@ -203,3 +203,75 @@ async def test_a_read_back_that_fails_after_a_send_is_not_an_error():
     assert result["status"] == "send_unconfirmed"
     assert "Do not resend" in result["message"]
     assert len(page.posts) == 1
+
+
+def _with_note(union: dict[str, Any], message: Any) -> dict[str, Any]:
+    card = _top_card(union)
+    for entity in card["included"]:
+        if entity.get("entityUrn") == INVITATION:
+            entity["message"] = message
+    return card
+
+
+class _NotePage(_Page):
+    """The note call goes through the shared Voyager POST, not the stream one."""
+
+    async def evaluate(self, _program: str, argument: Any = None) -> Any:
+        if isinstance(argument, dict) and "invitee" in json.dumps(argument.get("body")):
+            self.posts.append(argument)
+            return {"status": self.status, "body": "{}"}
+        return await super().evaluate(_program, argument)
+
+
+async def test_a_note_is_sent_with_the_dialogs_call_and_read_back():
+    page = _NotePage(
+        _top_card(NOT_INVITED), _with_note(INVITED_BY_ME, "Hey Ada, great talk")
+    )
+
+    result = await _reader(page).connect_with_person(
+        "ada-lovelace", note="  Hey Ada, great talk  "
+    )
+
+    assert (result["status"], result["note_sent"]) == ("pending", True)
+    sent = page.posts[0]
+    assert "action=verifyQuotaAndCreateV2" in sent["url"]
+    assert "InvitationCreationResultWithInvitee-3" in sent["url"]
+    assert sent["body"]["invitee"] == {"inviteeUnion": {"memberProfile": URN}}
+    assert sent["body"]["customMessage"] == "Hey Ada, great talk"
+
+
+async def test_a_note_that_did_not_come_back_is_not_claimed_as_sent():
+    page = _NotePage(_top_card(NOT_INVITED), _with_note(INVITED_BY_ME, None))
+
+    result = await _reader(page).connect_with_person("ada-lovelace", note="Hi")
+
+    assert (result["status"], result["note_sent"]) == ("pending", False)
+
+
+async def test_a_refused_note_passes_linkedins_answer_on():
+    page = _NotePage(_top_card(NOT_INVITED), status=400)
+
+    result = await _reader(page).connect_with_person("ada-lovelace", note="Hi")
+
+    assert result["status"] == "send_failed"
+    assert "response_excerpt" in result
+
+
+async def test_a_note_over_the_limit_is_refused_before_any_request():
+    page = _NotePage(_top_card(NOT_INVITED))
+
+    with pytest.raises(Exception, match="301 characters"):
+        await _reader(page).connect_with_person("ada-lovelace", note="x" * 301)
+
+    assert page.posts == []
+
+
+async def test_a_note_dry_run_sends_nothing():
+    page = _NotePage(_top_card(NOT_INVITED))
+
+    result = await _reader(page).connect_with_person(
+        "ada-lovelace", note="Hi", dry_run=True
+    )
+
+    assert result["request"]["customMessage"] == "Hi"
+    assert page.posts == []

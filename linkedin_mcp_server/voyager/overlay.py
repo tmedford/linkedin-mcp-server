@@ -1247,10 +1247,11 @@ def install_voyager_overlay(
         """
         Send a LinkedIn connection request.
 
-        Without a note, the request is sent with LinkedIn's own Connect action
-        and the relationship is read back from the API to confirm it: no
-        page is opened. With a note, the custom-invite page is used, because
-        a note is not part of that action.
+        Sent through LinkedIn's API and confirmed by reading the relationship
+        back; no page is opened. Without a note it is the Connect action
+        LinkedIn's own buttons send. With a note it is the call the
+        custom-invite dialog makes, and the note is read back from the
+        invitation to set note_sent.
 
         The tool is annotated with destructiveHint so MCP clients will
         prompt for user confirmation before execution.
@@ -1258,22 +1259,25 @@ def install_voyager_overlay(
         Args:
             linkedin_username: LinkedIn username (e.g., "stickerdaniel", "williamhgates"). A full profile URL is accepted too and is reduced to the username.
             ctx: FastMCP context for progress reporting
-            note: Optional note to include with the invitation
+            note: Optional note to include with the invitation, up to 300
+                characters (Premium; LinkedIn allows free accounts fewer and
+                refuses the rest at send time).
             dry_run: True reads the relationship and returns the request
-                that would be sent, without sending it. No note only.
+                that would be sent, without sending it.
 
         Returns:
             Dict with url, status, message, and note_sent.
-            Without a note: status is pending (sent, and confirmed by reading
+            status is pending (sent, and confirmed by reading
             the relationship back, or already pending), already_connected,
             connect_unavailable, send_failed, send_unconfirmed (LinkedIn
             answered 200 but the relationship did not change: check sent
             invitations before retrying) or dry_run. relationship_before and
             relationship_after name the states read: not_invited,
             invited_by_me, invited_by_them, connected or self. An incoming
-            invitation is reported, not accepted.
-            With a note: upstream's statuses, including
-            custom_note_limit_reached when the free note quota is used up.
+            invitation is reported, not accepted. note_sent is True only when
+            the note read back from the invitation matches the one sent. A
+            refused note (quota, length) is send_failed with LinkedIn's
+            answer in response_excerpt.
         """
         try:
             extractor = extractor or await get_ready_extractor(
@@ -1290,19 +1294,9 @@ def install_voyager_overlay(
                 progress=0, total=100, message="Sending connection request"
             )
 
-            if note:
-                if dry_run:
-                    raise ValueError(
-                        "dry_run covers the request without a note; a note is "
-                        "sent through the custom-invite page, which has no dry run."
-                    )
-                result = await extractor.connect_with_person(
-                    linkedin_username, note=note
-                )
-            else:
-                result = await extractor.invite_person(
-                    linkedin_username, dry_run=dry_run
-                )
+            result = await extractor.invite_person(
+                linkedin_username, note=note, dry_run=dry_run
+            )
 
             await ctx.report_progress(progress=100, total=100, message="Complete")
 

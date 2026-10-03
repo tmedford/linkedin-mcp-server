@@ -166,7 +166,7 @@ async def test_get_person_profile_reads_posts_only_when_asked(mock_context):
     with_posts.get_person_posts.assert_awaited_once_with("ada-lovelace", count=10)
 
 
-async def test_connect_without_a_note_uses_the_api_action(mock_context):
+async def test_connect_sends_through_the_api_with_or_without_a_note(mock_context):
     extractor = MagicMock()
     extractor.invite_person = AsyncMock(return_value={"status": "pending"})
     extractor.connect_with_person = AsyncMock()
@@ -175,17 +175,6 @@ async def test_connect_without_a_note_uses_the_api_action(mock_context):
     await tool.fn(
         linkedin_username="ada-lovelace", ctx=mock_context, extractor=extractor
     )
-
-    extractor.invite_person.assert_awaited_once_with("ada-lovelace", dry_run=False)
-    extractor.connect_with_person.assert_not_awaited()
-
-
-async def test_connect_with_a_note_keeps_upstreams_note_flow(mock_context):
-    extractor = MagicMock()
-    extractor.invite_person = AsyncMock()
-    extractor.connect_with_person = AsyncMock(return_value={"status": "pending"})
-    tool = await _tool("connect_with_person")
-
     await tool.fn(
         linkedin_username="ada-lovelace",
         ctx=mock_context,
@@ -193,7 +182,13 @@ async def test_connect_with_a_note_keeps_upstreams_note_flow(mock_context):
         extractor=extractor,
     )
 
-    extractor.connect_with_person.assert_awaited_once_with(
-        "ada-lovelace", note="Hi Ada"
-    )
-    extractor.invite_person.assert_not_awaited()
+    assert extractor.invite_person.await_args_list[0].kwargs == {
+        "note": None,
+        "dry_run": False,
+    }
+    assert extractor.invite_person.await_args_list[1].kwargs == {
+        "note": "Hi Ada",
+        "dry_run": False,
+    }
+    # Upstream's page-driven flow is no longer reached for either.
+    extractor.connect_with_person.assert_not_awaited()
