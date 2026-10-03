@@ -20,6 +20,13 @@ Upstream's ``search_posts`` and ``get_feed`` load a page and scroll it, and
   a ``feed-full-update`` component holding ``feed-actor``,
   ``feed-actor-sub-description`` and ``feed-commentary``; its permalink ends
   in the activity id, which dates it.
+  A paragraph break is a ``br`` element between the strings. The author's
+  headline is the value a ``profile_headline_loading_state`` action sets. The
+  reaction, comment and repost counts are not rendered text: they are state
+  values keyed ``commentCount-<urn>``, ``repostCount-<urn>`` and one
+  ``ReactionType_<KIND>_<urn>`` per kind of reaction, where the urn is the update's own and differs from
+  the id in its permalink. A post that shares a job holds a
+  ``feed-job-card-entity`` whose link ends in the job id.
 - **The page writes; this does not.** Opening the results page posts the query
   to ``updateSearchHistoryRequest``. Nothing here does.
 - **Sidebar.** The profile page asks for each sidebar section as a component:
@@ -36,6 +43,7 @@ import logging
 import re
 import uuid
 from typing import Any
+from urllib.parse import quote
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
@@ -63,6 +71,9 @@ _COMPONENT_PREFIX = "com.linkedin.sdui.generated.profile.dsl.impl."
 #: Posts per request; the page asks for three at a time.
 SEARCH_PAGE_SIZE = 10
 FEED_MAX = 50
+#: Asking for one or two posts is asking for a window of promotions.
+FEED_MIN_WINDOW = 5
+FEED_MAX_WINDOWS = 6
 
 #: Sidebar section -> the component that renders it. The keys are the ones
 #: upstream's tool returned, which were the headings in snake case.
@@ -77,6 +88,25 @@ _POST_LINK = re.compile(
 _ACTIVITY_IN_LINK = re.compile(r"(?:activity|ugcPost|share)[-:](\d{18,20})")
 _POST_AUTHOR = re.compile(r"https://www\.linkedin\.com/posts/([^_/?#]+)_")
 _PROFILE_LINK = re.compile(r"https://www\.linkedin\.com/in/([^/?#\"\s]+)")
+_COMPANY_LINK = re.compile(r"https://www\.linkedin\.com/company/([^/?#\"\s]+)")
+_JOB_LINK = re.compile(r"https://www\.linkedin\.com/jobs/view/(\d+)")
+_COUNT_KEY = re.compile(r'"id":"reactionsCount-(urn:li:[A-Za-z]+:\d+)"')
+_COUNT_VALUE = (
+    r'"id":"{name}-{urn}"}}}}}},"value":{{"\$case":"intValue","intValue":(\d+)}}'
+)
+_HEADLINE = re.compile(
+    r'"id":"profile_headline_loading_state"}},"namespace":"[^"]*"},'
+    r'"value":{"\$case":"stringValue","stringValue":"((?:[^"\\]|\\.)*)"'
+)
+#: Result key -> the state that holds it. Reactions have no such state:
+#: ``reactionsCount`` is an expression summing one state per reaction type
+#: (``ReactionType_LIKE_<urn>`` and its siblings), so those are summed here.
+#: Measured: 62 + 1 + 2 + 1 where the page showed 66.
+_COUNTS = {"comments": "commentCount", "reposts": "repostCount"}
+_REACTION_VALUE = (
+    r'"id":"ReactionType_[A-Z_]+_{urn}"}}}}}},'
+    r'"value":{{"\$case":"intValue","intValue":(\d+)}}'
+)
 
 
 def _search_id() -> str:
@@ -111,6 +141,8 @@ def _text_under(node: Any, out: list[str], inside: bool = False) -> list[str]:
             out.append(node)
     elif isinstance(node, list):
         if len(node) >= 4 and node[0] == "$" and isinstance(node[1], str):
+            if node[1] == "br":
+                out.append("\n")
             _text_under(node[3], out, False)
         else:
             for value in node:
@@ -150,6 +182,33 @@ def parse_content_posts(text: str) -> list[dict[str, Any]]:
         slug = _POST_AUTHOR.match(link or "")
         is_member = any(t.startswith("\u2022") for t in actor_texts[1:])
         body = "".join(_text_under(commentary[0], [])).strip() if commentary else ""
+        flat = json.dumps(resolved, separators=(",", ":"), ensure_ascii=False)
+        headline = _HEADLINE.search(flat)
+        own = _COUNT_KEY.search(flat)
+        tally = {}
+        if own:
+            urn = re.escape(own.group(1))
+            each = re.findall(_REACTION_VALUE.format(urn=urn), text)
+            if each:
+                tally["reactions"] = sum(int(value) for value in each)
+            for key, name in _COUNTS.items():
+                value = re.search(_COUNT_VALUE.format(name=name, urn=urn), text)
+                if value:
+                    tally[key] = int(value.group(1))
+        card = _named(resolved, "feed-job-card-entity", [])
+        job = None
+        if card:
+            job_id = _JOB_LINK.search(json.dumps(card[0]))
+            shown = [t.strip() for t in _text_under(card[0], []) if t.strip()]
+            job = {
+                key: value
+                for key, value in zip(
+                    ("title", "company", "location", "insight"), shown, strict=False
+                )
+            }
+            if job_id:
+                job["job_id"] = job_id.group(1)
+        said = json.dumps(commentary[0]) if commentary else ""
         if not link and not body:
             continue
         posts.append(
@@ -168,10 +227,22 @@ def parse_content_posts(text: str) -> list[dict[str, Any]]:
                     "posted_at_iso": _activity_time(activity.group(1))
                     if activity
                     else None,
+                    "author_headline": json.loads(f'"{headline.group(1)}"')
+                    if headline
+                    else None,
                     "text": body,
                     "url": link,
+                    **tally,
+                    "job": job,
+                    # Who and what the post links to in its own words.
+                    "mentioned_people": list(
+                        dict.fromkeys(_PROFILE_LINK.findall(said))
+                    ),
+                    "mentioned_companies": list(
+                        dict.fromkeys(_COMPANY_LINK.findall(said))
+                    ),
                 }.items()
-                if value not in (None, "")
+                if value not in (None, "", [])
             }
         )
     return posts
@@ -345,17 +416,42 @@ class VoyagerContent(VoyagerProfileViews):
             raise LinkedInScraperException(
                 f"num_posts must be between 1 and {FEED_MAX}, got {num_posts}."
             )
-        payload = await self._fetch(f"{_FEED}&count={num_posts}&start=0")
-        data = payload.get("data") or {}
-        listed = len(data.get("*elements") or data.get("elements") or [])
-        # Promotions sit among the posts with no time of their own.
-        posts = [post for post in parse_posts(payload) if post.get("posted_at_iso")]
-        self._refuse_unexplained_zero(
-            rows=posts if listed else [],
-            payload=payload,
-            path="data['*elements']",
-            container_found=self._has_rows_key(data),
-        )
+        # A window comes back short: promotions sit among the posts with no
+        # time of their own and are dropped, and the server itself answered 4
+        # for 5. So windows are read until the count is met, each starting
+        # where the last one ended and carrying its pagination token.
+        posts: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        start, token = 0, None
+        for window in range(FEED_MAX_WINDOWS):
+            if window:
+                await self._session.delay(1.0)
+            payload = await self._fetch(
+                f"{_FEED}&count={max(num_posts - len(posts), FEED_MIN_WINDOW)}"
+                f"&start={start}"
+                + (f"&paginationToken={quote(token, safe='')}" if token else "")
+            )
+            data = payload.get("data") or {}
+            listed = len(data.get("*elements") or data.get("elements") or [])
+            fresh = [
+                post
+                for post in parse_posts(payload)
+                if post.get("posted_at_iso") and post["activity_urn"] not in seen
+            ]
+            if not window:
+                self._refuse_unexplained_zero(
+                    rows=fresh if listed else [],
+                    payload=payload,
+                    path="data['*elements']",
+                    container_found=self._has_rows_key(data),
+                )
+            seen.update(post["activity_urn"] for post in fresh)
+            posts.extend(fresh)
+            start += listed
+            token = (data.get("metadata") or {}).get("paginationToken")
+            if len(posts) >= num_posts or not listed or not fresh:
+                break
+        posts = posts[:num_posts]
         return {
             "url": "https://www.linkedin.com/feed/",
             "sections": {"feed": render_posts(posts)},

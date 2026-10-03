@@ -425,5 +425,11 @@ class VoyagerCompany(VoyagerPeopleSearch):
             "count": len(companies),
             "start": start,
             "page_size": count,
+            # What the page reports as "About N results".
+            "total": (
+                ((payload.get("data") or {}).get("metadata") or {}).get(
+                    "totalResultCount"
+                )
+            ),
             "at_end": None if not items_seen else items_seen < count,
         }

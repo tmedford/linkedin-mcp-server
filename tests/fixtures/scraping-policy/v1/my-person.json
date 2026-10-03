@@ -35,6 +35,14 @@
       "operation": "voyager_conversations_fetch",
       "program_digest": "9d8f473bd12b",
       "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ACoAA-me&decorationId=com.linkedin.voyager.dash.deco.identity.profile.TopCardSupplementary-166",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
     }
   ],
   "result": {
@@ -75,6 +83,7 @@
       "returned": 0,
       "total": null
     },
+    "network": {},
     "organizations": {
       "complete": null,
       "items": [],

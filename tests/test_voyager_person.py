@@ -18,6 +18,8 @@ from linkedin_mcp_server.voyager.person import (
     VoyagerPersonReader,
     common_ground,
     overlap,
+    parse_network,
+    parse_posts,
     parse_profile,
 )
 
@@ -186,7 +188,14 @@ class _Page:
         self._answers = list(answers)
         self.requests: list[Any] = []
 
+    #: The follower and connection read is answered apart from the queue: it
+    #: is best effort and sits between reads the tests below count by position.
+    network: Any = {"error": "HTTP 400", "status": 400}
+
     async def evaluate(self, _program: str, argument: Any) -> Any:
+        if "TopCardSupplementary" in str(argument):
+            self.network_requests = [*getattr(self, "network_requests", []), argument]
+            return self.network
         self.requests.append(argument)
         return self._answers.pop(0)
 
@@ -770,3 +779,109 @@ async def test_my_own_profile_is_get_person_on_the_signed_in_member():
         "ACoAA-me", compare_to_me=False
     )
     assert result == {"relationship": "self"}
+
+
+def test_a_relayed_update_takes_the_originals_tally_and_the_actors_headline():
+    # "X likes this": the update has its own activity, the counts sit under
+    # the original's, and the update's social detail says which.
+    update = "urn:li:fs_updateV2:(urn:li:activity:7511806835692302337,X)"
+    payload = {
+        "data": {"*elements": [update]},
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.feed.render.UpdateV2",
+                "entityUrn": update,
+                "updateMetadata": {"urn": "urn:li:activity:7511806835692302337"},
+                "actor": {
+                    "name": {"text": "Product Growth"},
+                    "description": {"text": "58,884 followers"},
+                },
+                "*socialDetail": "urn:li:fs_socialDetail:urn:li:activity:7509658068725612544",
+            },
+            {
+                "$type": "com.linkedin.voyager.feed.SocialDetail",
+                "entityUrn": "urn:li:fs_socialDetail:urn:li:activity:7509658068725612544",
+                "*totalSocialActivityCounts": "urn:li:fs_socialActivityCounts:urn:li:activity:7509658068725612544",
+            },
+            {
+                "$type": "com.linkedin.voyager.feed.shared.SocialActivityCounts",
+                "entityUrn": "urn:li:fs_socialActivityCounts:urn:li:activity:7509658068725612544",
+                "urn": "urn:li:activity:7509658068725612544",
+                "numLikes": 83,
+                "numComments": 0,
+                "numShares": 9,
+            },
+        ],
+    }
+
+    post = parse_posts(payload)[0]
+
+    assert (post["likes"], post["comments"], post["shares"]) == (83, 0, 9)
+    assert post["author_headline"] == "58,884 followers"
+
+
+def test_the_summary_is_unescaped_and_a_position_keeps_its_links():
+    payload = _profile(
+        ADA, "Ada Lovelace", jobs=[("Zuora", ZUORA, "Eng", "2020-01", None)]
+    )
+    profile = next(e for e in payload["included"] if e.get("entityUrn") == ADA)
+    profile["summary"] = "Product &amp; Engineering"
+    position = next(e for e in payload["included"] if e.get("title") == "Eng")
+    position["*profileTreasuryMediaPosition"] = "urn:media"
+    payload["included"] += [
+        {"entityUrn": "urn:media", "*elements": ["urn:m1"]},
+        {
+            "entityUrn": "urn:m1",
+            "title": "Press release",
+            "data": {"Url": "https://example.com/pr"},
+        },
+    ]
+
+    parsed = parse_profile(payload)
+
+    assert parsed["identity"]["summary"] == "Product & Engineering"
+    assert parsed["positions"]["items"][0]["media"] == [
+        {"title": "Press release", "url": "https://example.com/pr"}
+    ]
+
+
+def test_network_counts_are_read_and_hidden_connections_are_absent_not_zero():
+    profile = "urn:li:fsd_profile:A"
+    payload = {
+        "data": {"*elements": [profile]},
+        "included": [
+            {
+                "entityUrn": profile,
+                "*followingState": "urn:follow",
+                "*connections": "urn:conn",
+            },
+            {"entityUrn": "urn:follow", "followerCount": 2406},
+            {"entityUrn": "urn:conn", "*elements": [], "paging": {"total": 2396}},
+        ],
+    }
+
+    assert parse_network(payload) == {"followers": 2406, "connections": 2396}
+
+    payload["included"][2] = {"entityUrn": "urn:conn", "*elements": [], "paging": {}}
+    assert parse_network(payload) == {"followers": 2406}
+
+
+async def test_a_profile_carries_its_network_counts_and_none_when_unread():
+    reader, page = _reader(_body(MINE), _relationship("self"), CONTACT)
+    page.network = _body(
+        {
+            "data": {"*elements": [ME]},
+            "included": [
+                {"entityUrn": ME, "*followingState": "urn:follow"},
+                {"entityUrn": "urn:follow", "followerCount": 2406},
+            ],
+        }
+    )
+
+    result = await reader.get_person("taylor-medford")
+
+    assert result["network"] == {"followers": 2406}
+    assert "memberIdentity=taylor-medford" in page.network_requests[0]
+
+    reader, _ = _reader(_body(MINE), _relationship("self"), CONTACT)
+    assert (await reader.get_person("taylor-medford"))["network"] is None

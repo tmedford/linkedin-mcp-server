@@ -214,3 +214,27 @@ async def test_company_posts_drop_promotions_and_keep_the_page_end_honest():
     assert [p["text"] for p in result["posts"]] == ["We shipped"]
     # Two entries came back for two asked: a full page, though one was a promo.
     assert result["at_end"] is False and result["total"] == 501
+
+
+async def test_company_search_reports_how_many_the_search_matched():
+    result = {
+        "entityUrn": "urn:li:fsd_entityResultViewModel:(urn:li:fsd_company:1001,X,Y)",
+        "trackingUrn": "urn:li:company:1001",
+        "title": {"text": "Acme"},
+        "navigationUrl": "https://www.linkedin.com/company/acme/",
+    }
+    reader, _ = _reader(
+        {
+            "data": {
+                # paging.total is the cap on what can be paged, not the match.
+                "paging": {"total": 1000},
+                "metadata": {"totalResultCount": 5534},
+                "elements": [
+                    {"items": [{"itemUnion": {"*entityResult": result["entityUrn"]}}]}
+                ],
+            },
+            "included": [result],
+        }
+    )
+
+    assert (await reader.find_companies("fintech"))["total"] == 5534

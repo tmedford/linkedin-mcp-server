@@ -27,6 +27,7 @@
       "search_results": ""
     },
     "start": 0,
+    "total": null,
     "url": "https://www.linkedin.com/search/results/companies/?keywords=acme"
   },
   "scenario": "find_companies__baseline",

@@ -1653,6 +1653,8 @@ async def _person_scenario() -> dict[str, Any]:
         {"body": json.dumps(_policy_profile(ada, "Ada", company, 2015))},
         {"body": json.dumps(relationship)},
         {"body": json.dumps({"included": []})},
+        # Follower and connection counts: one more read, still no page.
+        {"body": json.dumps({"included": []})},
         {"body": json.dumps(_POLICY_MUTUAL)},
         {"body": json.dumps({"included": [{"dashEntityUrn": me}]})},
         {"body": json.dumps(_policy_profile(me, "Taylor", company, 2013))},
@@ -1673,8 +1675,8 @@ async def _person_scenario() -> dict[str, Any]:
 async def _my_person_scenario() -> dict[str, Any]:
     """Record what reading one's own profile from the API does.
 
-    Four evaluates and no navigation: who is signed in, that profile, the
-    relationship (self) and the contact fields. The tool it replaces loads
+    Five evaluates and no navigation: who is signed in, that profile, the
+    relationship (self), the contact fields and the network counts. The tool it replaces loads
     the profile page and one more page per section.
     """
     recorder = TraceRecorder("my_person__baseline", _COMMON_ALLOWED)
@@ -1698,6 +1700,8 @@ async def _my_person_scenario() -> dict[str, Any]:
             )
         },
         {"body": json.dumps(relationship)},
+        {"body": json.dumps({"included": []})},
+        # Follower and connection counts: one more read, still no page.
         {"body": json.dumps({"included": []})},
     )
     extractor = _extractor(page)
