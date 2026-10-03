@@ -1,0 +1,34 @@
+{
+  "call": {
+    "arguments": {
+      "job_id": "123"
+    },
+    "method": "get_job"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/jobs/jobPostings/123?decorationId=com.linkedin.voyager.deco.jobs.web.shared.WebFullJobPosting-65",
+      "call": "get_job",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "job_posting"
+    }
+  ],
+  "result": {
+    "job": {
+      "easy_apply": false,
+      "job_id": "123",
+      "job_state": "LISTED",
+      "location": "Remote",
+      "title": "Python Engineer",
+      "url": "https://www.linkedin.com/jobs/view/123/"
+    },
+    "sections": {
+      "job_posting": "Python Engineer\nRemote"
+    },
+    "url": "https://www.linkedin.com/jobs/view/123/"
+  },
+  "scenario": "get_job__baseline",
+  "schema_version": 1
+}

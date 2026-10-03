@@ -75,12 +75,14 @@ a page-owning collaborator.
 - `connect_with_person`
 - `extract_feed`
 - `extract_page`
+- `find_jobs`
 - `find_people`
 - `get_company_employees`
 - `get_conversation`
 - `get_conversations`
 - `get_inbox`
 - `get_invitations`
+- `get_job`
 - `get_mutual_connections`
 - `get_my_profile`
 - `get_page_text`
@@ -124,6 +126,7 @@ a page-owning collaborator.
 - `_thread_reply`
 - `_voyager_connect`
 - `_voyager_invitations`
+- `_voyager_jobs`
 - `_voyager_messaging`
 - `_voyager_person`
 - `_voyager_search`

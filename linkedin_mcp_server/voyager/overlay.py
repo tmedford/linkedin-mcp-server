@@ -23,10 +23,11 @@ tool and what to do about it, rather than at some later call.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
+from pydantic import Field
 
 from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
 from linkedin_mcp_server.core.exceptions import (
@@ -95,6 +96,8 @@ SUPERSEDED: dict[str, str] = {
     "get_person_profile": "get_person_profile",
     "search_people": "search_people",
     "connect_with_person": "connect_with_person",
+    "search_jobs": "search_jobs",
+    "get_job_details": "get_job_details",
 }
 
 #: The section names upstream's get_person_profile accepts.
@@ -1318,3 +1321,164 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "connect_with_person")
         except Exception as e:
             raise_tool_error(e, "connect_with_person")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Search Jobs",
+        # Reads the job-search API. Unlike the page, nothing is written to the
+        # member's job-search history.
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"job", "search"},
+        exclude_args=["extractor"],
+    )
+    async def search_jobs(
+        keywords: str,
+        ctx: Context,
+        location: str | None = None,
+        max_pages: Annotated[int, Field(ge=1, le=10)] = 3,
+        date_posted: str | None = None,
+        job_type: str | None = None,
+        experience_level: str | None = None,
+        work_type: str | None = None,
+        easy_apply: bool = False,
+        sort_by: str | None = None,
+        company_id: str | None = None,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Search for jobs on LinkedIn, from LinkedIn's job-search API.
+
+        Each job comes back as a record. Returns job_ids that can be passed to
+        get_job_details for the full posting.
+
+        Args:
+            keywords: Search keywords (e.g., "vice president product")
+            ctx: FastMCP context for progress reporting
+            location: Optional place name (e.g., "New York") or numeric geo
+                id. A name is resolved to LinkedIn's best matching place and
+                reported back as location_resolved, with the runners-up in
+                location_candidates. A name LinkedIn does not know as a place
+                is refused: for remote work use work_type="remote".
+            max_pages: Pages of 25 to read (1-10, default 3).
+            date_posted: past_hour, past_24_hours, past_week or past_month.
+            job_type: Comma-separated: full_time, part_time, contract,
+                temporary, volunteer, internship, other.
+            experience_level: Comma-separated: internship, entry, associate,
+                mid_senior, director, executive.
+            work_type: Comma-separated: on_site, remote, hybrid.
+            easy_apply: Only Easy Apply jobs (default false).
+            sort_by: date or relevance.
+            company_id: Only jobs at this company, by LinkedIn's numeric
+                company id; several comma-separated. get_recruiter_views gives
+                the id of every company whose recruiters viewed you, so this is
+                how to pull the roles behind "You'd be a top applicant".
+                keywords can then be broad (e.g. "product").
+
+            An unknown filter value is refused, naming the accepted ones:
+            LinkedIn ignores one and answers unfiltered.
+
+        Returns:
+            Dict with url, sections (search_results -> text) and job_ids (the
+            standard shape), plus jobs, count, total and complete.
+
+            Each job has job_id, title, company, company_id, location,
+            listed_at_iso, easy_apply, promoted, url, and where LinkedIn shows
+            them insight ("You'd be a top applicant", "21 connections work
+            here") and detail (benefits or salary).
+
+            total is LinkedIn's count of matches; it moves with every filter.
+            complete is True when the last page was reached within max_pages.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="search_jobs"
+            )
+            logger.info(
+                "Searching jobs: keywords='%s', location='%s', max_pages=%d",
+                keywords,
+                location,
+                max_pages,
+            )
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Starting job search"
+            )
+
+            result = await extractor.find_jobs(
+                keywords,
+                location,
+                max_pages=max_pages,
+                date_posted=date_posted,
+                job_type=job_type,
+                experience_level=experience_level,
+                work_type=work_type,
+                easy_apply=easy_apply,
+                sort_by=sort_by,
+                company_id=company_id,
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "search_jobs")
+        except Exception as e:
+            raise_tool_error(e, "search_jobs")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Job Details",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"job", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_job_details(
+        job_id: str,
+        ctx: Context,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get one job posting, whole, from LinkedIn's API.
+
+        Args:
+            job_id: LinkedIn job ID (e.g., "4252026496"), as search_jobs or
+                get_recruiter_views return it, or from /jobs/view/<id>/.
+            ctx: FastMCP context for progress reporting
+
+        Returns:
+            Dict with url and sections (job_posting -> text), plus job:
+            job_id, title, company, company_id, company_url, company_size,
+            location, workplace (on_site/remote/hybrid), employment_status,
+            experience_level, industries, job_functions, listed_at_iso,
+            original_listed_at_iso, expire_at_iso, closed_at_iso, job_state
+            (LISTED, CLOSED...), applies, views, easy_apply, apply_url (the
+            company's own site when it is not Easy Apply) and description.
+
+            applies and views read 0 on every posting checked by someone other
+            than its poster, so treat them as unknown rather than as none.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_job_details"
+            )
+            logger.info("Reading job: %s", job_id)
+
+            await ctx.report_progress(progress=0, total=100, message="Reading job")
+
+            result = await extractor.get_job(job_id)
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_job_details")
+        except Exception as e:
+            raise_tool_error(e, "get_job_details")  # NoReturn

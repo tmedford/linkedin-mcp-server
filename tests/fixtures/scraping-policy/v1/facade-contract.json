@@ -28,6 +28,10 @@
         "coroutine": true,
         "signature": "(self, url: 'str', section_name: 'str', max_scrolls: 'int | None' = None) -> 'ExtractedSection'"
       },
+      "find_jobs": {
+        "coroutine": true,
+        "signature": "(self, keywords: 'str', location: 'str | None' = None, max_pages: 'int' = 3, date_posted: 'str | None' = None, job_type: 'str | None' = None, experience_level: 'str | None' = None, work_type: 'str | None' = None, easy_apply: 'bool' = False, sort_by: 'str | None' = None, company_id: 'str | None' = None) -> 'dict[str, Any]'"
+      },
       "find_people": {
         "coroutine": true,
         "signature": "(self, keywords: 'str', location: 'str | None' = None, network: 'list[str] | None' = None, current_company: 'str | None' = None, start: 'int' = 0, count: 'int' = 10) -> 'dict[str, Any]'"
@@ -51,6 +55,10 @@
       "get_invitations": {
         "coroutine": true,
         "signature": "(self, direction: 'str' = 'received', start: 'int' = 0, count: 'int' = 50) -> 'dict[str, Any]'"
+      },
+      "get_job": {
+        "coroutine": true,
+        "signature": "(self, job_id: 'str') -> 'dict[str, Any]'"
       },
       "get_mutual_connections": {
         "coroutine": true,
@@ -149,12 +157,14 @@
       "connect_with_person",
       "extract_feed",
       "extract_page",
+      "find_jobs",
       "find_people",
       "get_company_employees",
       "get_conversation",
       "get_conversations",
       "get_inbox",
       "get_invitations",
+      "get_job",
       "get_mutual_connections",
       "get_my_profile",
       "get_person",
@@ -435,7 +445,7 @@
           "additionalProperties": false,
           "properties": {
             "job_id": {
-              "description": "LinkedIn job ID (e.g., \"4252026496\", \"3856789012\")",
+              "description": "LinkedIn job ID (e.g., \"4252026496\"), as search_jobs or\nget_recruiter_views return it, or from /jobs/view/<id>/.",
               "type": "string"
             }
           },
@@ -832,6 +842,18 @@
         "input": {
           "additionalProperties": false,
           "properties": {
+            "company_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Only jobs at this company, by LinkedIn's numeric\ncompany id; several comma-separated. get_recruiter_views gives\nthe id of every company whose recruiters viewed you, so this is\nhow to pull the roles behind \"You'd be a top applicant\".\nkeywords can then be broad (e.g. \"product\")."
+            },
             "date_posted": {
               "anyOf": [
                 {
@@ -842,11 +864,11 @@
                 }
               ],
               "default": null,
-              "description": "Filter by posting date (past_hour, past_24_hours, past_week, past_month)"
+              "description": "past_hour, past_24_hours, past_week or past_month."
             },
             "easy_apply": {
               "default": false,
-              "description": "Only show Easy Apply jobs (default false)",
+              "description": "Only Easy Apply jobs (default false).",
               "type": "boolean"
             },
             "experience_level": {
@@ -859,7 +881,7 @@
                 }
               ],
               "default": null,
-              "description": "Filter by experience level, comma-separated (internship, entry, associate, mid_senior, director, executive)"
+              "description": "Comma-separated: internship, entry, associate,\nmid_senior, director, executive."
             },
             "job_type": {
               "anyOf": [
@@ -871,10 +893,10 @@
                 }
               ],
               "default": null,
-              "description": "Filter by job type, comma-separated (full_time, part_time, contract, temporary, volunteer, internship, other)"
+              "description": "Comma-separated: full_time, part_time, contract,\ntemporary, volunteer, internship, other."
             },
             "keywords": {
-              "description": "Search keywords (e.g., \"software engineer\", \"data scientist\")",
+              "description": "Search keywords (e.g., \"vice president product\")",
               "type": "string"
             },
             "location": {
@@ -887,11 +909,11 @@
                 }
               ],
               "default": null,
-              "description": "Optional location filter (e.g., \"San Francisco\", \"Remote\")"
+              "description": "Optional place name (e.g., \"New York\") or numeric geo\nid. A name is resolved to LinkedIn's best matching place and\nreported back as location_resolved, with the runners-up in\nlocation_candidates. A name LinkedIn does not know as a place\nis refused: for remote work use work_type=\"remote\"."
             },
             "max_pages": {
               "default": 3,
-              "description": "Maximum number of result pages to load (1-10, default 3)",
+              "description": "Pages of 25 to read (1-10, default 3).",
               "maximum": 10,
               "minimum": 1,
               "type": "integer"
@@ -906,7 +928,7 @@
                 }
               ],
               "default": null,
-              "description": "Sort results (date, relevance)"
+              "description": "date or relevance."
             },
             "work_type": {
               "anyOf": [
@@ -918,7 +940,7 @@
                 }
               ],
               "default": null,
-              "description": "Filter by work type, comma-separated (on_site, remote, hybrid)"
+              "description": "Comma-separated: on_site, remote, hybrid."
             }
           },
           "required": [

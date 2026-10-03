@@ -1,0 +1,43 @@
+{
+  "call": {
+    "arguments": {
+      "keywords": "python",
+      "max_pages": 1
+    },
+    "method": "find_jobs"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/voyagerJobsDashJobCards?decorationId=com.linkedin.voyager.dash.deco.jobs.search.JobSearchCardsCollection-221&count=25&q=jobSearch&query=(origin:JOB_SEARCH_PAGE_OTHER_ENTRY,keywords:python,selectedFilters:(),spellCorrectionEnabled:true)&start=0",
+      "call": "find_jobs",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "search_results"
+    }
+  ],
+  "result": {
+    "complete": true,
+    "count": 1,
+    "job_ids": [
+      "123"
+    ],
+    "jobs": [
+      {
+        "company": "Acme",
+        "easy_apply": false,
+        "job_id": "123",
+        "promoted": false,
+        "title": "Python Engineer",
+        "url": "https://www.linkedin.com/jobs/view/123/"
+      }
+    ],
+    "sections": {
+      "search_results": "Python Engineer - Acme (123)"
+    },
+    "total": 1,
+    "url": "https://www.linkedin.com/jobs/search/?keywords=python"
+  },
+  "scenario": "find_jobs__baseline",
+  "schema_version": 1
+}
