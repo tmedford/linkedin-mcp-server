@@ -57,6 +57,7 @@ PUBLIC_SIGNATURES = {
     "get_profile_views": "(self, full: 'bool' = True, days: 'int | None' = None, interesting: 'str | None' = None, company_id: 'str | None' = None, industry_id: 'str | None' = None, geo_id: 'str | None' = None, sort: 'str' = 'recent') -> 'dict[str, Any]'",
     "find_jobs": "(self, keywords: 'str', location: 'str | None' = None, max_pages: 'int' = 3, date_posted: 'str | None' = None, job_type: 'str | None' = None, experience_level: 'str | None' = None, work_type: 'str | None' = None, easy_apply: 'bool' = False, sort_by: 'str | None' = None, company_id: 'str | None' = None) -> 'dict[str, Any]'",
     "get_job": "(self, job_id: 'str') -> 'dict[str, Any]'",
+    "saved_jobs": "(self, max_pages: 'int' = 3, stage: 'str' = 'saved') -> 'dict[str, Any]'",
     "invite_person": "(self, linkedin_username: 'str', *, note: 'str | None' = None, dry_run: 'bool' = False) -> 'dict[str, Any]'",
     "get_recruiter_views": "(self, days: 'int | None' = None) -> 'dict[str, Any]'",
     "find_people": "(self, keywords: 'str', location: 'str | None' = None, network: 'list[str] | None' = None, current_company: 'str | None' = None, start: 'int' = 0, count: 'int' = 10) -> 'dict[str, Any]'",
@@ -99,6 +100,7 @@ DELEGATES = {
     "invite_person": ("_voyager_connect", "connect_with_person"),
     "find_jobs": ("_voyager_jobs", "find_jobs"),
     "get_job": ("_voyager_jobs", "get_job"),
+    "saved_jobs": ("_voyager_saved_jobs", "get_saved_jobs"),
     "search_messages": ("_voyager_search", "search_messages"),
     "message_person": ("_person_message", "message_person"),
     "reply_to_thread": ("_thread_reply", "reply_to_thread"),
@@ -133,6 +135,7 @@ DELEGATE_CALLS = {
     "get_profile_views": "self._profile_views.get_profile_views(full=full, days=days, interesting=interesting, company_id=company_id, industry_id=industry_id, geo_id=geo_id, sort=sort)",
     "find_jobs": "self._voyager_jobs.find_jobs(keywords, location, max_pages=max_pages, date_posted=date_posted, job_type=job_type, experience_level=experience_level, work_type=work_type, easy_apply=easy_apply, sort_by=sort_by, company_id=company_id)",
     "get_job": "self._voyager_jobs.get_job(job_id)",
+    "saved_jobs": "self._voyager_saved_jobs.get_saved_jobs(max_pages=max_pages, stage=stage)",
     "invite_person": "self._voyager_connect.connect_with_person(linkedin_username, note=note, dry_run=dry_run)",
     "get_recruiter_views": "self._recruiter_views.get_recruiter_views(days=days)",
     "find_people": "self._people_search.find_people(keywords, location=location, network=network, current_company=current_company, start=start, count=count)",
@@ -166,6 +169,7 @@ FACADE_STATE = {
     "_recruiter_views",
     "_voyager_connect",
     "_voyager_jobs",
+    "_voyager_saved_jobs",
 }
 
 PERMANENT_ALIASES = {

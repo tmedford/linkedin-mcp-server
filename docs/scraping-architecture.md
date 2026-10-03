@@ -96,6 +96,7 @@ a page-owning collaborator.
 - `invite_person`
 - `message_person`
 - `reply_to_thread`
+- `saved_jobs`
 - `scrape_company`
 - `scrape_job`
 - `scrape_person`
@@ -129,6 +130,7 @@ a page-owning collaborator.
 - `_voyager_jobs`
 - `_voyager_messaging`
 - `_voyager_person`
+- `_voyager_saved_jobs`
 - `_voyager_search`
 - `_voyager_thread`
 

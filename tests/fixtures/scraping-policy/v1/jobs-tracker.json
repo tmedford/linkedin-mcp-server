@@ -1,0 +1,44 @@
+{
+  "call": {
+    "arguments": {},
+    "method": "saved_jobs"
+  },
+  "events": [
+    {
+      "arg": {
+        "body": "{\"requestedArguments\": {\"payload\": {\"stage\": \"saved\"}, \"states\": [], \"requestMetadata\": {\"$type\": \"proto.sdui.common.RequestMetadata\"}, \"screenId\": \"\", \"knownTemplateIds\": []}, \"isPrefetch\": true}",
+        "headers": {
+          "x-li-track": "{}"
+        },
+        "url": "https://www.linkedin.com/flagship-web/jobs-tracker/?stage=saved"
+      },
+      "call": "saved_jobs",
+      "kind": "evaluate",
+      "operation": "voyager_stream_post",
+      "program_digest": "f959d86e614d",
+      "section": "saved_jobs"
+    }
+  ],
+  "result": {
+    "count": 1,
+    "job_ids": [
+      "123"
+    ],
+    "jobs": [
+      {
+        "company": "Acme",
+        "job_id": "123",
+        "stage": "Saved",
+        "title": "Python Engineer",
+        "url": "https://www.linkedin.com/jobs/view/123/"
+      }
+    ],
+    "sections": {
+      "saved_jobs": "Python Engineer - Acme (123)"
+    },
+    "stage": "saved",
+    "url": "https://www.linkedin.com/jobs-tracker/?stage=saved"
+  },
+  "scenario": "saved_jobs__baseline",
+  "schema_version": 1
+}

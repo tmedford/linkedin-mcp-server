@@ -1501,6 +1501,41 @@ async def _get_job_scenario() -> dict[str, Any]:
     return recorder.trace({"method": "get_job", "arguments": {"job_id": "123"}}, result)
 
 
+async def _jobs_tracker_scenario() -> dict[str, Any]:
+    """Record what reading the jobs tracker does to the page.
+
+    One POST and nothing else: the tracker route is prefetched, not opened.
+    The client's headers come from a cache seeded here; taking them loads the
+    feed once per browser session, which the reader's unit tests cover.
+    """
+    from linkedin_mcp_server.voyager import jobs as jobs_module
+
+    recorder = TraceRecorder("saved_jobs__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    record = {
+        "jobId": "123",
+        "jobTitle": "Python Engineer",
+        "companyName": "Acme",
+        "currentStageKey": "Saved",
+    }
+    stream = "0:" + json.dumps(
+        {"viewName": "opportunity-tracker-add-note", "payload": record},
+        separators=(",", ":"),
+    )
+    page.script("evaluate:voyager_stream_post", {"status": 200, "text": stream})
+    extractor = _extractor(page)
+    jobs_module._PREFETCH_HEADERS = (page, {"x-li-track": "{}"})
+    try:
+        async with boundaries(recorder, clock):
+            with recorder.context("saved_jobs", "saved_jobs"):
+                result = await extractor.saved_jobs()
+    finally:
+        jobs_module.forget_prefetch_headers()
+    page.assert_clean()
+    return recorder.trace({"method": "saved_jobs", "arguments": {}}, result)
+
+
 async def _people_search_scenario() -> dict[str, Any]:
     """Record what the API people search does to the page.
 
@@ -1864,6 +1899,7 @@ TOOL_FACADE_METHODS = {
     "invite_person",
     "find_jobs",
     "get_job",
+    "saved_jobs",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1948,6 +1984,7 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "invite-person.json": await _invite_person_scenario(),
         "find-jobs.json": await _find_jobs_scenario(),
         "get-job.json": await _get_job_scenario(),
+        "jobs-tracker.json": await _jobs_tracker_scenario(),
         "person-mutual.json": await _person_extra_scenario("get_mutual_connections"),
         "person-posts.json": await _person_extra_scenario("get_person_posts"),
         "message-search.json": await _message_search_scenario(),

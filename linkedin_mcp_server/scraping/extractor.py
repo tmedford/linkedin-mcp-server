@@ -25,7 +25,7 @@ from linkedin_mcp_server.voyager.people_search import VoyagerPeopleSearch
 from linkedin_mcp_server.voyager.person import VoyagerPersonReader
 from linkedin_mcp_server.voyager.person_message import VoyagerPersonMessage
 from linkedin_mcp_server.voyager.connect import VoyagerConnect
-from linkedin_mcp_server.voyager.jobs import VoyagerJobs
+from linkedin_mcp_server.voyager.jobs import VoyagerJobs, VoyagerSavedJobs
 from linkedin_mcp_server.voyager.profile_views import (
     VoyagerProfileViews,
     VoyagerRecruiterViews,
@@ -100,6 +100,7 @@ class LinkedInExtractor:
             session, navigator, connection=self._connection
         )
         self._voyager_jobs = VoyagerJobs(session, navigator)
+        self._voyager_saved_jobs = VoyagerSavedJobs(session, navigator)
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -470,3 +471,11 @@ class LinkedInExtractor:
     async def get_job(self, job_id: str) -> dict[str, Any]:
         """Read one job posting through LinkedIn's API."""
         return await self._voyager_jobs.get_job(job_id)
+
+    async def saved_jobs(
+        self, max_pages: int = 3, stage: str = "saved"
+    ) -> dict[str, Any]:
+        """Read one stage of the jobs tracker through LinkedIn's API."""
+        return await self._voyager_saved_jobs.get_saved_jobs(
+            max_pages=max_pages, stage=stage
+        )

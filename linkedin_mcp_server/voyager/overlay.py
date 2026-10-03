@@ -98,6 +98,7 @@ SUPERSEDED: dict[str, str] = {
     "connect_with_person": "connect_with_person",
     "search_jobs": "search_jobs",
     "get_job_details": "get_job_details",
+    "get_saved_jobs": "get_saved_jobs",
 }
 
 #: The section names upstream's get_person_profile accepts.
@@ -1490,3 +1491,67 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "get_job_details")
         except Exception as e:
             raise_tool_error(e, "get_job_details")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Saved Jobs",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"job", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_saved_jobs(
+        ctx: Context,
+        max_pages: Annotated[int, Field(ge=1, le=10)] = 3,
+        stage: str = "saved",
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        List the jobs in your LinkedIn jobs tracker, by stage.
+
+        Saved jobs are the default. Returns job_ids that can be passed to
+        get_job_details for the full posting, and each job as a record.
+
+        Args:
+            ctx: FastMCP context for progress reporting
+            max_pages: Kept for compatibility and not used: a stage arrives in
+                one answer.
+            stage: Which tab of the tracker: "saved" (default), "draft" or
+                "clicked_apply" (LinkedIn shows these two together as In
+                Progress), "applied", "interview" or "archived".
+
+        Returns:
+            Dict with url, sections (saved_jobs -> text) and job_ids (the
+            standard shape), plus jobs, count and stage.
+
+            Each job has job_id, title, company, location, workplace
+            (On-site / Remote / Hybrid as LinkedIn words it), listed_at_iso,
+            original_listed_at_iso (earlier when the job was reposted), stage,
+            verified, url, and note when you wrote one on it.
+
+            Pass a job_id to get_job_details for the description, apply link
+            and company_id; pass that company_id to search_people or
+            search_jobs.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_saved_jobs"
+            )
+            logger.info("Reading jobs tracker (stage=%s)", stage)
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Reading saved jobs"
+            )
+
+            result = await extractor.saved_jobs(max_pages=max_pages, stage=stage)
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_saved_jobs")
+        except Exception as e:
+            raise_tool_error(e, "get_saved_jobs")  # NoReturn

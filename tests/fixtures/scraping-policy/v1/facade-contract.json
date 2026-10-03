@@ -112,6 +112,10 @@
         "coroutine": true,
         "signature": "(self, thread_id: 'str', message: 'str', *, confirm_send: 'bool') -> 'dict[str, Any]'"
       },
+      "saved_jobs": {
+        "coroutine": true,
+        "signature": "(self, max_pages: 'int' = 3, stage: 'str' = 'saved') -> 'dict[str, Any]'"
+      },
       "scrape_company": {
         "coroutine": true,
         "signature": "(self, company_name: 'str', requested: 'set[str]', callbacks: 'ProgressCallback | None' = None) -> 'dict[str, Any]'"
@@ -177,6 +181,7 @@
       "invite_person",
       "message_person",
       "reply_to_thread",
+      "saved_jobs",
       "scrape_company",
       "scrape_job",
       "scrape_person",
@@ -722,10 +727,15 @@
           "properties": {
             "max_pages": {
               "default": 3,
-              "description": "Maximum number of saved-jobs pages to load (1-10, default 3)",
+              "description": "Kept for compatibility and not used: a stage arrives in\none answer.",
               "maximum": 10,
               "minimum": 1,
               "type": "integer"
+            },
+            "stage": {
+              "default": "saved",
+              "description": "Which tab of the tracker: \"saved\" (default), \"draft\" or\n\"clicked_apply\" (LinkedIn shows these two together as In\nProgress), \"applied\", \"interview\" or \"archived\".",
+              "type": "string"
             }
           },
           "type": "object"
