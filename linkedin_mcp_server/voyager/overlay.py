@@ -291,8 +291,7 @@ def install_voyager_overlay(
             zero_reason.
 
             Each invitation carries public_identifier (pass it as
-            linkedin_username to any person tool), name, headline,
-            profile_slug, state,
+            linkedin_username to any person tool), name, headline, state,
             sent_at_iso, and both `has_note` and the raw `has_note_flag`.
             **`customMessage` is a boolean flag, not the note** -- the text is
             in `note`, and both are reported so a disagreement is visible
@@ -766,7 +765,7 @@ def install_voyager_overlay(
                 same_location: whether both profiles name the same location.
 
             Employers and schools are matched by LinkedIn's id for them
-            (`matched_by: "urn"`); a name is used only when one side typed the
+            (`matched_by: "id"`); a name is used only when one side typed the
             place in free text (`matched_by: "name"`).
 
             Ask for "posts" in sections for the ten most recent, or call

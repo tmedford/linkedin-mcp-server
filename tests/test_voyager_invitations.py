@@ -10,6 +10,8 @@ comes back bare.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from linkedin_mcp_server.core.exceptions import (
@@ -85,18 +87,19 @@ class TestTheWrappedPayload:
         reader = _Reader(_payload([_row()]))
         result = await reader.get_invitations()
         assert result["count"] == 1
-        assert result["invitations"][0]["profile_slug"] == SLUG
         assert result["invitations"][0]["public_identifier"] == SLUG
 
-    async def test_the_unwrapped_shape_raises_instead_of_reporting_zero(self):
-        """A payload nested one level shallower must not read as an empty board.
+    async def test_a_payload_with_neither_shape_raises_instead_of_reporting_zero(
+        self,
+    ):
+        """Rows under a key neither shape uses must not read as an empty board.
 
-        This is the exact miss: `data['*elements']` instead of
-        `data.data['*elements']`. Both are dicts, nothing throws, and the result
-        is a clean zero. Here the guard sees data came back and refuses.
+        Both shapes LinkedIn has sent are read (``data.data`` inline, and
+        ``data`` normalized). Anything else came back with data and no rows the
+        reader knows, and the guard refuses rather than report a clean zero.
         """
-        shallow = {"data": {"*elements": [_row()]}, "included": []}
-        reader = _Reader(shallow)
+        moved = {"data": {"rows": [_row()]}, "included": []}
+        reader = _Reader(moved)
         with pytest.raises(LinkedInScraperException, match="changed shape"):
             await reader.get_invitations()
 
@@ -212,7 +215,7 @@ class TestIdentityResolution:
         reader = _Reader(_payload([_row(member="urn:li:member:42")], included=[member]))
         item = (await reader.get_invitations())["invitations"][0]
         assert item["name"] == "Jane Doe"
-        assert item["profile_slug"] == SLUG
+        assert item["public_identifier"] == SLUG
         assert item["headline"] == "Director of Engineering"
 
     async def test_an_unresolvable_member_does_not_lose_the_invitation(self):
@@ -253,3 +256,64 @@ class TestTransportFailuresKeepTheirType:
         reader = _Reader(error)
         with pytest.raises(type(error)):
             await reader.get_invitations()
+
+
+ME = "urn:li:fs_miniProfile:ACoAA-me"
+
+
+def _normalized(direction: str, other_slug: str, *, mutual: int | None = None) -> dict:
+    """Both boards as measured 2026-10-02: rows are ids of views in included,
+    each view points at an Invitation, which points at both members."""
+    other = f"urn:li:fs_miniProfile:ACoAA-{other_slug}"
+    view: dict[str, Any] = {
+        "entityUrn": "urn:li:fs_relInvitationView:1",
+        "*invitation": "urn:li:fs_relInvitation:1",
+    }
+    if mutual is not None:
+        view["insights"] = [{"sharedInsight": {"totalCount": mutual}}]
+    sender, recipient = (ME, other) if direction == "sent" else (other, ME)
+    return {
+        "data": {"*elements": [view["entityUrn"]]},
+        "included": [
+            view,
+            {
+                "entityUrn": "urn:li:fs_relInvitation:1",
+                "*fromMember": sender,
+                "*toMember": recipient,
+                "invitationType": "SENT" if direction == "sent" else "PENDING",
+                "sentTime": 1_790_000_000_000,
+                "customMessage": False,
+            },
+            {
+                "entityUrn": ME,
+                "firstName": "Taylor",
+                "lastName": "Medford",
+                "publicIdentifier": "taylor-lee-medford",
+                "dashEntityUrn": "urn:li:fsd_profile:ACoAA-me",
+            },
+            {
+                "entityUrn": other,
+                "firstName": "Ilan",
+                "lastName": "Rado",
+                "publicIdentifier": other_slug,
+                "dashEntityUrn": f"urn:li:fsd_profile:ACoAA-{other_slug}",
+            },
+        ],
+    }
+
+
+class TestTheNormalizedBoards:
+    @pytest.mark.parametrize("direction", ["sent", "received"])
+    async def test_rows_are_followed_to_the_other_party(self, direction):
+        reader = _Reader(_normalized(direction, "ilan-rado"))
+        result = await reader.get_invitations(direction=direction)
+        row = result["invitations"][0]
+        # The OTHER party on both boards; never the signed-in member.
+        assert (row["name"], row["public_identifier"]) == ("Ilan Rado", "ilan-rado")
+        assert row["profile_urn"] == "urn:li:fsd_profile:ACoAA-ilan-rado"
+        assert row["state"] == ("SENT" if direction == "sent" else "PENDING")
+
+    async def test_received_rows_carry_the_mutual_connection_count(self):
+        reader = _Reader(_normalized("received", "ilan-rado", mutual=7))
+        result = await reader.get_invitations(direction="received")
+        assert result["invitations"][0]["mutual_connections"] == 7

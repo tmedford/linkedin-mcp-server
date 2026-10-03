@@ -253,7 +253,8 @@ class VoyagerThreadReader(VoyagerReader):
         rows = [
             row
             for row in found["conversations"]
-            if member["urn"] in (row.get("participant_urns") or [])
+            if member["urn"]
+            in [person.get("profile_urn") for person in row.get("people") or []]
         ]
         return sorted(
             rows,

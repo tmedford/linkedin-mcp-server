@@ -305,7 +305,7 @@ def test_working_together_needs_the_same_employer_at_the_same_time():
     assert len(ground["companies"]) == 2
     assert len(ground["worked_together"]) == 1
     together = ground["worked_together"][0]
-    assert together["matched_by"] == "urn"
+    assert together["matched_by"] == "id"
     assert together["mine"]["title"] == "Engineer"
     assert together["theirs"]["title"] == "PM"
     assert together["overlap"] == {"start": "2015-01", "end": "2016-08", "months": 20}
@@ -347,7 +347,7 @@ def test_shared_schools_skills_and_location_are_found():
 
     ground = common_ground(parse_profile(MINE), theirs)
 
-    assert ground["schools"][0]["matched_by"] == "urn"
+    assert ground["schools"][0]["matched_by"] == "id"
     assert ground["schools"][0]["overlap"]["start"] == "2010-01"
     assert ground["skills"] == ["python"]
     assert ground["same_location"] is True
@@ -749,5 +749,6 @@ def test_a_position_carries_the_company_id_company_filters_take():
     )
 
     position = parsed["positions"]["items"][0]
-    assert position["company_urn"] == ZUORA
+    # One field for a company's id, and it is the one the filters take.
     assert position["company_id"] == "229978"
+    assert "company_urn" not in position

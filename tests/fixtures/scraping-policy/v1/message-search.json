@@ -37,9 +37,6 @@
         "last_message_from_me": false,
         "last_message_text": "About the engine",
         "last_read_at": null,
-        "participant_urns": [
-          "urn:li:fsd_profile:ACoAA-ada"
-        ],
         "participants": [
           "Ada Lovelace"
         ],
@@ -47,7 +44,6 @@
           {
             "headline": "",
             "name": "Ada Lovelace",
-            "profile_handle": "",
             "profile_url": "",
             "profile_urn": "urn:li:fsd_profile:ACoAA-ada",
             "public_identifier": "ACoAA-ada"
