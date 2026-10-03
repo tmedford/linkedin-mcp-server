@@ -347,7 +347,7 @@ def test_shared_schools_skills_and_location_are_found():
 
     ground = common_ground(parse_profile(MINE), theirs)
 
-    assert ground["schools"][0]["matched_by"] == "id"
+    assert ground["schools"][0]["matched_by"] == "urn"
     assert ground["schools"][0]["overlap"]["start"] == "2010-01"
     assert ground["skills"] == ["python"]
     assert ground["same_location"] is True

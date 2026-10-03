@@ -384,8 +384,11 @@ class VoyagerJobs(VoyagerPeopleSearch):
             if isinstance(reported, int):
                 total = reported
             seen = {job["job_id"] for job in jobs}
-            jobs.extend(job for job in found_jobs if job["job_id"] not in seen)
-            if items_seen < PAGE_SIZE:
+            fresh = [job for job in found_jobs if job["job_id"] not in seen]
+            jobs.extend(fresh)
+            # A page with nothing new means the offset stopped moving the
+            # results; reading on would only repeat it until max_pages.
+            if items_seen < PAGE_SIZE or (page and not fresh):
                 complete = True
                 break
 

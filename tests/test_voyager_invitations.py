@@ -317,3 +317,21 @@ class TestTheNormalizedBoards:
         reader = _Reader(_normalized("received", "ilan-rado", mutual=7))
         result = await reader.get_invitations(direction="received")
         assert result["invitations"][0]["mutual_connections"] == 7
+
+
+class TestUnresolvedReferences:
+    async def test_a_listed_row_missing_from_the_answer_is_refused(self):
+        payload = _normalized("received", "ilan-rado")
+        payload["data"]["*elements"].append("urn:li:fs_relInvitationView:gone")
+        with pytest.raises(LinkedInScraperException, match="not in the answer"):
+            await _Reader(payload).get_invitations()
+
+    async def test_a_view_whose_invitation_is_missing_is_refused(self):
+        payload = _normalized("received", "ilan-rado")
+        payload["included"] = [
+            e
+            for e in payload["included"]
+            if e["entityUrn"] != "urn:li:fs_relInvitation:1"
+        ]
+        with pytest.raises(LinkedInScraperException, match="not in the answer"):
+            await _Reader(payload).get_invitations()

@@ -373,6 +373,7 @@ def _shared(
     *,
     urn_key: str,
     name_key: str,
+    id_label: str = "urn",
 ) -> list[dict[str, Any]]:
     """Entries at the same organisation, matched by URN and by name otherwise.
 
@@ -404,7 +405,9 @@ def _shared(
                 {
                     name_key: their.get(name_key) or my.get(name_key),
                     urn_key: their.get(urn_key) or my.get(urn_key),
-                    "matched_by": "id"
+                    # What the identity was: "id" for a company_id, "urn"
+                    # for a school, "name" for free text.
+                    "matched_by": id_label
                     if my.get(urn_key) and their.get(urn_key)
                     else "name",
                     "mine": my,
@@ -488,6 +491,7 @@ def common_ground(mine: dict[str, Any], theirs: dict[str, Any]) -> dict[str, Any
         items(theirs, "positions"),
         urn_key="company_id",
         name_key="company",
+        id_label="id",
     )
     my_location = (mine.get("identity") or {}).get("location")
     their_location = (theirs.get("identity") or {}).get("location")

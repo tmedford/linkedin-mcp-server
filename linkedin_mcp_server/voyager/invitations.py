@@ -176,11 +176,19 @@ class VoyagerInvitationsReader(VoyagerReader):
             # An empty board answers with ``elements: []`` rather than a
             # pointer list, as on every other collection read here.
             elements = inner.get("*elements") or inner.get("elements") or []
-            rows = [
-                by_urn.get(element) if isinstance(element, str) else element
-                for element in elements
-            ]
-            return [row for row in rows if isinstance(row, dict)], True
+            rows = []
+            for element in elements:
+                row = by_urn.get(element) if isinstance(element, str) else element
+                if not isinstance(row, dict):
+                    # Dropping it would under-report the board quietly, the
+                    # same class of failure as a false zero.
+                    raise LinkedInScraperException(
+                        f"Voyager invitations row {element!r} is not in the "
+                        "answer it was listed in. Refusing to report a board "
+                        "with rows missing."
+                    )
+                rows.append(row)
+            return rows, True
         return [], False
 
     def _normalize(
@@ -191,8 +199,15 @@ class VoyagerInvitationsReader(VoyagerReader):
     ) -> dict[str, Any]:
         """One invitation, flattened to what a decision actually needs."""
         invitation = row.get("invitation") if isinstance(row, dict) else None
-        if not isinstance(invitation, dict):
-            invitation = by_urn.get(row.get("*invitation") or "")
+        if not isinstance(invitation, dict) and row.get("*invitation"):
+            invitation = by_urn.get(row["*invitation"])
+            if not isinstance(invitation, dict):
+                # The view alone has no state, time or members: read as the
+                # invitation it would become a blank row passed off as one.
+                raise LinkedInScraperException(
+                    f"Voyager invitations: {row['*invitation']!r} is not in the "
+                    "answer that pointed at it."
+                )
         invitation = invitation if isinstance(invitation, dict) else row
 
         message = invitation.get("message")

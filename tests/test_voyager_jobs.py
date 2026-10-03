@@ -259,3 +259,13 @@ def test_a_company_filter_takes_numeric_ids_only():
     assert selected_filters(company_id="17988315,1441") == "company:List(17988315,1441)"
     with pytest.raises(LinkedInScraperException, match="numeric company id"):
         selected_filters(company_id="Rippling")
+
+
+async def test_a_page_that_adds_nothing_new_ends_the_walk():
+    same = list(range(1, 26))
+    jobs, page = _jobs(_page(same), _page(same), _page(same))
+
+    result = await jobs.find_jobs("vp product", max_pages=3)
+
+    assert len(page.requests) == 2
+    assert result["count"] == 25 and result["complete"] is True
