@@ -1245,13 +1245,20 @@ def install_voyager_overlay(
         extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
-        Send a LinkedIn connection request.
+        Send a LinkedIn connection request or accept an incoming one.
 
-        Sent through LinkedIn's API and confirmed by reading the relationship
-        back; no page is opened. Without a note it is the Connect action
-        LinkedIn's own buttons send. With a note it is the call the
-        custom-invite dialog makes, and the note is read back from the
-        invitation to set note_sent.
+        A request is sent through LinkedIn's API and confirmed by reading the
+        relationship back; no page is opened. Without a note it is the
+        Connect action LinkedIn's own buttons send. With a note it is the
+        call the custom-invite dialog makes, and the note is read back from
+        the invitation to set note_sent.
+
+        **Accepting is the one case still done on the page.** When the
+        member has already invited you, the call is handed to upstream's
+        flow, which accepts their invitation as upstream's tool of this name
+        always has (status accepted or connected). No API accept has been
+        measured yet. A dry run reports invitation_received and accepts
+        nothing.
 
         The tool is annotated with destructiveHint so MCP clients will
         prompt for user confirmation before execution.
@@ -1273,8 +1280,8 @@ def install_voyager_overlay(
             answered 200 but the relationship did not change: check sent
             invitations before retrying) or dry_run. relationship_before and
             relationship_after name the states read: not_invited,
-            invited_by_me, invited_by_them, connected or self. An incoming
-            invitation is reported, not accepted. note_sent is True only when
+            invited_by_me, invited_by_them, connected or self. note_sent is
+            True only when
             the note read back from the invitation matches the one sent. A
             refused note (quota, length) is send_failed with LinkedIn's
             answer in response_excerpt.
@@ -1297,6 +1304,14 @@ def install_voyager_overlay(
             result = await extractor.invite_person(
                 linkedin_username, note=note, dry_run=dry_run
             )
+            if result.get("status") == "invitation_received" and not dry_run:
+                # Upstream's tool of this name accepts an incoming invitation,
+                # and a replacement keeps that promise. No API accept has been
+                # measured, so this one case goes to upstream's page flow.
+                logger.info("Accepting %s's invitation via upstream", linkedin_username)
+                result = await extractor.connect_with_person(
+                    linkedin_username, note=note
+                )
 
             await ctx.report_progress(progress=100, total=100, message="Complete")
 

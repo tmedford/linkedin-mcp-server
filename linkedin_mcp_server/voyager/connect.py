@@ -249,8 +249,9 @@ class VoyagerConnect(VoyagerProfileViews):
         """Send a request, with or without a note, unless the relationship
         rules it out.
 
-        ``invited_by_them`` is returned to the caller rather than acted on:
-        accepting is a different action and is not measured here.
+        ``invited_by_them`` comes back as ``invitation_received`` and nothing
+        is sent: accepting is a different action, not measured on the API, so
+        the tool hands that case to upstream's accept flow.
         """
         from linkedin_mcp_server.scraping.identifiers import (
             normalize_person_identifier,
@@ -279,6 +280,12 @@ class VoyagerConnect(VoyagerProfileViews):
 
         if before["state"] in _STATUS:
             return result(*_STATUS[before["state"]])
+        if before["state"] == "invited_by_them":
+            return result(
+                "invitation_received",
+                "This member has already invited you. Nothing was sent: "
+                "accepting is a different action.",
+            )
         if before["state"] != "not_invited":
             return result(
                 "connect_unavailable",

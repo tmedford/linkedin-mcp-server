@@ -68,8 +68,11 @@ def _text(node: Any) -> str | None:
     return node.get("text") if isinstance(node, dict) else None
 
 
-def parse_people(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
-    """People in the order the service ranked them, and whether rows were found."""
+def parse_people(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], bool, int]:
+    """People in the order the service ranked them, whether rows were found,
+    and how many items the page held before anything was filtered out."""
     data = payload.get("data") or {}
     found = isinstance(data, dict) and "elements" in data
     results = {
@@ -78,8 +81,10 @@ def parse_people(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
         if isinstance(entity, dict)
     }
     people = []
+    items_seen = 0
     for cluster in data.get("elements") or []:
         for item in (cluster or {}).get("items") or []:
+            items_seen += 1
             entity = results.get(
                 ((item or {}).get("itemUnion") or {}).get("*entityResult")
             )
@@ -115,7 +120,7 @@ def parse_people(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
                 "insight": next((text for text in insights if text), None),
             }
             people.append({k: v for k, v in person.items() if v not in (None, "")})
-    return people, found
+    return people, found, items_seen
 
 
 def render_people(people: list[dict[str, Any]]) -> str:
@@ -210,7 +215,7 @@ class VoyagerPeopleSearch(VoyagerReader):
             f"flagshipSearchIntent:SEARCH_SRP,queryParameters:({facets}),"
             f"includeFiltersInResponse:false)&start={start}&count={count}"
         )
-        people, found = parse_people(payload)
+        people, found, items_seen = parse_people(payload)
         self._refuse_unexplained_zero(
             rows=people, payload=payload, path=_ELEMENTS_PATH, container_found=found
         )
@@ -239,8 +244,10 @@ class VoyagerPeopleSearch(VoyagerReader):
             "page_size": count,
             # A ceiling the service reports, not a count of matches.
             "total_reported": total if isinstance(total, int) else None,
-            # Measured from what came back, never from the reported total.
-            "at_end": None if not people else len(people) < count,
+            # Measured from what came back, never from the reported total,
+            # and from the items before promos and feedback cards were
+            # dropped: a full page with one promo in it is not the last.
+            "at_end": None if not items_seen else items_seen < count,
         }
         if resolved is not None:
             result["location_resolved"] = resolved

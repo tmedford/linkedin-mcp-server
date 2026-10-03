@@ -697,7 +697,6 @@ class VoyagerProfileViews(VoyagerReader):
     ) -> tuple[list[dict[str, Any]], bool]:
         """The whole list for a period, and whether its end was reached."""
         rows: list[dict[str, Any]] = []
-        keys: set[str] = set()
         for index in range(MAX_PAGES):
             if index:
                 await self._session.delay(PAGE_DELAY)
@@ -705,18 +704,13 @@ class VoyagerProfileViews(VoyagerReader):
                 index * PAGE_SIZE, PAGE_SIZE, period, selections, sort
             )
             viewers = [row for row in window if "aggregate" not in row]
-            for row in window:
-                key = json.dumps(
-                    [
-                        row.get("public_identifier"),
-                        row.get("description"),
-                        row.get("aggregate"),
-                        row.get("viewed_text"),
-                    ]
-                )
-                if key not in keys:
-                    keys.add(key)
-                    rows.append(row)
+            # Every row is kept. Windows are asked for at disjoint offsets, so
+            # they do not overlap, and two private viewers can share both a
+            # description and a time ("Recruiter at Google", "Viewed 1w ago")
+            # while being two people: a content key would count them as one.
+            # Named viewers are merged by public identifier, and rollups by
+            # their text, where the rows are combined.
+            rows.extend(window)
             # Measured against what was asked for: a short window is the end.
             if len(viewers) < PAGE_SIZE:
                 return rows, True
@@ -1188,21 +1182,6 @@ def render_recruiters(recruiters: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _recruiter_key(row: dict[str, Any]) -> str:
-    """What makes two rows the same row, for telling a new window from a
-    repeat. A rollup has none of a recruiter's fields, so its text is part of
-    the key; without it every rollup after the first reads as a repeat."""
-    return json.dumps(
-        [
-            row.get("company_id"),
-            row.get("description"),
-            row.get("viewed_text"),
-            row.get("insight"),
-            row.get("aggregate"),
-        ]
-    )
-
-
 class VoyagerRecruiterViews(VoyagerProfileViews):
     """Read which recruiters viewed the profile, through the page's own pager."""
 
@@ -1259,24 +1238,29 @@ class VoyagerRecruiterViews(VoyagerProfileViews):
         seen: list[str] = []
         seen_with_jobs: list[str] = []
         complete = False
-        keys: set[str] = set()
         aggregates: list[str] = []
+        previous: list[dict[str, Any]] | None = None
         for index in range(MAX_PAGES):
             if index:
                 await self._session.delay(PAGE_DELAY)
             window = await self._recruiter_window(
                 index * PAGE_SIZE, PAGE_SIZE, period, seen, seen_with_jobs
             )
-            fresh = [row for row in window if _recruiter_key(row) not in keys]
             # Measured: a window of 40 came back with 39, so a short window
-            # is not the end here. The end is a window with nothing new.
-            if not fresh:
+            # is not the end here. The end is an empty window. A window equal
+            # to the one before means the offset was ignored, and ends the
+            # walk too rather than reading the same page forty times. Rows
+            # are never matched by content: two recruiters from one company
+            # can share a time and a note while being two views.
+            if not window or window == previous:
                 complete = True
                 break
-            for row in fresh:
-                keys.add(_recruiter_key(row))
+            previous = window
+            for row in window:
                 if "aggregate" in row:
-                    aggregates.append(row["aggregate"])
+                    # A rollup with the same text is the same rollup.
+                    if row["aggregate"] not in aggregates:
+                        aggregates.append(row["aggregate"])
                     continue
                 recruiters.append(row)
                 if row.get("company_id"):

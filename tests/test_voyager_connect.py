@@ -175,7 +175,7 @@ async def test_a_dry_run_sends_nothing():
     [
         ({"*connection": "urn:li:fsd_connection:1"}, "already_connected"),
         (INVITED_BY_ME, "pending"),
-        (INVITED_BY_THEM, "connect_unavailable"),
+        (INVITED_BY_THEM, "invitation_received"),
         ({"self": {}}, "connect_unavailable"),
         ({}, "connect_unavailable"),
     ],

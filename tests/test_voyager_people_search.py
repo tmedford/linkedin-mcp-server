@@ -253,3 +253,21 @@ async def test_a_refused_filter_reaches_the_caller_with_its_correction(mock_cont
 
     with pytest.raises(ToolError, match="numeric id"):
         await tool.fn("recruiter", mock_context, extractor=extractor)
+
+
+async def test_a_full_page_with_a_promo_in_it_is_not_the_end():
+    page = json.loads(_page_of(list(range(10)))["body"])
+    # One item is a promo: no profile id and no /in/ link, so it is dropped.
+    # Nine people from ten items is a full page, not the last one.
+    promo = page["included"][0]
+    promo["entityUrn"] = "urn:li:fsd_entityResultViewModel:promo"
+    promo["navigationUrl"] = "https://www.linkedin.com/premium/"
+    for item in page["data"]["elements"][0]["items"]:
+        if item["itemUnion"]["*entityResult"].endswith("ACoAA-p9,SEARCH_SRP,DEFAULT)"):
+            item["itemUnion"]["*entityResult"] = promo["entityUrn"]
+    search, _ = _search({"body": json.dumps(page)})
+
+    result = await search.find_people("recruiter", count=10)
+
+    assert result["count"] == 9
+    assert result["at_end"] is False

@@ -670,3 +670,19 @@ def test_a_rollup_whose_text_comes_before_its_marker_is_kept():
             )
         }
     ]
+
+
+async def test_two_private_viewers_with_the_same_description_and_time_are_two():
+    same = _private_row(
+        "Recruiter at Example Co", "keywords=Recruiter&currentCompany=1"
+    )
+    reader, _ = _reader(_payload(), [same, same])
+
+    result = await reader.get_profile_views()
+
+    described = [
+        v
+        for v in result["anonymous_viewers"]
+        if v["description"] == "Recruiter at Example Co"
+    ]
+    assert len(described) == 2

@@ -256,3 +256,25 @@ async def test_two_closing_rollups_are_both_kept():
     result = await _reader(_Page(rows)).get_recruiter_views()
 
     assert result["aggregates"] == ["38 other recruiters", "6 other recruiters"]
+
+
+async def test_the_same_looking_view_in_two_windows_is_two_views():
+    rows = _many(39) + [("Acme", ["Recruiter at Acme", "Viewed 1h ago"], JOBS)] * 2
+
+    result = await _reader(_Page(rows)).get_recruiter_views()
+
+    assert sum(1 for r in result["recruiters"] if r["company"] == "Acme") == 2
+
+
+async def test_a_window_that_repeats_the_last_one_ends_the_walk():
+    class IgnoresStart(_Page):
+        async def evaluate(self, _program: str, argument: Any = None) -> Any:
+            self.bodies.append(json.loads(argument["body"]))
+            return {"status": 200, "text": _stream(self.rows[:40])}
+
+    page = IgnoresStart(_many(40))
+
+    result = await _reader(page).get_recruiter_views()
+
+    assert len(page.bodies) == 2
+    assert result["count"] == 40
