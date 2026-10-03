@@ -488,6 +488,9 @@ _ACTIONS = "https://www.linkedin.com/flagship-web/rsc-action/actions/"
 _CONTACTS = "com.linkedin.sdui.generated.jobseeker.dsl.impl.opportunityContacts"
 _TRACKER_SCREEN = "com.linkedin.sdui.flagshipnav.jobs.OpportunityTrackerPage"
 _PILE = re.compile(r'"sortableImages":\[(.*?)\],"maxVisibleItems"', re.S)
+#: Each count is one request, so only the first rows are asked for; a job
+#: past this has no ``network_contacts``, which already means "unread".
+CONTACTS_MAX = 25
 _OVERFLOW = re.compile(r'"overflowCount":\["\D*(\d+)"\]')
 
 # Valid for as long as the page that issued them, as in profile_views.
@@ -737,7 +740,8 @@ class VoyagerSavedJobs(VoyagerJobs):
                 "but none parsed. Refusing to report that as an empty stage."
             )
         headers = await self._action_headers() if jobs else None
-        for index, job in enumerate(jobs if headers is not None else []):
+        asked = jobs[:CONTACTS_MAX] if headers is not None else []
+        for index, job in enumerate(asked):
             if index:
                 await self._session.delay(0.4)
             contacts = await self._contacts(job["job_id"], headers or {})

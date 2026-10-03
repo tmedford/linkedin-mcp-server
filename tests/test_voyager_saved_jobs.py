@@ -243,3 +243,14 @@ async def test_a_company_filter_holding_no_id_is_refused():
     for blank in (" ", ",", " , "):
         with pytest.raises(LinkedInScraperException, match="company_id was"):
             selected_filters(company_id=blank)
+
+
+async def test_only_the_first_rows_are_asked_for_their_contacts(monkeypatch):
+    monkeypatch.setattr(jobs_module, "CONTACTS_MAX", 2)
+    page = _Page(_stream([_record(7), _record(8), _record(9)]))
+
+    jobs = (await _reader(page).get_saved_jobs())["jobs"]
+
+    # The tracker, then one read per job up to the cap; the third is unread.
+    assert len(page.sent) == 3
+    assert [("network_contacts" in job) for job in jobs] == [True, True, False]
