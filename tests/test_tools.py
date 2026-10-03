@@ -1661,6 +1661,7 @@ class TestToolTimeouts:
             "get_invitations",
             "get_mutual_connections",
             "get_person_posts",
+            "get_profile_views",
         )
 
         for name in tool_names:
@@ -1708,6 +1709,7 @@ class TestToolTimeouts:
             "get_invitations",
             "get_mutual_connections",
             "get_person_posts",
+            "get_profile_views",
         )
 
         for name in tool_names:

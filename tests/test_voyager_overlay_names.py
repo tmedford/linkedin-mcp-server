@@ -22,6 +22,7 @@ REPLACED_IN_PLACE = (
     "search_conversations",
     "send_message",
     "get_person_profile",
+    "connect_with_person",
 )
 
 
@@ -48,6 +49,7 @@ async def test_the_served_tool_of_that_name_is_this_forks(name):
             {"linkedin_username", "message", "confirm_send", "profile_urn"},
         ),
         ("get_person_profile", {"linkedin_username", "sections", "max_scrolls"}),
+        ("connect_with_person", {"linkedin_username", "note"}),
     ],
 )
 async def test_every_argument_upstream_accepted_is_still_accepted(
@@ -64,6 +66,7 @@ async def test_every_argument_upstream_accepted_is_still_accepted(
         ("search_conversations", ["keywords"]),
         ("send_message", ["linkedin_username", "message", "confirm_send"]),
         ("get_person_profile", ["linkedin_username"]),
+        ("connect_with_person", ["linkedin_username"]),
     ],
 )
 async def test_nothing_new_became_required(name, required):
@@ -161,3 +164,51 @@ async def test_get_person_profile_reads_posts_only_when_asked(mock_context):
     assert result["posts_next_cursor"] == "tok"
     assert result["unknown_sections"] == ["bogus"]
     with_posts.get_person_posts.assert_awaited_once_with("ada-lovelace", count=10)
+
+
+async def test_connect_sends_through_the_api_with_or_without_a_note(mock_context):
+    extractor = MagicMock()
+    extractor.invite_person = AsyncMock(return_value={"status": "pending"})
+    extractor.connect_with_person = AsyncMock()
+    tool = await _tool("connect_with_person")
+
+    await tool.fn(
+        linkedin_username="ada-lovelace", ctx=mock_context, extractor=extractor
+    )
+    await tool.fn(
+        linkedin_username="ada-lovelace",
+        ctx=mock_context,
+        note="Hi Ada",
+        extractor=extractor,
+    )
+
+    assert extractor.invite_person.await_args_list[0].kwargs == {
+        "note": None,
+        "dry_run": False,
+    }
+    assert extractor.invite_person.await_args_list[1].kwargs == {
+        "note": "Hi Ada",
+        "dry_run": False,
+    }
+    # Upstream's page-driven flow is no longer reached for either.
+    extractor.connect_with_person.assert_not_called()
+
+
+async def test_connect_never_reaches_upstreams_full_flow(mock_context):
+    # An incoming invitation is accepted inside invite_person, accept-only.
+    # Upstream's whole flow could send a new request if the invitation had
+    # gone in between, so the tool must never call it, dry run or not.
+    extractor = MagicMock()
+    extractor.invite_person = AsyncMock(return_value={"status": "accepted"})
+    extractor.connect_with_person = AsyncMock()
+    tool = await _tool("connect_with_person")
+
+    for dry_run in (False, True):
+        await tool.fn(
+            linkedin_username="ada-lovelace",
+            ctx=mock_context,
+            dry_run=dry_run,
+            extractor=extractor,
+        )
+
+    extractor.connect_with_person.assert_not_called()

@@ -1,0 +1,67 @@
+{
+  "call": {
+    "arguments": {
+      "days": 7
+    },
+    "method": "get_recruiter_views"
+  },
+  "events": [
+    {
+      "arg": {
+        "body": "{\"pagerId\": \"com.linkedin.sdui.pagers.premium.wvmp.recruiterList\", \"clientArguments\": {\"$type\": \"proto.sdui.actions.requests.RequestedArguments\", \"requestedStateKeys\": [], \"payload\": {\"start\": 0, \"count\": 40, \"timeRange\": \"WvmpSearchFilterTimeRange_LAST_7_DAYS\", \"seenCompanyIds\": []}, \"requestMetadata\": {\"$type\": \"proto.sdui.common.RequestMetadata\"}, \"states\": [], \"screenId\": \"com.linkedin.sdui.flagshipnav.premium.wvmp.RecruiterViews\", \"knownTemplateIds\": []}, \"paginationRequest\": {\"$type\": \"proto.sdui.actions.requests.PaginationRequest\", \"pagerId\": \"com.linkedin.sdui.pagers.premium.wvmp.recruiterList\", \"trigger\": {\"$case\": \"itemDistanceTrigger\", \"itemDistanceTrigger\": {\"$type\": \"proto.sdui.actions.requests.ItemDistanceTrigger\", \"preloadDistance\": 3, \"preloadLength\": 250}}, \"retryCount\": 2, \"requestedArguments\": {\"$type\": \"proto.sdui.actions.requests.RequestedArguments\", \"requestedStateKeys\": [], \"payload\": {\"start\": 0, \"count\": 40, \"timeRange\": \"WvmpSearchFilterTimeRange_LAST_7_DAYS\", \"seenCompanyIds\": []}, \"requestMetadata\": {\"$type\": \"proto.sdui.common.RequestMetadata\"}}}}",
+        "headers": {
+          "x-li-track": "{}"
+        },
+        "url": "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.premium.wvmp.recruiterList"
+      },
+      "call": "get_recruiter_views",
+      "kind": "evaluate",
+      "operation": "voyager_stream_post",
+      "program_digest": "f959d86e614d",
+      "section": "recruiters"
+    },
+    {
+      "call": "get_recruiter_views",
+      "kind": "sleep",
+      "reason": "sleep",
+      "seconds": 1.5,
+      "section": "recruiters"
+    },
+    {
+      "arg": {
+        "body": "{\"pagerId\": \"com.linkedin.sdui.pagers.premium.wvmp.recruiterList\", \"clientArguments\": {\"$type\": \"proto.sdui.actions.requests.RequestedArguments\", \"requestedStateKeys\": [], \"payload\": {\"start\": 40, \"count\": 40, \"timeRange\": \"WvmpSearchFilterTimeRange_LAST_7_DAYS\", \"seenCompanyIds\": [\"1001\"]}, \"requestMetadata\": {\"$type\": \"proto.sdui.common.RequestMetadata\"}, \"states\": [], \"screenId\": \"com.linkedin.sdui.flagshipnav.premium.wvmp.RecruiterViews\", \"knownTemplateIds\": []}, \"paginationRequest\": {\"$type\": \"proto.sdui.actions.requests.PaginationRequest\", \"pagerId\": \"com.linkedin.sdui.pagers.premium.wvmp.recruiterList\", \"trigger\": {\"$case\": \"itemDistanceTrigger\", \"itemDistanceTrigger\": {\"$type\": \"proto.sdui.actions.requests.ItemDistanceTrigger\", \"preloadDistance\": 3, \"preloadLength\": 250}}, \"retryCount\": 2, \"requestedArguments\": {\"$type\": \"proto.sdui.actions.requests.RequestedArguments\", \"requestedStateKeys\": [], \"payload\": {\"start\": 40, \"count\": 40, \"timeRange\": \"WvmpSearchFilterTimeRange_LAST_7_DAYS\", \"seenCompanyIds\": [\"1001\"]}, \"requestMetadata\": {\"$type\": \"proto.sdui.common.RequestMetadata\"}}}}",
+        "headers": {
+          "x-li-track": "{}"
+        },
+        "url": "https://www.linkedin.com/flagship-web/rsc-action/actions/pagination?sduiid=com.linkedin.sdui.pagers.premium.wvmp.recruiterList"
+      },
+      "call": "get_recruiter_views",
+      "kind": "evaluate",
+      "operation": "voyager_stream_post",
+      "program_digest": "f959d86e614d",
+      "section": "recruiters"
+    }
+  ],
+  "result": {
+    "aggregates": [],
+    "complete": true,
+    "count": 1,
+    "days": 7,
+    "recruiters": [
+      {
+        "company": "Acme",
+        "company_id": "1001",
+        "company_insights_url": "https://www.linkedin.com/company/1001/insights/",
+        "description": "Recruiter at Acme",
+        "has_jobs": false
+      }
+    ],
+    "sections": {
+      "recruiter_views": "Recruiter at Acme - None"
+    },
+    "url": "https://www.linkedin.com/analytics/recruiter-views/?timeRange=WvmpSearchFilterTimeRange_LAST_7_DAYS",
+    "with_jobs": 0
+  },
+  "scenario": "get_recruiter_views__baseline",
+  "schema_version": 1
+}

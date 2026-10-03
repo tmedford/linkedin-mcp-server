@@ -65,7 +65,6 @@ _SETTLE_MS = 20000
 # returns HTTP 400 looks exactly like an outage and has already cost a run once.
 
 
-
 def classify(url: str) -> str:
     """REST, GraphQL or neither - the only distinction this module exists for."""
     path = urlparse(url).path

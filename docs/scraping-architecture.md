@@ -75,6 +75,7 @@ a page-owning collaborator.
 - `connect_with_person`
 - `extract_feed`
 - `extract_page`
+- `find_people`
 - `get_company_employees`
 - `get_conversation`
 - `get_conversations`
@@ -85,9 +86,12 @@ a page-owning collaborator.
 - `get_page_text`
 - `get_person`
 - `get_person_posts`
+- `get_profile_views`
+- `get_recruiter_views`
 - `get_saved_jobs`
 - `get_sidebar_profiles`
 - `get_thread`
+- `invite_person`
 - `message_person`
 - `reply_to_thread`
 - `scrape_company`
@@ -111,10 +115,14 @@ a page-owning collaborator.
 - `_feed`
 - `_jobs`
 - `_message_sender`
+- `_people_search`
 - `_person`
 - `_person_message`
 - `_posts`
+- `_profile_views`
+- `_recruiter_views`
 - `_thread_reply`
+- `_voyager_connect`
 - `_voyager_invitations`
 - `_voyager_messaging`
 - `_voyager_person`

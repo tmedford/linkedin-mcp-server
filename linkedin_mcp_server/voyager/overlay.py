@@ -26,6 +26,7 @@ import logging
 from typing import Any
 
 from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
 
 from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
 from linkedin_mcp_server.core.exceptions import (
@@ -34,6 +35,8 @@ from linkedin_mcp_server.core.exceptions import (
 )
 from linkedin_mcp_server.dependencies import get_ready_extractor, handle_auth_error
 from linkedin_mcp_server.error_handler import raise_tool_error
+from linkedin_mcp_server.scraping.contracts import FilterValidationError
+from linkedin_mcp_server.tools.person import StrList
 from linkedin_mcp_server.voyager.person_message import refuse_an_invalid_person_message
 from linkedin_mcp_server.voyager.thread_reply import refuse_an_invalid_reply
 
@@ -74,7 +77,11 @@ class OverlayError(RuntimeError):
 #: records, with contact info, mutual connections and what the profile shares
 #: with the signed-in member's own.
 #:
-#: **A replacement keeps the name it replaces.** Four of the five below are
+#: ``search_people`` loads the results page and returns its text, ten at a
+#: time. Ours asks the search service and returns each person as a record with
+#: their identifier, up to fifty a page.
+#:
+#: **A replacement keeps the name it replaces.** Five of the six below are
 #: registered under upstream's own tool name and accept upstream's arguments,
 #: so nothing that calls the tool has to change when its implementation does.
 #: ``get_inbox`` is the exception and predates the rule: its replacement pages
@@ -86,6 +93,8 @@ SUPERSEDED: dict[str, str] = {
     "search_conversations": "search_conversations",
     "send_message": "send_message",
     "get_person_profile": "get_person_profile",
+    "search_people": "search_people",
+    "connect_with_person": "connect_with_person",
 }
 
 #: The section names upstream's get_person_profile accepts.
@@ -922,3 +931,390 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "get_person_posts")
         except Exception as e:
             raise_tool_error(e, "get_person_posts")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Search People",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "search"},
+        exclude_args=["extractor"],
+    )
+    async def search_people(
+        keywords: str,
+        ctx: Context,
+        location: str | None = None,
+        network: StrList | None = None,
+        current_company: str | None = None,
+        start: int = 0,
+        count: int = 10,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Search for people on LinkedIn, ONE page from LinkedIn's search API.
+
+        Each person comes back as a record with their public identifier, so a
+        result can be passed straight to get_person_profile.
+
+        Args:
+            keywords: Search keywords (e.g., "software engineer", "recruiter").
+            ctx: FastMCP context for progress reporting
+            location: Optional place name (e.g., "New York", "Germany"), or a
+                numeric LinkedIn geo id. A name is resolved to LinkedIn's best
+                matching place, which is reported back as location_resolved
+                with the runners-up in location_candidates. **Check it**: "New
+                York" resolves to the state before the city. A name LinkedIn
+                does not recognise as a place is refused, not ignored.
+            network: Optional connection-degree filter. Each element is one of
+                "F" (1st-degree), "S" (2nd-degree), "O" (3rd-degree and beyond).
+                A single
+                token ("F") or a comma-separated string ("F,S") is also
+                accepted, for clients that cannot transmit an array.
+            current_company: Optional current-employer filter, as the numeric
+                company id (e.g. "1115" for SAP). A company name is refused,
+                because LinkedIn ignores one and returns everyone.
+            start: 0-based offset. Paging is the caller's loop.
+            count: how many to ask for, 1 to 50. Defaults to 10.
+
+        Returns:
+            Dict with url, sections (search_results -> text) and references
+            (the standard shape), plus people, count, start, page_size,
+            total_reported and at_end.
+
+            Each person has name, headline, location, public_identifier,
+            profile_url, profile_urn, distance (LinkedIn's DISTANCE_1/2/3) and
+            degree ("1st"/"2nd"/"3rd"), plus insight (such as mutual
+            connections) and summary where LinkedIn returned them.
+
+            at_end is True when fewer than `count` came back, False for a full
+            page, None for an empty one. **total_reported is not a count of
+            matches**: it read 150 for every query tried, so nothing should be
+            concluded from it.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="search_people"
+            )
+            logger.info(
+                "Searching people: keywords='%s', location='%s', network=%s, "
+                "current_company='%s', start=%s",
+                keywords,
+                location,
+                network,
+                current_company,
+                start,
+            )
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Starting people search"
+            )
+
+            try:
+                result = await extractor.find_people(
+                    keywords,
+                    location,
+                    network=network,
+                    current_company=current_company,
+                    start=start,
+                    count=count,
+                )
+            except FilterValidationError as e:
+                # Carries the correction; surfaced whole rather than masked.
+                raise ToolError(str(e)) from e
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except ToolError:
+            raise
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "search_people")
+        except Exception as e:
+            raise_tool_error(e, "search_people")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Profile Views",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_profile_views(
+        ctx: Context,
+        full: bool = True,
+        days: int | None = None,
+        interesting: str | None = None,
+        company_id: str | None = None,
+        industry_id: str | None = None,
+        geo_id: str | None = None,
+        sort: str = "recent",
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read who viewed YOUR profile: every viewer LinkedIn lists, newest first.
+
+        Pages through LinkedIn's own viewer-list endpoint, 40 at a time. The
+        default period takes about 15 seconds and a year about 40.
+
+        Args:
+            ctx: FastMCP context for progress reporting
+            full: True (the default) reads the whole list. False asks only the
+                quick JSON endpoint, which returns the six most recent viewers
+                plus LinkedIn's highlighted groups, in a second or two.
+            days: The period the list covers: 7, 14, 28, 90 or 365. OMIT for
+                LinkedIn's default. Needs full=True. A longer period is a
+                longer list and takes longer to read.
+            interesting: Only LinkedIn's "interesting viewers" of one kind:
+                "can_help_you_get_a_job", "senior_leader_in_your_industry",
+                "senior_leader_with_your_job_function" or "has_verifications".
+            company_id: Only viewers at this company, by LinkedIn's numeric
+                company id (e.g. "229978"). A URN or a name is refused.
+            industry_id: Only viewers in this industry, by numeric id.
+            geo_id: Only viewers in this place, by numeric geo id (the
+                geo_id search_people reports in location_resolved).
+
+            sort: "recent" (default, newest first) or "relevant", LinkedIn's
+                "Sort by most relevant", kept in LinkedIn's order. Needs
+                full=True.
+
+            The filters combine, and all need full=True. A private viewer's
+            row carries company_id, industry_id and geo_id where LinkedIn
+            shows them, which is where to find the ids to filter on.
+
+        Returns:
+            Dict with url and sections (the standard scraping-tool shape), plus:
+
+            total_views, time_frame, change_percent: LinkedIn's own count for
+                the period (e.g. 529 in LAST_90_DAYS) and its change.
+            viewers: identified people, newest first. Each has name, headline,
+                public_identifier and degree, plus viewed_text ("Viewed 1w
+                ago") and viewed_at_iso. Pass public_identifier to
+                get_person_profile.
+            anonymous_viewers: private-mode viewers, as LinkedIn describes
+                them ("Recruiter at DualEntry"). LinkedIn hides who they are
+                but usually not where they work: each has title, and company
+                and company_id when it names the employer, or industry_id and
+                geo_id when it gives only an industry and place, or school
+                when a school is all it names. search_url is
+                LinkedIn's own search for people matching that description.
+            aggregates: LinkedIn's roll-ups, such as "133 recruiters viewed
+                your profile".
+            groups: how LinkedIn grouped the highlights, with view counts.
+            count, returned, complete, days, filters and period_applied.
+
+            With a filter on, the result is the filtered list only; the
+            highlighted groups are still reported but are unfiltered.
+
+            **Check period_applied when you pass days.** False means a row
+            came back older than the period allows, so LinkedIn ignored it.
+            True means nothing contradicted the period asked for.
+
+            **Most view times are approximate.** LinkedIn's list says "1w ago",
+            so viewed_at_iso is computed from that and the row carries
+            viewed_at_approximate: true. Viewers that the JSON endpoint also
+            returns have the exact time, and also referrer, pending_invite and
+            notable_reason. `extra` holds anything else on the row, such as
+            "2 mutual connections".
+
+            complete is True when the list was read to its end, False when the
+            request limit cut it short, and None with full=False. **total_views counts
+            views, not people**: one run returned 117 named and 95 private
+            viewers against 529 views, the rest being repeat views and the
+            recruiters LinkedIn only reports as a number.
+
+            Recruiter views are a separate page: use get_recruiter_views.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_profile_views"
+            )
+            logger.info("Reading profile views")
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Reading profile views"
+            )
+
+            result = await extractor.get_profile_views(
+                full=full,
+                days=days,
+                interesting=interesting,
+                company_id=company_id,
+                industry_id=industry_id,
+                geo_id=geo_id,
+                sort=sort,
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_profile_views")
+        except Exception as e:
+            raise_tool_error(e, "get_profile_views")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Recruiter Views",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "jobs", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_recruiter_views(
+        ctx: Context,
+        days: int | None = None,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read which recruiters viewed YOUR profile, by company, newest first.
+
+        This is LinkedIn's Premium "Recruiter insights" list, a separate page
+        from get_profile_views. LinkedIn names the recruiter's company but not
+        the recruiter. Use it for job sourcing: a recruiter who looked at you
+        at a company with open roles is a warm lead, and LinkedIn flags where
+        you "would be a top applicant".
+
+        Args:
+            ctx: FastMCP context for progress reporting
+            days: The period: 7, 14, 28, 90 or 365. Omit for 90.
+
+        Returns:
+            Dict with url and sections (the standard scraping-tool shape), plus:
+
+            recruiters: one entry per view, newest first. Each has description
+                ("Recruiter at Rippling"), company and company_id, industry
+                when LinkedIn shows it, viewed_text and an approximate
+                viewed_at_iso, and insight: LinkedIn's note such as "You'd be a
+                top applicant for 6 roles" or "Multiple recruiters from this
+                company are engaging with your profile".
+                has_jobs is True when LinkedIn offers that company's jobs:
+                jobs_url opens them, and job_id is the role LinkedIn puts
+                first. Pass company_id to search_jobs-style tools or to
+                get_profile_views(company_id=...) to see who else from there
+                looked. Without jobs, company_insights_url is given instead.
+            aggregates: LinkedIn's rollups closing the list, such as "38 other
+                recruiters", for views it does not itemise.
+            count, with_jobs, complete (False only if the request limit cut
+                the list short) and days.
+
+            The same company appears once per view, so several rows for one
+            company mean several recruiters or visits.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_recruiter_views"
+            )
+            logger.info("Reading recruiter views")
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Reading recruiter views"
+            )
+
+            result = await extractor.get_recruiter_views(days=days)
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_recruiter_views")
+        except Exception as e:
+            raise_tool_error(e, "get_recruiter_views")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Connect With Person",
+        annotations={"destructiveHint": True, "openWorldHint": True},
+        tags={"person", "actions"},
+        exclude_args=["extractor"],
+    )
+    async def connect_with_person(
+        linkedin_username: str,
+        ctx: Context,
+        note: str | None = None,
+        dry_run: bool = False,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Send a LinkedIn connection request or accept an incoming one.
+
+        A request is sent through LinkedIn's API and confirmed by reading the
+        relationship back; no page is opened. Without a note it is the
+        Connect action LinkedIn's own buttons send. With a note it is the
+        call the custom-invite dialog makes, and the note is read back from
+        the invitation to set note_sent.
+
+        **Accepting is the one case still done on the page.** When the
+        member has already invited you, their invitation is accepted, as
+        upstream's tool of this name always has: the profile page is opened,
+        re-checked to still show the incoming request, and Accept clicked;
+        the result is read back from the API (status accepted). If the
+        invitation is gone by then, nothing is clicked or sent (status
+        invitation_gone). No API accept has been measured yet. A dry run
+        reports invitation_received and does nothing.
+
+        The tool is annotated with destructiveHint so MCP clients will
+        prompt for user confirmation before execution.
+
+        Args:
+            linkedin_username: LinkedIn username (e.g., "stickerdaniel", "williamhgates"). A full profile URL is accepted too and is reduced to the username.
+            ctx: FastMCP context for progress reporting
+            note: Optional note to include with the invitation, up to 300
+                characters (Premium; LinkedIn allows free accounts fewer and
+                refuses the rest at send time).
+            dry_run: True reads the relationship and returns the request
+                that would be sent, without sending it.
+
+        Returns:
+            Dict with url, status, message, and note_sent.
+            status is pending (sent, and confirmed by reading
+            the relationship back, or already pending), already_connected,
+            connect_unavailable, send_failed, send_unconfirmed (LinkedIn
+            answered 200 but the relationship did not change: check sent
+            invitations before retrying) or dry_run. relationship_before and
+            relationship_after name the states read: not_invited,
+            invited_by_me, invited_by_them, connected or self. note_sent is
+            True only when
+            the note read back from the invitation matches the one sent. A
+            refused note (quota, length) is send_failed with LinkedIn's
+            answer in response_excerpt.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="connect_with_person"
+            )
+            logger.info(
+                "Connecting with person: %s (note=%s, dry_run=%s)",
+                linkedin_username,
+                note is not None,
+                dry_run,
+            )
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Sending connection request"
+            )
+
+            result = await extractor.invite_person(
+                linkedin_username, note=note, dry_run=dry_run
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "connect_with_person")
+        except Exception as e:
+            raise_tool_error(e, "connect_with_person")  # NoReturn

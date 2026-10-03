@@ -21,8 +21,14 @@ from linkedin_mcp_server.scraping.conversations import ConversationReader
 from linkedin_mcp_server.voyager.invitations import VoyagerInvitationsReader
 from linkedin_mcp_server.voyager.messaging import VoyagerMessagingReader
 from linkedin_mcp_server.voyager.message_search import VoyagerMessageSearch
+from linkedin_mcp_server.voyager.people_search import VoyagerPeopleSearch
 from linkedin_mcp_server.voyager.person import VoyagerPersonReader
 from linkedin_mcp_server.voyager.person_message import VoyagerPersonMessage
+from linkedin_mcp_server.voyager.connect import VoyagerConnect
+from linkedin_mcp_server.voyager.profile_views import (
+    VoyagerProfileViews,
+    VoyagerRecruiterViews,
+)
 from linkedin_mcp_server.voyager.thread import VoyagerThreadReader
 from linkedin_mcp_server.voyager.thread_reply import VoyagerThreadReply
 from linkedin_mcp_server.scraping.feed import FeedScraper
@@ -86,6 +92,12 @@ class LinkedInExtractor:
         self._voyager_search = VoyagerMessageSearch(session, navigator)
         self._person_message = VoyagerPersonMessage(session, navigator)
         self._voyager_person = VoyagerPersonReader(session, navigator)
+        self._people_search = VoyagerPeopleSearch(session, navigator)
+        self._profile_views = VoyagerProfileViews(session, navigator)
+        self._recruiter_views = VoyagerRecruiterViews(session, navigator)
+        self._voyager_connect = VoyagerConnect(
+            session, navigator, connection=self._connection
+        )
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -368,4 +380,60 @@ class LinkedInExtractor:
         """Read one page of a member's posts and reposts from the API."""
         return await self._voyager_person.get_person_posts(
             linkedin_username, count=count, cursor=cursor
+        )
+
+    async def find_people(
+        self,
+        keywords: str,
+        location: str | None = None,
+        network: list[str] | None = None,
+        current_company: str | None = None,
+        start: int = 0,
+        count: int = 10,
+    ) -> dict[str, Any]:
+        """Read one page of a people search from the search API."""
+        return await self._people_search.find_people(
+            keywords,
+            location=location,
+            network=network,
+            current_company=current_company,
+            start=start,
+            count=count,
+        )
+
+    async def get_profile_views(
+        self,
+        full: bool = True,
+        days: int | None = None,
+        interesting: str | None = None,
+        company_id: str | None = None,
+        industry_id: str | None = None,
+        geo_id: str | None = None,
+        sort: str = "recent",
+    ) -> dict[str, Any]:
+        """Read who viewed the signed-in member's profile."""
+        return await self._profile_views.get_profile_views(
+            full=full,
+            days=days,
+            interesting=interesting,
+            company_id=company_id,
+            industry_id=industry_id,
+            geo_id=geo_id,
+            sort=sort,
+        )
+
+    async def get_recruiter_views(self, days: int | None = None) -> dict[str, Any]:
+        """Read which recruiters viewed the signed-in member's profile."""
+        return await self._recruiter_views.get_recruiter_views(days=days)
+
+    async def invite_person(
+        self,
+        linkedin_username: str,
+        *,
+        note: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Send a connection request through LinkedIn's API, with or without a note."""
+        return await self._voyager_connect.connect_with_person(
+            linkedin_username, note=note, dry_run=dry_run
         )

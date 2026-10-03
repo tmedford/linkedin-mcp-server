@@ -1287,6 +1287,212 @@ _POLICY_MUTUAL = {
 }
 
 
+async def _profile_views_scenario() -> dict[str, Any]:
+    """Record what `get_profile_views` does to the page.
+
+    With `full=False`: one evaluate and no navigation. The full list is read
+    by opening the analytics page in the server's own browser and is covered by
+    the reader's unit tests; the routine this serves had been opening the
+    member's own browser for it.
+    """
+    recorder = TraceRecorder("get_profile_views__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    mini, card = "urn:li:fs_miniProfile:ACoAA-ada", "urn:li:fs_card:1"
+    payload = {
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.identity.me.WvmpCard",
+                "value": {
+                    "insightCards": [
+                        {
+                            "objectUrn": "urn:li:wvmp:summary",
+                            "value": {
+                                "numViews": 12,
+                                "timeFrame": "LAST_90_DAYS",
+                                "numViewsChangeInPercentage": 0,
+                                "*cards": [card],
+                            },
+                        }
+                    ]
+                },
+            },
+            {
+                "entityUrn": card,
+                "value": {
+                    "viewer": {
+                        "profile": {
+                            "*miniProfile": mini,
+                            "distance": {"value": "DISTANCE_2"},
+                        }
+                    },
+                    "viewedAt": 1_700_000_000_000,
+                },
+            },
+            {
+                "entityUrn": mini,
+                "firstName": "Ada",
+                "lastName": "Lovelace",
+                "publicIdentifier": "ada-lovelace",
+                "dashEntityUrn": "urn:li:fsd_profile:ACoAA-ada",
+            },
+        ]
+    }
+    page.script("evaluate:voyager_conversations_fetch", {"body": json.dumps(payload)})
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("get_profile_views", "views"):
+            result = await extractor.get_profile_views(full=False)
+    page.assert_clean()
+    return recorder.trace(
+        {"method": "get_profile_views", "arguments": {"full": False}}, result
+    )
+
+
+async def _recruiter_views_scenario() -> dict[str, Any]:
+    """Record what `get_recruiter_views` does to the page.
+
+    Posts to the page's own paging action and nothing else: no navigation,
+    no click. The page's headers are taken from a cache seeded here; taking
+    them opens the analytics page once per browser session, which the
+    reader's unit tests cover. Two windows: one row, then an empty answer,
+    which is the end of the list. The row has no "Viewed 1d ago": its time is
+    computed from the wall clock and would make this fixture drift daily.
+    """
+    from linkedin_mcp_server.voyager import profile_views as views_module
+
+    recorder = TraceRecorder("get_recruiter_views__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    item = json.dumps({"threadlineDecoration": None, "key": "k"})
+    row = [
+        "$",
+        "div",
+        None,
+        {
+            "children": [
+                ["$", "img", None, {"a11yText": "Acme"}],
+                ["$", "p", None, {"children": ["Recruiter at Acme"]}],
+                {"url": "https://www.linkedin.com/company/1001/insights/"},
+            ]
+        },
+    ]
+    stream = "0:" + json.dumps(["$", "div", None, {"children": [[item, row]]}])
+    page.script(
+        "evaluate:voyager_stream_post",
+        {"status": 200, "text": stream},
+        {"status": 200, "text": ""},
+    )
+    extractor = _extractor(page)
+    views_module._HEADER_CACHE = (page, {"x-li-track": "{}"})
+    try:
+        async with boundaries(recorder, clock):
+            with recorder.context("get_recruiter_views", "recruiters"):
+                result = await extractor.get_recruiter_views(days=7)
+    finally:
+        views_module.forget_cached_headers()
+    page.assert_clean()
+    return recorder.trace(
+        {"method": "get_recruiter_views", "arguments": {"days": 7}}, result
+    )
+
+
+async def _invite_person_scenario() -> dict[str, Any]:
+    """Record what `invite_person` does to the page on a dry run.
+
+    Two evaluates (the member, then the relationship) and nothing else: no
+    navigation, no click, no write. The send itself is one POST and one more
+    read, covered by the reader's unit tests; a trace that sent would pin a
+    write into a fixture for no gain.
+    """
+    recorder = TraceRecorder("invite_person__dry_run", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    urn = "urn:li:fsd_profile:ACoAA-ada"
+    profile = {
+        "$type": "com.linkedin.voyager.dash.identity.profile.Profile",
+        "entityUrn": urn,
+        "objectUrn": "urn:li:member:4242",
+        "firstName": "Ada",
+        "lastName": "Lovelace",
+        "publicIdentifier": "ada-lovelace",
+    }
+    relationship = {
+        "$type": "com.linkedin.voyager.dash.relationships.MemberRelationship",
+        "entityUrn": "urn:li:fsd_memberRelationship:ACoAA-ada",
+        "memberRelationshipUnion": {
+            "noConnection": {"invitationUnion": {"noInvitation": {}}}
+        },
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps({"data": {"*elements": [urn]}, "included": [profile]})},
+        {"body": json.dumps({"included": [profile, relationship]})},
+    )
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("invite_person", "connect"):
+            result = await extractor.invite_person("ada-lovelace", dry_run=True)
+    page.assert_clean()
+    return recorder.trace(
+        {
+            "method": "invite_person",
+            "arguments": {"linkedin_username": "ada-lovelace", "dry_run": True},
+        },
+        result,
+    )
+
+
+async def _people_search_scenario() -> dict[str, Any]:
+    """Record what the API people search does to the page.
+
+    Two evaluates and no navigation: a place name is resolved to a geo, then
+    one page of results is read. The tool it replaces loads the results page.
+    """
+    recorder = TraceRecorder("find_people__baseline", _COMMON_ALLOWED)
+    clock = FakeClock(recorder)
+    page = _page(recorder)
+    result_urn = "urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACoAA-ada,SEARCH_SRP,DEFAULT)"
+    geo = {
+        "data": {
+            "elements": [
+                {
+                    "trackingUrn": "urn:li:geo:101165590",
+                    "title": {"text": "United Kingdom"},
+                }
+            ]
+        }
+    }
+    results = {
+        "data": {
+            "elements": [{"items": [{"itemUnion": {"*entityResult": result_urn}}]}],
+            "paging": {"total": 150},
+        },
+        "included": [
+            {
+                "entityUrn": result_urn,
+                "title": {"text": "Ada Lovelace"},
+                "primarySubtitle": {"text": "Engineer at Analytical Engine"},
+                "secondarySubtitle": {"text": "London"},
+                "navigationUrl": "https://www.linkedin.com/in/ada-lovelace?x=1",
+                "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
+            }
+        ],
+    }
+    page.script(
+        "evaluate:voyager_conversations_fetch",
+        {"body": json.dumps(geo)},
+        {"body": json.dumps(results)},
+    )
+    extractor = _extractor(page)
+    async with boundaries(recorder, clock):
+        with recorder.context("find_people", "search"):
+            arguments = {"keywords": "engineer", "location": "United Kingdom"}
+            result = await extractor.find_people("engineer", location="United Kingdom")
+    page.assert_clean()
+    return recorder.trace({"method": "find_people", "arguments": arguments}, result)
+
+
 async def _person_extra_scenario(method: str) -> dict[str, Any]:
     """Record what the two paged person reads do to the page.
 
@@ -1594,6 +1800,10 @@ TOOL_FACADE_METHODS = {
     "get_person",
     "get_mutual_connections",
     "get_person_posts",
+    "find_people",
+    "get_profile_views",
+    "get_recruiter_views",
+    "invite_person",
 }
 COMPATIBILITY_METHODS = {"get_page_text", "click_button_by_text"}
 
@@ -1672,6 +1882,10 @@ async def build_policy_traces() -> dict[str, dict[str, Any]]:
         "invitations.json": await _invitations_scenario(),
         "thread.json": await _thread_scenario(),
         "person.json": await _person_scenario(),
+        "people-search.json": await _people_search_scenario(),
+        "profile-views.json": await _profile_views_scenario(),
+        "recruiter-views.json": await _recruiter_views_scenario(),
+        "invite-person.json": await _invite_person_scenario(),
         "person-mutual.json": await _person_extra_scenario("get_mutual_connections"),
         "person-posts.json": await _person_extra_scenario("get_person_posts"),
         "message-search.json": await _message_search_scenario(),

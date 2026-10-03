@@ -53,6 +53,8 @@ An MCP server that connects AI assistants like Claude to LinkedIn through your o
 | `send_message` | Compose/send a new message to a LinkedIn user (requires confirmation; profile-based targeting may open a separate DM instead of replying in an existing thread — see #483) |
 | `get_mutual_connections` | Page through the connections you share with a person, with LinkedIn's own total and its suggested introduction ask for each. These are the people who could introduce you |
 | `get_person_posts` | Read a person's posts and reposts from the API, with real timestamps, engagement counts, and the original of anything reshared |
+| `get_profile_views` | Read every viewer of your profile from LinkedIn's API, newest first or by relevance, for 7 to 365 days, filtered by interesting-viewer type, company, industry or location. Private viewers keep their title and company where LinkedIn shows them |
+| `get_recruiter_views` | Read which recruiters viewed your profile, by company, with LinkedIn's note on whether you would be a top applicant and a link to that company's open roles |
 | `reply_to_thread` | Reply inside an existing messaging thread, named by its thread id or `thread_url` (requires confirmation). Pinned to that thread: if LinkedIn opens anything else, nothing is typed. Use this instead of `send_message` when the conversation already exists, including InMail and Open Profile threads the profile-based path cannot reach |
 | `get_company_profile` | Extract company information with explicit section selection (posts, jobs); about-section references may include a `company_urn` entry carrying the numeric id used by LinkedIn's people-search `currentCompany` URL facet |
 | `get_company_posts` | Get recent posts from a company's LinkedIn feed |
