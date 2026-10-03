@@ -74,6 +74,15 @@ TOOL_DELEGATES = {
     "invite_person": "invite_person",
     "find_jobs": "find_jobs",
     "get_job": "get_job",
+    "saved_jobs": "saved_jobs",
+    "my_person": "my_person",
+    "company_record": "company_record",
+    "company_posts": "company_posts",
+    "company_people": "company_people",
+    "find_companies": "find_companies",
+    "find_posts": "find_posts",
+    "home_feed": "home_feed",
+    "sidebar_people": "sidebar_people",
 }
 
 
@@ -124,6 +133,9 @@ async def test_constructor_export_and_dependency_use_the_same_facade(monkeypatch
         "_recruiter_views",
         "_voyager_connect",
         "_voyager_jobs",
+        "_voyager_saved_jobs",
+        "_voyager_company",
+        "_voyager_content",
     }
     assert set(vars(extractor)) == expected_state
     assert type(constructed) is LinkedInExtractor
@@ -171,8 +183,17 @@ async def test_registered_tools_and_extractor_delegates_are_counted_separately()
         "invite_person",
         "find_jobs",
         "get_job",
+        "saved_jobs",
+        "my_person",
+        "company_record",
+        "company_posts",
+        "company_people",
+        "find_companies",
+        "find_posts",
+        "home_feed",
+        "sidebar_people",
     }
-    assert len(TOOL_DELEGATES) == 33
+    assert len(TOOL_DELEGATES) == 42
     assert set(TOOL_DELEGATES.values()) == TOOL_FACADE_METHODS
     assert "close_session" not in TOOL_DELEGATES
 
@@ -180,21 +201,19 @@ async def test_registered_tools_and_extractor_delegates_are_counted_separately()
 async def test_company_posts_delegate_matches_registered_tool_consumer():
     tool = await create_mcp_server().get_tool("get_company_posts")
     assert isinstance(tool, FunctionTool)
+    # The served get_company_posts is this fork's API reader now, so its
+    # consumer is the facade's company_posts and neither page-driven delegate.
     extractor = SimpleNamespace(
-        extract_page=AsyncMock(
-            return_value=SimpleNamespace(text="posts", references=[], error=None)
-        ),
+        extract_page=AsyncMock(),
         scrape_company=AsyncMock(),
+        company_posts=AsyncMock(return_value={"posts": []}),
     )
     context = SimpleNamespace(report_progress=AsyncMock())
 
     await tool.fn("example", context, extractor=extractor)
 
-    delegate = getattr(extractor, TOOL_DELEGATES["get_company_posts"])
-    delegate.assert_awaited_once()
-    extractor.extract_page.assert_awaited_once_with(
-        "https://www.linkedin.com/company/example/posts/", section_name="posts"
-    )
+    extractor.company_posts.assert_awaited_once_with("example", count=10, start=0)
+    extractor.extract_page.assert_not_awaited()
     extractor.scrape_company.assert_not_awaited()
 
 
@@ -548,7 +567,7 @@ def test_facade_methods_are_exactly_the_frozen_coroutine_surface():
     }
 
     assert actual == expected
-    assert len(TOOL_FACADE_METHODS) == 33
+    assert len(TOOL_FACADE_METHODS) == 42
     assert len(COMPATIBILITY_METHODS) == 2
 
 

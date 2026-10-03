@@ -98,6 +98,15 @@ SUPERSEDED: dict[str, str] = {
     "connect_with_person": "connect_with_person",
     "search_jobs": "search_jobs",
     "get_job_details": "get_job_details",
+    "get_saved_jobs": "get_saved_jobs",
+    "get_my_profile": "get_my_profile",
+    "get_company_profile": "get_company_profile",
+    "get_company_posts": "get_company_posts",
+    "get_company_employees": "get_company_employees",
+    "search_companies": "search_companies",
+    "search_posts": "search_posts",
+    "get_feed": "get_feed",
+    "get_sidebar_profiles": "get_sidebar_profiles",
 }
 
 #: The section names upstream's get_person_profile accepts.
@@ -1360,7 +1369,8 @@ def install_voyager_overlay(
         get_job_details for the full posting.
 
         Args:
-            keywords: Search keywords (e.g., "vice president product")
+            keywords: Search keywords (e.g., "vice president product"). May
+                be "" when company_id is given, to list that company's jobs.
             ctx: FastMCP context for progress reporting
             location: Optional place name (e.g., "New York") or numeric geo
                 id. A name is resolved to LinkedIn's best matching place and
@@ -1490,3 +1500,556 @@ def install_voyager_overlay(
                 raise_tool_error(relogin_exc, "get_job_details")
         except Exception as e:
             raise_tool_error(e, "get_job_details")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Saved Jobs",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"job", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_saved_jobs(
+        ctx: Context,
+        max_pages: Annotated[int, Field(ge=1, le=10)] = 3,
+        stage: str = "saved",
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        List the jobs in your LinkedIn jobs tracker, by stage.
+
+        Saved jobs are the default. Returns job_ids that can be passed to
+        get_job_details for the full posting, and each job as a record.
+
+        Args:
+            ctx: FastMCP context for progress reporting
+            max_pages: Kept for compatibility and not used: a stage arrives in
+                one answer.
+            stage: Which tab of the tracker: "saved" (default), "draft" or
+                "clicked_apply" (LinkedIn shows these two together as In
+                Progress), "applied", "interview" or "archived".
+
+        Returns:
+            Dict with url, sections (saved_jobs -> text) and job_ids (the
+            standard shape), plus jobs, count and stage.
+
+            Each job has job_id, title, company, location, workplace
+            (On-site / Remote / Hybrid as LinkedIn words it), listed_at_iso,
+            original_listed_at_iso (earlier when the job was reposted), stage,
+            verified, url, and note when you wrote one on it.
+
+            Pass a job_id to get_job_details for the description, apply link
+            and company_id; pass that company_id to search_people or
+            search_jobs.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_saved_jobs"
+            )
+            logger.info("Reading jobs tracker (stage=%s)", stage)
+
+            await ctx.report_progress(
+                progress=0, total=100, message="Reading saved jobs"
+            )
+
+            result = await extractor.saved_jobs(max_pages=max_pages, stage=stage)
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_saved_jobs")
+        except Exception as e:
+            raise_tool_error(e, "get_saved_jobs")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get My Profile",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_my_profile(
+        ctx: Context,
+        sections: str | None = None,
+        max_scrolls: Annotated[int, Field(ge=1, le=50)] | None = None,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Read YOUR OWN LinkedIn profile, whole, from LinkedIn's API.
+
+        The same record get_person_profile returns for anyone else, for the
+        signed-in member: no username is needed.
+
+        Args:
+            ctx: FastMCP context for progress reporting
+            sections: Comma-separated section names, kept for compatibility.
+                Every profile section is ALWAYS returned, so naming them
+                changes nothing. Only "posts" adds something: your ten most
+                recent posts. Unrecognised names come back in
+                unknown_sections.
+            max_scrolls: Kept for compatibility and ignored.
+
+        Returns:
+            Dict with url (your real profile URL) and sections (main_profile
+            -> text), plus identity (with public_identifier and profile_urn),
+            contact, positions, education, skills, certifications and the
+            other sections, each {items, returned, total, complete}, as in
+            get_person_profile. relationship is "self"; there are no mutual
+            connections or common_ground for your own profile.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_my_profile"
+            )
+            logger.info("Reading own profile")
+
+            await ctx.report_progress(progress=0, total=100, message="Reading profile")
+
+            result = await extractor.my_person()
+
+            requested = {
+                name.strip().lower()
+                for name in (sections or "").split(",")
+                if name.strip()
+            }
+            unknown = sorted(requested - _PERSON_SECTIONS)
+            if unknown:
+                result["unknown_sections"] = unknown
+            if "posts" in requested:
+                # A profile with no public identifier is still read by id.
+                identity = result.get("identity") or {}
+                own = (
+                    identity.get("public_identifier")
+                    or (identity.get("profile_urn") or "").rsplit(":", 1)[-1]
+                )
+                posts = await extractor.get_person_posts(own, count=10)
+                result["sections"]["posts"] = posts["sections"]["posts"]
+                result["posts"] = posts["posts"]
+                result["posts_next_cursor"] = posts["next_cursor"]
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_my_profile")
+        except Exception as e:
+            raise_tool_error(e, "get_my_profile")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Company Profile",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"company", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_company_profile(
+        company_name: str,
+        ctx: Context,
+        sections: str | None = None,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get a company's LinkedIn profile from LinkedIn's API.
+
+        Args:
+            company_name: LinkedIn company name from its URL (e.g., "docker",
+                "anthropic"). A full company URL is accepted too.
+            ctx: FastMCP context for progress reporting
+            sections: Comma-separated extras: "posts" (its ten most recent
+                posts) and "jobs" (its open jobs, first page). The company
+                itself is always returned. Unrecognised names come back in
+                unknown_sections.
+
+        Returns:
+            Dict with url and sections (about -> text, plus posts and jobs
+            when asked), and:
+
+            company: name, universal_name, company_id, tagline, description,
+                website, industries, staff_count, staff_range, headquarters,
+                founded_year, company_type, specialities, followers, url.
+            company_id: the numeric id, also at the top level. Pass it to
+                search_people(current_company=...), search_jobs(company_id=...)
+                or get_profile_views(company_id=...).
+            posts / jobs: records, when those sections were asked for, as
+                get_company_posts and search_jobs return them.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_company_profile"
+            )
+            await ctx.report_progress(progress=0, total=100, message="Reading")
+
+            result = await extractor.company_record(company_name)
+            requested = {
+                name.strip().lower()
+                for name in (sections or "").split(",")
+                if name.strip()
+            }
+            unknown = sorted(requested - {"posts", "jobs"})
+            if unknown:
+                result["unknown_sections"] = unknown
+            if "posts" in requested:
+                posts = await extractor.company_posts(company_name, count=10)
+                result["sections"]["posts"] = posts["sections"]["posts"]
+                result["posts"] = posts["posts"]
+            if "jobs" in requested and result.get("company_id"):
+                jobs = await extractor.find_jobs(
+                    "", company_id=result["company_id"], max_pages=1
+                )
+                result["sections"]["jobs"] = jobs["sections"]["search_results"]
+                result["jobs"] = jobs["jobs"]
+                result["job_ids"] = jobs["job_ids"]
+                result["jobs_total"] = jobs["total"]
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_company_profile")
+        except Exception as e:
+            raise_tool_error(e, "get_company_profile")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Company Posts",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"company", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_company_posts(
+        company_name: str,
+        ctx: Context,
+        count: int = 10,
+        start: int = 0,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get ONE page of a company's posts from LinkedIn's API.
+
+        Args:
+            company_name: LinkedIn company name from its URL, or a company URL.
+            ctx: FastMCP context for progress reporting
+            count: how many to ask for, 1 to 50. Defaults to 10.
+            start: 0-based offset. Paging is the caller's loop.
+
+        Returns:
+            Dict with url and sections (posts -> text), plus posts, count,
+            start, page_size, total (LinkedIn's count) and at_end.
+
+            Each post has url, posted_at_iso, author, text and, where LinkedIn
+            returned them, likes, comments and shares. A repost carries
+            repost_header and the original's author and text.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_company_posts"
+            )
+            await ctx.report_progress(progress=0, total=100, message="Reading")
+
+            result = await extractor.company_posts(
+                company_name, count=count, start=start
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_company_posts")
+        except Exception as e:
+            raise_tool_error(e, "get_company_posts")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Company Employees",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"company", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_company_employees(
+        company_name: str,
+        ctx: Context,
+        keywords: str | None = None,
+        start: int = 0,
+        count: int = 12,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        List people at a company and its demographics, from LinkedIn's API.
+
+        The demographics are what this tool adds over search_people: where
+        employees live, where they studied, what they do, their skills and
+        fields of study, each with a count, plus how many are 1st, 2nd and
+        3rd degree to you.
+
+        Args:
+            company_name: LinkedIn company name from its URL, or a company URL.
+            ctx: FastMCP context for progress reporting
+            keywords: Optional filter by name, title or skill.
+            start: 0-based offset. Paging is the caller's loop.
+            count: how many people to ask for, 1 to 50. Defaults to 12.
+
+        Returns:
+            Dict with url, sections (employees -> text) and references (the
+            standard shape), plus:
+
+            people: records with name, headline, location, public_identifier
+                (pass to get_person_profile), profile_urn, degree and insight.
+            demographics: locations, schools, functions, skills,
+                fields_of_study and degrees, each a list of {name, count, id}.
+                A location id is a geo id search_people and get_profile_views
+                take.
+            company_id, count, start, page_size, total (LinkedIn's count of
+            people there) and at_end.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_company_employees"
+            )
+            await ctx.report_progress(progress=0, total=100, message="Reading")
+
+            result = await extractor.company_people(
+                company_name, keywords=keywords, start=start, count=count
+            )
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_company_employees")
+        except Exception as e:
+            raise_tool_error(e, "get_company_employees")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Search Companies",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"company", "search"},
+        exclude_args=["extractor"],
+    )
+    async def search_companies(
+        keywords: str,
+        ctx: Context,
+        start: int = 0,
+        count: int = 10,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Search for companies on LinkedIn, ONE page from LinkedIn's search API.
+
+        Args:
+            keywords: Search keywords (e.g., "fintech", "anthropic").
+            ctx: FastMCP context for progress reporting
+            start: 0-based offset. Paging is the caller's loop.
+            count: how many to ask for, 1 to 50. Defaults to 10.
+
+        Returns:
+            Dict with url, sections (search_results -> text) and references
+            (the standard shape), plus companies, count, start, page_size and
+            at_end.
+
+            Each company has name, company_id (what every company filter
+            takes), universal_name (what get_company_profile takes), detail
+            (industry and place), followers_text, summary and url.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="search_companies"
+            )
+            await ctx.report_progress(progress=0, total=100, message="Reading")
+
+            result = await extractor.find_companies(keywords, start=start, count=count)
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "search_companies")
+        except Exception as e:
+            raise_tool_error(e, "search_companies")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Search Posts",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"post", "search"},
+        exclude_args=["extractor"],
+    )
+    async def search_posts(
+        keywords: str,
+        ctx: Context,
+        date_posted: str | None = None,
+        max_pages: Annotated[int, Field(ge=1, le=10)] = 3,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Search LinkedIn posts globally by keyword, through LinkedIn's own
+        results pager. Unlike the page, nothing is added to your search
+        history.
+
+        Use this to catch informal hiring posts ("we're hiring", "join our
+        team") that often appear before a formal job listing exists.
+
+        Args:
+            keywords: Search keywords (e.g., "AI automation hiring").
+            ctx: FastMCP context for progress reporting
+            date_posted: Optional recency filter: "past-24h", "past-week" or
+                "past-month" (the "past_24_hours" / "past_week" /
+                "past_month" spellings are accepted too). Anything else is
+                refused.
+            max_pages: Pages of 10 posts to read (1-10, default 3).
+
+        Returns:
+            Dict with url, sections (search_results -> text) and references
+            (the standard shape), plus posts, count and complete.
+
+            Each post has author, text, url (its permalink), posted_at_iso
+            (exact, from the post's id) and posted_text ("3d").
+            author_public_identifier is set when the author is a member: pass
+            it to get_person_profile. A company page's post has author_slug
+            instead.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="search_posts"
+            )
+            await ctx.report_progress(progress=0, total=100, message="Reading")
+
+            try:
+                result = await extractor.find_posts(
+                    keywords, date_posted=date_posted, max_pages=max_pages
+                )
+            except FilterValidationError as e:
+                raise ToolError(str(e)) from e
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "search_posts")
+        except Exception as e:
+            raise_tool_error(e, "search_posts")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Feed",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"feed", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_feed(
+        ctx: Context,
+        num_posts: Annotated[int, Field(ge=1, le=50)] = 10,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get posts from your LinkedIn home feed, from LinkedIn's API.
+
+        Args:
+            ctx: FastMCP context for progress reporting
+            num_posts: How many feed entries to ask for (1-50, default 10).
+                Promoted entries are dropped, so fewer can come back.
+
+        Returns:
+            Dict with url, sections (feed -> text) and references["feed"]
+            (every entry kind "feed_post", relative url), plus posts and count.
+
+            Each post has url, posted_at_iso, author, text and, where LinkedIn
+            returned them, likes, comments and shares. repost_header says why
+            it is in your feed when someone you follow liked or reposted it
+            ("Luan Lam likes this").
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_feed"
+            )
+            await ctx.report_progress(progress=0, total=100, message="Reading")
+
+            result = await extractor.home_feed(num_posts=num_posts)
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_feed")
+        except Exception as e:
+            raise_tool_error(e, "get_feed")  # NoReturn
+
+    @mcp.tool(
+        timeout=tool_timeout,
+        title="Get Sidebar Profiles",
+        annotations={"readOnlyHint": True, "openWorldHint": True},
+        tags={"person", "scraping"},
+        exclude_args=["extractor"],
+    )
+    async def get_sidebar_profiles(
+        linkedin_username: str,
+        ctx: Context,
+        extractor: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get the profiles LinkedIn suggests beside a person's profile.
+
+        Reads the two sidebar sections through the requests the profile page
+        makes for them, without opening the page.
+
+        Args:
+            linkedin_username: The /in/ public identifier or a profile URL.
+            ctx: FastMCP context for progress reporting
+
+        Returns:
+            Dict with url and sidebar_profiles mapping section key to a list of
+            /in/username/ paths: "more_profiles_for_you" and
+            "people_you_may_know". Only sections LinkedIn returned people for
+            are included.
+        """
+        try:
+            extractor = extractor or await get_ready_extractor(
+                ctx, tool_name="get_sidebar_profiles"
+            )
+            await ctx.report_progress(progress=0, total=100, message="Reading")
+
+            result = await extractor.sidebar_people(linkedin_username)
+
+            await ctx.report_progress(progress=100, total=100, message="Complete")
+
+            return result
+
+        except AuthenticationError as e:
+            try:
+                await handle_auth_error(e, ctx)
+            except Exception as relogin_exc:
+                raise_tool_error(relogin_exc, "get_sidebar_profiles")
+        except Exception as e:
+            raise_tool_error(e, "get_sidebar_profiles")  # NoReturn

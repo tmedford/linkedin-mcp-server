@@ -14,10 +14,15 @@ from linkedin_mcp_server.core.exceptions import (
     LinkedInScraperException,
 )
 from linkedin_mcp_server.voyager import person as person_module
+from linkedin_mcp_server.voyager import jobs as jobs_module
 from linkedin_mcp_server.voyager.person import (
     VoyagerPersonReader,
     common_ground,
     overlap,
+    parse_interests,
+    parse_network,
+    parse_page_cards,
+    parse_posts,
     parse_profile,
 )
 
@@ -186,13 +191,30 @@ class _Page:
         self._answers = list(answers)
         self.requests: list[Any] = []
 
+    #: The follower and connection read is answered apart from the queue: it
+    #: is best effort and sits between reads the tests below count by position.
+    network: Any = {"error": "HTTP 400", "status": 400}
+
+    cards: Any = {"status": 500, "text": ""}
+
     async def evaluate(self, _program: str, argument: Any) -> Any:
+        if isinstance(argument, dict):
+            self.card_requests = [*getattr(self, "card_requests", []), argument]
+            return self.cards
+        if "following?q=followedEntities" in argument:
+            return {"error": "HTTP 400", "status": 400}
+        if "TopCardSupplementary" in str(argument):
+            self.network_requests = [*getattr(self, "network_requests", []), argument]
+            return self.network
         self.requests.append(argument)
         return self._answers.pop(0)
 
 
 def _reader(*answers: Any) -> tuple[VoyagerPersonReader, _Page]:
     page = _Page(*answers)
+    # Taking the route headers opens a page once per browser session, which
+    # the saved-jobs tests cover; here they are already held.
+    setattr(jobs_module, "_PREFETCH_HEADERS", (page, {"x-li-track": "{}"}))
     session = MagicMock()
     session.page = page
     return VoyagerPersonReader(session, MagicMock()), page
@@ -203,6 +225,8 @@ def _no_cached_profile():
     person_module.forget_my_profile()
     yield
     person_module.forget_my_profile()
+    # `_reader` holds route headers for its page; nothing outlives the test.
+    jobs_module.forget_prefetch_headers()
 
 
 MINE = _profile(
@@ -752,3 +776,242 @@ def test_a_position_carries_the_company_id_company_filters_take():
     # One field for a company's id, and it is the one the filters take.
     assert position["company_id"] == "229978"
     assert "company_urn" not in position
+
+
+async def test_my_own_profile_is_get_person_on_the_signed_in_member():
+    from unittest.mock import AsyncMock, MagicMock
+
+    reader = VoyagerPersonReader(MagicMock(), MagicMock())
+    setattr(
+        reader, "_mailbox_urn", AsyncMock(return_value="urn:li:fsd_profile:ACoAA-me")
+    )
+    setattr(reader, "get_person", AsyncMock(return_value={"relationship": "self"}))
+
+    result = await reader.get_me()
+
+    # No comparison against oneself, and the id is taken from /me, not asked for.
+    getattr(reader, "get_person").assert_awaited_once_with(
+        "ACoAA-me", compare_to_me=False
+    )
+    assert result == {"relationship": "self"}
+
+
+def test_a_relayed_update_takes_the_originals_tally_and_the_actors_headline():
+    # "X likes this": the update has its own activity, the counts sit under
+    # the original's, and the update's social detail says which.
+    update = "urn:li:fs_updateV2:(urn:li:activity:7511806835692302337,X)"
+    payload = {
+        "data": {"*elements": [update]},
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.feed.render.UpdateV2",
+                "entityUrn": update,
+                "updateMetadata": {"urn": "urn:li:activity:7511806835692302337"},
+                "actor": {
+                    "name": {"text": "Product Growth"},
+                    "description": {"text": "58,884 followers"},
+                },
+                "*socialDetail": "urn:li:fs_socialDetail:urn:li:activity:7509658068725612544",
+            },
+            {
+                "$type": "com.linkedin.voyager.feed.SocialDetail",
+                "entityUrn": "urn:li:fs_socialDetail:urn:li:activity:7509658068725612544",
+                "*totalSocialActivityCounts": "urn:li:fs_socialActivityCounts:urn:li:activity:7509658068725612544",
+            },
+            {
+                "$type": "com.linkedin.voyager.feed.shared.SocialActivityCounts",
+                "entityUrn": "urn:li:fs_socialActivityCounts:urn:li:activity:7509658068725612544",
+                "urn": "urn:li:activity:7509658068725612544",
+                "numLikes": 83,
+                "numComments": 0,
+                "numShares": 9,
+            },
+        ],
+    }
+
+    post = parse_posts(payload)[0]
+
+    assert (post["likes"], post["comments"], post["shares"]) == (83, 0, 9)
+    assert post["author_headline"] == "58,884 followers"
+
+
+def test_the_summary_is_unescaped_and_a_position_keeps_its_links():
+    payload = _profile(
+        ADA, "Ada Lovelace", jobs=[("Zuora", ZUORA, "Eng", "2020-01", None)]
+    )
+    profile = next(e for e in payload["included"] if e.get("entityUrn") == ADA)
+    profile["summary"] = "Product &amp; Engineering"
+    position = next(e for e in payload["included"] if e.get("title") == "Eng")
+    position["*profileTreasuryMediaPosition"] = "urn:media"
+    payload["included"] += [
+        {"entityUrn": "urn:media", "*elements": ["urn:m1"]},
+        {
+            "entityUrn": "urn:m1",
+            "title": "Press release",
+            "data": {"Url": "https://example.com/pr"},
+        },
+    ]
+
+    parsed = parse_profile(payload)
+
+    assert parsed["identity"]["summary"] == "Product & Engineering"
+    assert parsed["positions"]["items"][0]["media"] == [
+        {"title": "Press release", "url": "https://example.com/pr"}
+    ]
+
+
+def test_network_counts_are_read_and_hidden_connections_are_absent_not_zero():
+    profile = "urn:li:fsd_profile:A"
+    payload = {
+        "data": {"*elements": [profile]},
+        "included": [
+            {
+                "entityUrn": profile,
+                "*followingState": "urn:follow",
+                "*connections": "urn:conn",
+            },
+            {"entityUrn": "urn:follow", "followerCount": 2406},
+            {"entityUrn": "urn:conn", "*elements": [], "paging": {"total": 2396}},
+        ],
+    }
+
+    assert parse_network(payload) == {"followers": 2406, "connections": 2396}
+
+    payload["included"][2] = {"entityUrn": "urn:conn", "*elements": [], "paging": {}}
+    assert parse_network(payload) == {"followers": 2406}
+
+
+async def test_a_profile_carries_its_network_counts_and_none_when_unread():
+    reader, page = _reader(_body(MINE), _relationship("self"), CONTACT)
+    page.network = _body(
+        {
+            "data": {"*elements": [ME]},
+            "included": [
+                {"entityUrn": ME, "*followingState": "urn:follow"},
+                {"entityUrn": "urn:follow", "followerCount": 2406},
+            ],
+        }
+    )
+
+    result = await reader.get_person("taylor-medford")
+
+    assert result["network"] == {"followers": 2406}
+    assert "memberIdentity=taylor-medford" in page.network_requests[0]
+
+    reader, _ = _reader(_body(MINE), _relationship("self"), CONTACT)
+    assert (await reader.get_person("taylor-medford"))["network"] is None
+
+
+def _card(name: str, *children: Any) -> str:
+    return json.dumps(
+        [
+            "$",
+            "div",
+            None,
+            {"viewTrackingSpecs": {"viewName": name}, "children": list(children)},
+        ]
+    )
+
+
+def _cards_stream() -> str:
+    rows = {
+        "1": _card(
+            "profile-card-about",
+            ["$", "h2", None, {"children": ["Info"]}],
+            "First paragraph.",
+            ["$", "br", None, {}],
+            ["$", "br", None, {}],
+            "$$5M raised & more.",
+        ),
+        "2": _card("profile-card-highlights", "Highlights", "You both work at Zuora"),
+        "3": _card("insights-wvmp", "1,530 profile views", "Discover"),
+        "4": _card("insights-search-appearances", "144 search appearances"),
+        "5": _card("profile-opento-enrolled-career-interest", "Open to work"),
+    }
+    return "\n".join(f"{key}:{value}" for key, value in rows.items())
+
+
+def test_page_cards_are_found_by_view_name_and_keep_paragraph_breaks():
+    assert parse_page_cards(_cards_stream()) == {
+        # The heading is dropped by position, whatever it says.
+        "about": "First paragraph.\n\n$5M raised & more.",
+        "highlights": ["You both work at Zuora"],
+        "analytics": {"profile_views": 1530, "search_appearances": 144},
+        "open_to_work": ["Open to work"],
+    }
+    assert parse_page_cards('0:["$","div",null,{}]') == {}
+
+
+async def test_the_pages_about_replaces_the_flattened_summary():
+    reader, page = _reader(_body(MINE), _relationship("self"), CONTACT)
+    page.cards = {"status": 200, "text": _cards_stream()}
+    result = await reader.get_person("taylor-medford")
+
+    assert result["identity"]["summary"] == "First paragraph.\n\n$5M raised & more."
+    assert "First paragraph.\n\n$5M" in result["sections"]["main_profile"]
+    assert result["analytics"]["profile_views"] == 1530
+    assert "about" not in result
+    sent = page.card_requests[0]
+    assert sent["url"] == "https://www.linkedin.com/flagship-web/in/taylor-medford/"
+    assert json.loads(sent["body"])["isPrefetch"] is True
+
+
+def test_interests_name_each_kind_of_entity_and_carry_the_total():
+    payload = {
+        "data": {
+            "paging": {"total": 35},
+            "elements": [
+                {"*entity": "urn:li:fs_miniCompany:1001", "*followingInfo": "urn:f1"},
+                {"*entity": "urn:li:fs_miniProfile:A", "*followingInfo": "urn:f2"},
+                {"*entity": "urn:li:fs_miniGroup:9"},
+            ],
+        },
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.entities.shared.MiniCompany",
+                "entityUrn": "urn:li:fs_miniCompany:1001",
+                "name": "Acme",
+                "universalName": "acme",
+            },
+            {"entityUrn": "urn:f1", "followerCount": 12},
+            {
+                "$type": "com.linkedin.voyager.identity.shared.MiniProfile",
+                "entityUrn": "urn:li:fs_miniProfile:A",
+                "firstName": "Ada",
+                "lastName": "Lovelace",
+                "publicIdentifier": "ada",
+            },
+            {"entityUrn": "urn:li:fs_miniGroup:9", "groupName": "Rails"},
+        ],
+    }
+
+    section = parse_interests(payload)
+
+    assert section["items"] == [
+        {
+            "name": "Acme",
+            "company_id": "1001",
+            "universal_name": "acme",
+            "followers": 12,
+        },
+        {"name": "Ada Lovelace", "public_identifier": "ada"},
+        {"name": "Rails"},
+    ]
+    assert (section["total"], section["complete"]) == (35, False)
+
+
+async def test_a_card_read_that_throws_does_not_fail_the_profile():
+    reader, page = _reader(_body(MINE), _relationship("self"), CONTACT)
+    answer = page.evaluate
+
+    async def evaluate(program: str, argument: Any) -> Any:
+        if isinstance(argument, dict):
+            raise RuntimeError("Target page, context or browser has been closed")
+        return await answer(program, argument)
+
+    setattr(page, "evaluate", evaluate)
+
+    result = await reader.get_person("taylor-medford")
+
+    assert result["identity"]["name"] == "Taylor Medford"
+    assert "analytics" not in result

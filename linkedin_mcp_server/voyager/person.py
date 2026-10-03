@@ -56,6 +56,26 @@ asking for it and reading the answer, the same day.
 
 The legacy ``profileContactInfo`` and ``networkinfo`` routes answer HTTP 410.
 
+**What only the profile page holds. Measured on 2026-10-03.**
+
+- ``summary`` comes back from REST as one run of text for some members (two
+  of five read), paragraphs joined with nothing between them and ``&`` as
+  ``&amp;``. The page shows the breaks. The client loads a profile by POSTing
+  to ``/flagship-web/in/<identifier>/`` with ``isPrefetch: true``; the same
+  call, made without opening the page, answered with the profile's cards as a
+  component stream. ``profile-card-about`` holds the About text with ``br``
+  elements between paragraphs.
+- The same answer holds ``profile-card-highlights`` (what LinkedIn says you
+  share: "You both work at Zuora"), and on one's own profile the analytics
+  cards ``insights-wvmp``, ``insights-content-impressions`` and
+  ``insights-search-appearances`` (530, 0 and 144, as the page showed) and
+  ``profile-opento-enrolled-career-interest`` (the open-to-work card).
+  Cards are found by view name, never by heading.
+- ``identity/profiles/<id>/following?q=followedEntities&entityType=<T>``
+  lists what a member follows, with ``paging.total``. ``INFLUENCER``,
+  ``COMPANY``, ``GROUP`` and ``SCHOOL`` answered (1, 35, 8 and 3);
+  ``NEWSLETTER`` answered 400.
+
 **Not measured:** whether these reads register as a profile view. The profile
 page's own tracking is a separate request this does not make, but that has not
 been confirmed from the other side.
@@ -63,7 +83,10 @@ been confirmed from the other side.
 
 from __future__ import annotations
 
+import html
+import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
@@ -81,6 +104,10 @@ _PROFILES = "https://www.linkedin.com/voyager/api/identity/dash/profiles"
 _DECORATION = "com.linkedin.voyager.dash.deco.identity.profile."
 FULL_PROFILE = "FullProfileWithEntities-93"
 TOP_CARD = "WebTopCardCore-19"
+#: Follower and connection counts. Measured on 2026-10-03: a
+#: ``FollowingState.followerCount`` and the total of the ``*connections``
+#: collection, 2,406 and 2,396 where the page showed "2,406 followers".
+TOP_CARD_NETWORK = "TopCardSupplementary-166"
 CONTACT_INFO = "ProfileContactInfo-2"
 
 _LEGACY = "https://www.linkedin.com/voyager/api/identity"
@@ -88,6 +115,23 @@ _LEGACY = "https://www.linkedin.com/voyager/api/identity"
 #: How many mutual connections `get_person` reads inline. The rest are one
 #: `get_mutual_connections` call away, and `complete` says when there are more.
 MUTUAL_INLINE = 40
+
+_PROFILE_ROUTE = "https://www.linkedin.com/flagship-web/in/"
+#: Result key -> the card's view name on one's own profile.
+_ANALYTICS = {
+    "profile_views": "insights-wvmp",
+    "post_impressions": "insights-content-impressions",
+    "search_appearances": "insights-search-appearances",
+}
+#: Result key -> LinkedIn's entity type for what a member follows.
+INTEREST_TYPES = {
+    "top_voices": "INFLUENCER",
+    "companies": "COMPANY",
+    "groups": "GROUP",
+    "schools": "SCHOOL",
+}
+INTERESTS_PAGE = 50
+_LEADING_NUMBER = re.compile(r"\s*(\d[\d.,\u00a0\u202f ]*)")
 
 _ELEMENTS_PATH = "data['*elements']"
 _PROFILE_URN_PREFIX = "urn:li:fsd_profile:"
@@ -225,6 +269,18 @@ def parse_profile(payload: dict[str, Any]) -> dict[str, Any]:
                         **_range(row),
                         "location": row.get("locationName"),
                         "description": row.get("description"),
+                        # Links and files attached to the position.
+                        "media": [
+                            _clean(
+                                {
+                                    "title": item.get("title"),
+                                    "url": (item.get("data") or {}).get("Url"),
+                                }
+                            )
+                            for item in box.collection(
+                                row, "profileTreasuryMediaPosition"
+                            )[0]
+                        ],
                     }
                 )
             )
@@ -257,7 +313,10 @@ def parse_profile(payload: dict[str, Any]) -> dict[str, Any]:
                     if part
                 ),
                 "headline": profile.get("headline"),
-                "summary": profile.get("summary"),
+                # Stored HTML-escaped ("Product &amp; Engineering").
+                "summary": html.unescape(profile["summary"])
+                if isinstance(profile.get("summary"), str)
+                else None,
                 "public_identifier": profile.get("publicIdentifier"),
                 "profile_urn": urn,
                 "location": geo.get("defaultLocalizedName"),
@@ -521,6 +580,108 @@ def common_ground(mine: dict[str, Any], theirs: dict[str, Any]) -> dict[str, Any
     }
 
 
+def parse_network(payload: dict[str, Any]) -> dict[str, int]:
+    """Follower and connection counts from the supplementary top card.
+
+    A member who hides their connections has no total there, and the key is
+    then absent rather than zero.
+    """
+    box = _Payload(payload)
+    urns = (payload.get("data") or {}).get("*elements") or []
+    profile = box.get(urns[0]) if urns else {}
+    followers = box.get(profile.get("*followingState")).get("followerCount")
+    _, connections = box.collection(profile, "connections")
+    return {
+        key: value
+        for key, value in (("followers", followers), ("connections", connections))
+        if isinstance(value, int)
+    }
+
+
+def parse_page_cards(text: str) -> dict[str, Any]:
+    """What the profile page's own cards say, from its component stream."""
+    from linkedin_mcp_server.voyager.content import _named, _text_under
+    from linkedin_mcp_server.voyager.profile_views import _read_stream, _resolve
+
+    rows = _read_stream(text)
+
+    def card(name: str) -> list[str] | None:
+        found: list[dict[str, Any]] = []
+        for value in rows.values():
+            if isinstance(value, (list, dict)):
+                _named(value, name, found)
+        return _text_under(_resolve(found[0], rows), []) if found else None
+
+    def lines(name: str) -> list[str]:
+        return [part.strip() for part in card(name) or [] if part.strip()]
+
+    cards: dict[str, Any] = {}
+    about = card("profile-card-about")
+    if about:
+        # The heading is the card's first text; the body follows it.
+        first = next((i for i, part in enumerate(about) if part.strip()), None)
+        body = "".join(about[first + 1 :]).strip() if first is not None else ""
+        if body:
+            cards["about"] = body
+    highlights = lines("profile-card-highlights")[1:]
+    if highlights:
+        cards["highlights"] = highlights
+    analytics = {}
+    for key, name in _ANALYTICS.items():
+        number = _LEADING_NUMBER.match(next(iter(lines(name)), ""))
+        if number:
+            analytics[key] = int(re.sub(r"\D", "", number.group(1)))
+    if analytics:
+        cards["analytics"] = analytics
+    open_to = lines("profile-opento-enrolled-career-interest")
+    if open_to:
+        cards["open_to_work"] = open_to
+    return cards
+
+
+def parse_interests(payload: dict[str, Any]) -> dict[str, Any]:
+    """One kind of thing a member follows, with LinkedIn's total."""
+    data = payload.get("data") or {}
+    by_urn = {
+        entity.get("entityUrn"): entity
+        for entity in payload.get("included") or []
+        if isinstance(entity, dict)
+    }
+    rows = []
+    for element in data.get("elements") or []:
+        entity = by_urn.get(element.get("*entity")) or {}
+        following = by_urn.get(element.get("*followingInfo")) or {}
+        name = (
+            entity.get("name")
+            or entity.get("groupName")
+            or entity.get("schoolName")
+            or " ".join(
+                part
+                for part in (entity.get("firstName"), entity.get("lastName"))
+                if part
+            )
+        )
+        if not name:
+            continue
+        kind = str(entity.get("$type") or "")
+        rows.append(
+            _clean(
+                {
+                    "name": name,
+                    "headline": entity.get("occupation"),
+                    "public_identifier": entity.get("publicIdentifier"),
+                    "company_id": company_id(entity.get("entityUrn"))
+                    if kind.endswith(".MiniCompany")
+                    else None,
+                    "universal_name": entity.get("universalName"),
+                    "followers": following.get("followerCount"),
+                }
+            )
+        )
+    total = (data.get("paging") or {}).get("total")
+    return _section(rows, total if isinstance(total, int) else None)
+
+
 def parse_contact(payload: dict[str, Any]) -> dict[str, Any]:
     """The contact fields this viewer is allowed to see, absent ones dropped."""
     profile: dict[str, Any] = {}
@@ -618,6 +779,16 @@ def parse_mutual(
     return rows, total if isinstance(total, int) else None, found
 
 
+def render_posts(posts: list[dict[str, Any]]) -> str:
+    """Posts as readable text, for consumers that read `sections`."""
+    lines = []
+    for post in posts:
+        who = post.get("repost_header") or post.get("author") or "?"
+        body = post.get("text") or post.get("reshared_text") or ""
+        lines.append(f"{who} - {post.get('posted_at_iso')}\n{body}")
+    return "\n\n".join(lines)
+
+
 def _activity_time(urn: str) -> str | None:
     """When an activity was created, read from its id.
 
@@ -645,6 +816,15 @@ def parse_posts(payload: dict[str, Any]) -> list[dict[str, Any]]:
         for entity in included
         if str(entity.get("$type", "")).endswith(".SocialActivityCounts")
     }
+    # An update that only relays another ("X likes this", a plain repost)
+    # carries the original's tally, under the original's activity. The
+    # update's own social detail names which one, so it is followed first.
+    details = {
+        entity.get("entityUrn"): entity
+        for entity in included
+        if str(entity.get("$type", "")).endswith(".SocialDetail")
+    }
+    tallies = {entity.get("entityUrn"): entity for entity in counts.values()}
 
     def text(node: Any) -> str | None:
         inner = (node or {}).get("text") if isinstance(node, dict) else None
@@ -658,7 +838,12 @@ def parse_posts(payload: dict[str, Any]) -> list[dict[str, Any]]:
         activity = (update.get("updateMetadata") or {}).get("urn") or ""
         actor = update.get("actor") or {}
         original = updates.get(update.get("*resharedUpdate")) or {}
-        tally = counts.get(activity) or {}
+        detail = details.get(update.get("*socialDetail")) or {}
+        tally = (
+            tallies.get(detail.get("*totalSocialActivityCounts"))
+            or counts.get(activity)
+            or {}
+        )
         posts.append(
             _clean(
                 {
@@ -668,6 +853,8 @@ def parse_posts(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     else None,
                     "posted_at_iso": _activity_time(activity),
                     "author": text({"text": actor.get("name")}),
+                    # A member's headline, or a page's follower count.
+                    "author_headline": text({"text": actor.get("description")}),
                     # Present when the member reposted someone else's update
                     # without adding to it; `author` is then the original's.
                     "repost_header": text(
@@ -745,6 +932,80 @@ class VoyagerPersonReader(VoyagerReader):
             keys = sorted(key.lstrip("*") for key in union if not key.startswith("$"))
             return keys[0] if keys else None
         return None
+
+    async def _network(self, identifier: str) -> dict[str, int] | None:
+        """Follower and connection counts, or None when unread. Best effort."""
+        try:
+            payload = await self._fetch(self._url(identifier, TOP_CARD_NETWORK))
+        except (AuthenticationError, RateLimitError):
+            raise
+        except LinkedInScraperException as exc:
+            logger.info("Network counts unavailable: %s", exc)
+            return None
+        return parse_network(payload)
+
+    async def _page_cards(self, identifier: str) -> dict[str, Any] | None:
+        """The profile page's cards, or None when unread. Best effort."""
+        from linkedin_mcp_server.voyager.jobs import VoyagerSavedJobs
+        from linkedin_mcp_server.voyager.profile_views import _POST_STREAM_JS
+
+        try:
+            headers = await VoyagerSavedJobs(
+                self._session, self._navigator
+            )._prefetch_headers()
+        except (AuthenticationError, RateLimitError):
+            raise
+        except LinkedInScraperException as exc:
+            logger.info("Profile cards unavailable: %s", exc)
+            return None
+        # Best effort to the end: the profile itself is already read, so a
+        # page that navigated away or closed must not fail the whole call.
+        try:
+            answer = await self._session.page.evaluate(
+                _POST_STREAM_JS,
+                {
+                    "url": f"{_PROFILE_ROUTE}{quote(identifier, safe='')}/",
+                    "headers": headers,
+                    "body": json.dumps(
+                        {
+                            "requestedArguments": {
+                                "payload": {"vanityName": identifier},
+                                "states": [],
+                                "requestMetadata": {
+                                    "$type": "proto.sdui.common.RequestMetadata"
+                                },
+                                "screenId": "",
+                                "knownTemplateIds": [],
+                            },
+                            "isPrefetch": True,
+                        }
+                    ),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Profile cards unavailable for %s: %s", identifier, exc)
+            return None
+        if not isinstance(answer, dict) or answer.get("status") != 200:
+            logger.info("Profile cards unavailable for %s", identifier)
+            return None
+        return parse_page_cards(answer.get("text") or "")
+
+    async def _interests(self, member_id: str) -> dict[str, Any] | None:
+        """What the member follows, by kind, or None when unread. Best effort."""
+        interests: dict[str, Any] = {}
+        for key, kind in INTEREST_TYPES.items():
+            try:
+                payload = await self._fetch(
+                    f"{_LEGACY}/profiles/{quote(member_id, safe='')}/following"
+                    f"?q=followedEntities&count={INTERESTS_PAGE}&entityType={kind}"
+                )
+            except (AuthenticationError, RateLimitError):
+                raise
+            except LinkedInScraperException as exc:
+                logger.info("Interests (%s) unavailable: %s", kind, exc)
+                continue
+            interests[key] = parse_interests(payload)
+        return interests or None
 
     async def _contact(self, identifier: str) -> dict[str, Any] | None:
         """Contact fields, or None when the read itself failed. Best effort."""
@@ -869,14 +1130,9 @@ class VoyagerPersonReader(VoyagerReader):
             # A token equal to the one supplied is the server re-serving the
             # page just read; handing it back would loop the caller forever.
             token = None
-        lines = []
-        for post in posts:
-            who = post.get("repost_header") or post.get("author") or "?"
-            body = post.get("text") or post.get("reshared_text") or ""
-            lines.append(f"{who} - {post.get('posted_at_iso')}\n{body}")
         return {
             "url": f"{url}recent-activity/all/",
-            "sections": {"posts": "\n\n".join(lines)},
+            "sections": {"posts": render_posts(posts)},
             "posts": posts,
             "count": len(posts),
             "page_size": count,
@@ -908,6 +1164,14 @@ class VoyagerPersonReader(VoyagerReader):
         relationship = await self._relationship(identifier)
         contact = await self._contact(identifier)
         member_id = (profile["identity"].get("profile_urn") or "").rsplit(":", 1)[-1]
+        network = await self._network(identifier)
+        cards = await self._page_cards(
+            profile["identity"].get("public_identifier") or identifier
+        )
+        if cards and cards.get("about"):
+            # The page's About keeps the paragraph breaks REST drops.
+            profile["identity"]["summary"] = cards.pop("about")
+        interests = await self._interests(member_id) if member_id else None
 
         result: dict[str, Any] = {
             "url": person_profile_url(
@@ -920,6 +1184,13 @@ class VoyagerPersonReader(VoyagerReader):
             # None when the read failed; {} when it worked and the member
             # shares nothing with this viewer. Those are different answers.
             "contact": contact,
+            # None when unread, as with contact.
+            "network": network,
+            # What the member follows, by kind; None when unread.
+            "interests": interests,
+            # From the profile page's own cards: what LinkedIn says you share
+            # and, on your own profile, analytics and the open-to-work card.
+            **(cards or {}),
             **profile,
             "incomplete_sections": sorted(
                 name
@@ -940,6 +1211,16 @@ class VoyagerPersonReader(VoyagerReader):
             ):
                 result["common_ground"] = common_ground(mine, profile)
         return result
+
+    async def get_me(self) -> dict[str, Any]:
+        """The signed-in member's own profile, whole.
+
+        ``/me`` names the member, and their id resolves like any other, so
+        this is ``get_person`` on oneself: no mutual connections and nothing
+        to compare against.
+        """
+        own_id = (await self._mailbox_urn()).rsplit(":", 1)[-1]
+        return await self.get_person(own_id, compare_to_me=False)
 
 
 def render_profile(profile: dict[str, Any], relationship: str | None = None) -> str:

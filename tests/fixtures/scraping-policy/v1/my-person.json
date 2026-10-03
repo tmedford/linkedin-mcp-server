@@ -1,0 +1,224 @@
+{
+  "call": {
+    "arguments": {},
+    "method": "my_person"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/me",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ACoAA-me&decorationId=com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ACoAA-me&decorationId=com.linkedin.voyager.dash.deco.identity.profile.WebTopCardCore-19",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ACoAA-me&decorationId=com.linkedin.voyager.dash.deco.identity.profile.ProfileContactInfo-2",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=ACoAA-me&decorationId=com.linkedin.voyager.dash.deco.identity.profile.TopCardSupplementary-166",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": {
+        "body": "{\"requestedArguments\": {\"payload\": {\"vanityName\": \"taylor\"}, \"states\": [], \"requestMetadata\": {\"$type\": \"proto.sdui.common.RequestMetadata\"}, \"screenId\": \"\", \"knownTemplateIds\": []}, \"isPrefetch\": true}",
+        "headers": {
+          "x-li-track": "{}"
+        },
+        "url": "https://www.linkedin.com/flagship-web/in/taylor/"
+      },
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_stream_post",
+      "program_digest": "f959d86e614d",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/profiles/ACoAA-me/following?q=followedEntities&count=50&entityType=INFLUENCER",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/profiles/ACoAA-me/following?q=followedEntities&count=50&entityType=COMPANY",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/profiles/ACoAA-me/following?q=followedEntities&count=50&entityType=GROUP",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    },
+    {
+      "arg": "https://www.linkedin.com/voyager/api/identity/profiles/ACoAA-me/following?q=followedEntities&count=50&entityType=SCHOOL",
+      "call": "my_person",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "person"
+    }
+  ],
+  "result": {
+    "certifications": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "contact": {},
+    "courses": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "education": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "honors": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "identity": {
+      "name": "Taylor Policy",
+      "profile_urn": "urn:li:fsd_profile:ACoAA-me",
+      "public_identifier": "taylor"
+    },
+    "incomplete_sections": [],
+    "interests": {
+      "companies": {
+        "complete": null,
+        "items": [],
+        "returned": 0,
+        "total": null
+      },
+      "groups": {
+        "complete": null,
+        "items": [],
+        "returned": 0,
+        "total": null
+      },
+      "schools": {
+        "complete": null,
+        "items": [],
+        "returned": 0,
+        "total": null
+      },
+      "top_voices": {
+        "complete": null,
+        "items": [],
+        "returned": 0,
+        "total": null
+      }
+    },
+    "languages": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "network": {},
+    "organizations": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "patents": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "positions": {
+      "complete": true,
+      "employers": 1,
+      "items": [
+        {
+          "company": "Analytical Engine",
+          "company_id": "1",
+          "start": "2013-01",
+          "title": "Engineer"
+        }
+      ],
+      "returned": 1,
+      "total": null,
+      "total_employers": 1
+    },
+    "projects": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "publications": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "relationship": "self",
+    "sections": {
+      "main_profile": "Taylor Policy\n\nExperience\nEngineer at Analytical Engine (2013-01 to present)"
+    },
+    "skills": {
+      "complete": true,
+      "items": [],
+      "returned": 0,
+      "total": 0
+    },
+    "test_scores": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    },
+    "url": "https://www.linkedin.com/in/taylor/",
+    "volunteering": {
+      "complete": null,
+      "items": [],
+      "returned": 0,
+      "total": null
+    }
+  },
+  "scenario": "my_person__baseline",
+  "schema_version": 1
+}
