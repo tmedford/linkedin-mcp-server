@@ -1,0 +1,34 @@
+{
+  "call": {
+    "arguments": {
+      "keywords": "acme"
+    },
+    "method": "find_companies"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/search/dash/clusters?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175&origin=GLOBAL_SEARCH_HEADER&q=all&query=(keywords:acme,flagshipSearchIntent:SEARCH_SRP,queryParameters:(resultType:List(COMPANIES)),includeFiltersInResponse:false)&start=0&count=10",
+      "call": "find_companies",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "api"
+    }
+  ],
+  "result": {
+    "at_end": null,
+    "companies": [],
+    "count": 0,
+    "page_size": 10,
+    "references": {
+      "search_results": []
+    },
+    "sections": {
+      "search_results": ""
+    },
+    "start": 0,
+    "url": "https://www.linkedin.com/search/results/companies/?keywords=acme"
+  },
+  "scenario": "find_companies__baseline",
+  "schema_version": 1
+}

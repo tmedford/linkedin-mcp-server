@@ -618,6 +618,16 @@ def parse_mutual(
     return rows, total if isinstance(total, int) else None, found
 
 
+def render_posts(posts: list[dict[str, Any]]) -> str:
+    """Posts as readable text, for consumers that read `sections`."""
+    lines = []
+    for post in posts:
+        who = post.get("repost_header") or post.get("author") or "?"
+        body = post.get("text") or post.get("reshared_text") or ""
+        lines.append(f"{who} - {post.get('posted_at_iso')}\n{body}")
+    return "\n\n".join(lines)
+
+
 def _activity_time(urn: str) -> str | None:
     """When an activity was created, read from its id.
 

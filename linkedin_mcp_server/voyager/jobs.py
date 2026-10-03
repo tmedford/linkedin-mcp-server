@@ -331,9 +331,12 @@ class VoyagerJobs(VoyagerPeopleSearch):
         """Read up to ``max_pages`` pages of 25 jobs matching a search."""
         from linkedin_mcp_server.scraping.search_urls import build_job_search_url
 
-        if not keywords.strip():
+        if not keywords.strip() and not company_id:
+            # Measured: a search on a company alone answers (494 roles for
+            # one company with no keywords), so words are optional then.
             raise LinkedInScraperException(
-                "keywords was blank. Pass the words to search for."
+                "keywords was blank. Pass the words to search for, or a "
+                "company_id to list that company's jobs."
             )
         if not 1 <= max_pages <= 10:
             raise LinkedInScraperException(
@@ -357,9 +360,12 @@ class VoyagerJobs(VoyagerPeopleSearch):
             # is the filter for remote work.
             resolved, candidates = await self._geo(location)
             place = f",locationUnion:(geoId:{resolved['geo_id']})"
+        words = (
+            f"keywords:{quote(keywords.strip(), safe='')}" if keywords.strip() else ""
+        )
+        head = ",".join(part for part in (words, place.lstrip(",")) if part)
         query = (
-            f"(origin:JOB_SEARCH_PAGE_OTHER_ENTRY,"
-            f"keywords:{quote(keywords.strip(), safe='')}{place},"
+            f"(origin:JOB_SEARCH_PAGE_OTHER_ENTRY,{head + ',' if head else ''}"
             f"selectedFilters:({filters}),spellCorrectionEnabled:true)"
         )
 

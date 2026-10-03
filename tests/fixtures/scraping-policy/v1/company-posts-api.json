@@ -1,0 +1,32 @@
+{
+  "call": {
+    "arguments": {
+      "company_name": "acme"
+    },
+    "method": "company_posts"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/organization/updatesV2?moduleKey=ORGANIZATION_MEMBER_FEED_DESKTOP&numComments=0&numLikes=0&q=companyRelevanceFeed&companyIdOrUniversalName=acme&count=10&start=0",
+      "call": "company_posts",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "api"
+    }
+  ],
+  "result": {
+    "at_end": null,
+    "count": 0,
+    "page_size": 10,
+    "posts": [],
+    "sections": {
+      "posts": ""
+    },
+    "start": 0,
+    "total": null,
+    "url": "https://www.linkedin.com/company/acme/posts/"
+  },
+  "scenario": "company_posts__baseline",
+  "schema_version": 1
+}

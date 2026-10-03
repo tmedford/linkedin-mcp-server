@@ -24,7 +24,9 @@ from linkedin_mcp_server.voyager.message_search import VoyagerMessageSearch
 from linkedin_mcp_server.voyager.people_search import VoyagerPeopleSearch
 from linkedin_mcp_server.voyager.person import VoyagerPersonReader
 from linkedin_mcp_server.voyager.person_message import VoyagerPersonMessage
+from linkedin_mcp_server.voyager.company import VoyagerCompany
 from linkedin_mcp_server.voyager.connect import VoyagerConnect
+from linkedin_mcp_server.voyager.content import VoyagerContent
 from linkedin_mcp_server.voyager.jobs import VoyagerJobs, VoyagerSavedJobs
 from linkedin_mcp_server.voyager.profile_views import (
     VoyagerProfileViews,
@@ -101,6 +103,8 @@ class LinkedInExtractor:
         )
         self._voyager_jobs = VoyagerJobs(session, navigator)
         self._voyager_saved_jobs = VoyagerSavedJobs(session, navigator)
+        self._voyager_company = VoyagerCompany(session, navigator)
+        self._voyager_content = VoyagerContent(session, navigator)
 
     async def get_page_text(self) -> str:
         """Extract innerText from the main content area of the current page."""
@@ -483,3 +487,51 @@ class LinkedInExtractor:
         return await self._voyager_saved_jobs.get_saved_jobs(
             max_pages=max_pages, stage=stage
         )
+
+    async def company_record(self, company_name: str) -> dict[str, Any]:
+        """Read one company through LinkedIn's API."""
+        return await self._voyager_company.get_company(company_name)
+
+    async def company_posts(
+        self, company_name: str, count: int = 10, start: int = 0
+    ) -> dict[str, Any]:
+        """Read one page of a company's posts through LinkedIn's API."""
+        return await self._voyager_company.get_company_posts(
+            company_name, count=count, start=start
+        )
+
+    async def company_people(
+        self,
+        company_name: str,
+        keywords: str | None = None,
+        start: int = 0,
+        count: int = 12,
+    ) -> dict[str, Any]:
+        """Read a company's people and demographics through LinkedIn's API."""
+        return await self._voyager_company.get_company_people(
+            company_name, keywords=keywords, start=start, count=count
+        )
+
+    async def find_companies(
+        self, keywords: str, start: int = 0, count: int = 10
+    ) -> dict[str, Any]:
+        """Search companies through LinkedIn's API."""
+        return await self._voyager_company.find_companies(
+            keywords, start=start, count=count
+        )
+
+    async def find_posts(
+        self, keywords: str, date_posted: str | None = None, max_pages: int = 3
+    ) -> dict[str, Any]:
+        """Search posts through LinkedIn's own paging action."""
+        return await self._voyager_content.search_posts(
+            keywords, date_posted=date_posted, max_pages=max_pages
+        )
+
+    async def home_feed(self, num_posts: int = 10) -> dict[str, Any]:
+        """Read the home feed through LinkedIn's API."""
+        return await self._voyager_content.get_feed(num_posts=num_posts)
+
+    async def sidebar_people(self, linkedin_username: str) -> dict[str, Any]:
+        """Read a profile's sidebar suggestions through LinkedIn's own components."""
+        return await self._voyager_content.get_sidebar_profiles(linkedin_username)

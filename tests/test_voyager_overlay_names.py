@@ -27,6 +27,13 @@ REPLACED_IN_PLACE = (
     "get_job_details",
     "get_saved_jobs",
     "get_my_profile",
+    "get_company_profile",
+    "get_company_posts",
+    "get_company_employees",
+    "search_companies",
+    "search_posts",
+    "get_feed",
+    "get_sidebar_profiles",
 )
 
 
@@ -71,6 +78,13 @@ async def test_the_served_tool_of_that_name_is_this_forks(name):
         ("get_job_details", {"job_id"}),
         ("get_saved_jobs", {"max_pages"}),
         ("get_my_profile", {"sections", "max_scrolls"}),
+        ("get_company_profile", {"company_name", "sections"}),
+        ("get_company_posts", {"company_name"}),
+        ("get_company_employees", {"company_name", "keywords"}),
+        ("search_companies", {"keywords"}),
+        ("search_posts", {"keywords", "date_posted", "max_pages"}),
+        ("get_feed", {"num_posts"}),
+        ("get_sidebar_profiles", {"linkedin_username"}),
     ],
 )
 async def test_every_argument_upstream_accepted_is_still_accepted(
@@ -92,6 +106,13 @@ async def test_every_argument_upstream_accepted_is_still_accepted(
         ("get_job_details", ["job_id"]),
         ("get_saved_jobs", []),
         ("get_my_profile", []),
+        ("get_company_profile", ["company_name"]),
+        ("get_company_posts", ["company_name"]),
+        ("get_company_employees", ["company_name"]),
+        ("search_companies", ["keywords"]),
+        ("search_posts", ["keywords"]),
+        ("get_feed", []),
+        ("get_sidebar_profiles", ["linkedin_username"]),
     ],
 )
 async def test_nothing_new_became_required(name, required):

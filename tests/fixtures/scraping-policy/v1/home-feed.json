@@ -1,0 +1,31 @@
+{
+  "call": {
+    "arguments": {
+      "num_posts": 5
+    },
+    "method": "home_feed"
+  },
+  "events": [
+    {
+      "arg": "https://www.linkedin.com/voyager/api/feed/updatesV2?q=feed&count=5&start=0",
+      "call": "home_feed",
+      "kind": "evaluate",
+      "operation": "voyager_conversations_fetch",
+      "program_digest": "9d8f473bd12b",
+      "section": "api"
+    }
+  ],
+  "result": {
+    "count": 0,
+    "posts": [],
+    "references": {
+      "feed": []
+    },
+    "sections": {
+      "feed": ""
+    },
+    "url": "https://www.linkedin.com/feed/"
+  },
+  "scenario": "home_feed__baseline",
+  "schema_version": 1
+}
