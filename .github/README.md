@@ -1,8 +1,8 @@
 # LinkedIn API MCP
 
 <p align="left">
-  <a href="https://github.com/tmedford/linkedin-api-mcp/actions/workflows/ci.yml" target="_blank"><img src="https://github.com/tmedford/linkedin-api-mcp/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI Status"></a>
-  <a href="https://github.com/tmedford/linkedin-api-mcp/blob/main/LICENSE" target="_blank"><img src="https://img.shields.io/badge/License-Apache%202.0-%233fb950?labelColor=32383f" alt="License"></a>
+  <a href="https://github.com/tmedford/linkedin-mcp-server/actions/workflows/ci.yml" target="_blank"><img src="https://github.com/tmedford/linkedin-mcp-server/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI Status"></a>
+  <a href="https://github.com/tmedford/linkedin-mcp-server/blob/main/LICENSE" target="_blank"><img src="https://img.shields.io/badge/License-Apache%202.0-%233fb950?labelColor=32383f" alt="License"></a>
 </p>
 
 An MCP server that gives Claude and other AI agents LinkedIn data as structured records, read from the same API LinkedIn's own web client calls, through your own logged-in browser session. Profiles, companies, jobs, posts, your inbox, your invitations and who viewed your profile, plus sending messages and connection requests.
@@ -99,7 +99,7 @@ This fork is installed from GitHub. The PyPI package `mcp-server-linkedin` is th
 **Claude Code**
 
 ```bash
-claude mcp add linkedin -- uvx --from git+https://github.com/tmedford/linkedin-api-mcp mcp-server-linkedin
+claude mcp add linkedin -- uvx --from git+https://github.com/tmedford/linkedin-mcp-server mcp-server-linkedin
 ```
 
 **Claude Desktop and other MCP clients**
@@ -111,7 +111,7 @@ claude mcp add linkedin -- uvx --from git+https://github.com/tmedford/linkedin-a
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/tmedford/linkedin-api-mcp",
+        "git+https://github.com/tmedford/linkedin-mcp-server",
         "mcp-server-linkedin"
       ],
       "env": { "UV_HTTP_TIMEOUT": "300" }
@@ -123,7 +123,7 @@ claude mcp add linkedin -- uvx --from git+https://github.com/tmedford/linkedin-a
 **Signing in.** The first tool call that needs a session opens a browser window for you to log in to LinkedIn, or imports the session from a Chromium browser you are already signed in to. To do it ahead of time:
 
 ```bash
-uvx --from git+https://github.com/tmedford/linkedin-api-mcp mcp-server-linkedin --login
+uvx --from git+https://github.com/tmedford/linkedin-mcp-server mcp-server-linkedin --login
 ```
 
 **Updating.** uvx caches the install. To pick up new commits, add `--refresh` after `uvx` once.
@@ -131,8 +131,8 @@ uvx --from git+https://github.com/tmedford/linkedin-api-mcp mcp-server-linkedin 
 **From source**
 
 ```bash
-git clone https://github.com/tmedford/linkedin-api-mcp
-cd linkedin-api-mcp
+git clone https://github.com/tmedford/linkedin-mcp-server
+cd linkedin-mcp-server
 uv sync
 uv run -m linkedin_mcp_server --no-headless
 ```
@@ -156,7 +156,7 @@ Be clear about what this is before you use it:
 
 ## Contributing
 
-Bug reports and requests go in [Issues](https://github.com/tmedford/linkedin-api-mcp/issues). When a tool returns something wrong or stops working, include the tool name, the arguments and the error text.
+Bug reports and requests go in [Issues](https://github.com/tmedford/linkedin-mcp-server/issues). When a tool returns something wrong or stops working, include the tool name, the arguments and the error text.
 
 Problems with login, the browser, sessions or Docker usually belong to the shared layer, so check whether they also happen in [upstream](https://github.com/stickerdaniel/linkedin-mcp-server/issues) first.
 
