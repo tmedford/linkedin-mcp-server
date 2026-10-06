@@ -140,6 +140,34 @@ async def test_company_people_looks_the_company_up_then_searches_by_its_id():
     assert result["demographics"]["functions"][0]["count"] == 2294
 
 
+async def test_company_people_can_be_narrowed_to_schools_by_id():
+    reader, page = _reader(_company(), _people(["ada"]))
+
+    await reader.get_company_people("acme", schools=["3558", "3881"])
+
+    assert (
+        "(currentCompany:List(1001),schoolFilter:List(3558,3881),"
+        "resultType:List(ORGANIZATION_ALUMNI))" in page.requests[1]
+    )
+
+
+async def test_company_people_without_schools_sends_no_school_filter():
+    reader, page = _reader(_company(), _people(["ada"]))
+
+    await reader.get_company_people("acme")
+
+    assert "schoolFilter" not in page.requests[1]
+
+
+async def test_a_school_name_is_refused_before_any_request():
+    reader, page = _reader(_company(), _people(["ada"]))
+
+    with pytest.raises(LinkedInScraperException, match="school ids"):
+        await reader.get_company_people("acme", schools=["Georgia Tech"])
+
+    assert page.requests == []
+
+
 async def test_an_unknown_company_is_refused_by_name():
     reader, _ = _reader({"data": {"*elements": []}, "included": []})
 

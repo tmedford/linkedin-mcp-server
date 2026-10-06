@@ -348,12 +348,27 @@ class VoyagerCompany(VoyagerPeopleSearch):
         keywords: str | None = None,
         start: int = 0,
         count: int = 12,
+        schools: list[str] | None = None,
     ) -> dict[str, Any]:
-        """People at a company, and the people tab's demographics."""
+        """People at a company, and the people tab's demographics.
+
+        ``schools`` narrows to people who studied at any of the given schools,
+        by LinkedIn's school id: the people tab's "Where they studied" filter,
+        which the page writes as ``facetSchool=<id>,<id>`` in its address.
+        """
         if start < 0 or not 1 <= count <= 50:
             raise LinkedInScraperException(
                 f"start must be >= 0 and count between 1 and 50, got "
                 f"start={start}, count={count}."
+            )
+        school_ids = [str(school).strip() for school in schools or []]
+        if any(not school.isdigit() for school in school_ids):
+            # A name here would be sent as a filter value LinkedIn ignores,
+            # and the answer would be the whole company read as its alumni.
+            raise LinkedInScraperException(
+                f"schools takes LinkedIn school ids (digits), got {schools!r}. "
+                "The id is in demographics.schools of this tool's answer, in a "
+                "profile's education, and in the people tab's facetSchool."
             )
         company = await self._company(company_name)
         identifier = company.get("company_id")
@@ -362,6 +377,7 @@ class VoyagerCompany(VoyagerPeopleSearch):
                 f"Voyager {self.surface} answered for {company_name!r} with no "
                 "company id, which the people search is keyed on."
             )
+        studied = f"schoolFilter:List({','.join(school_ids)})," if school_ids else ""
         words = (
             f"keywords:{quote(keywords.strip(), safe='')},"
             if keywords and keywords.strip()
@@ -370,7 +386,8 @@ class VoyagerCompany(VoyagerPeopleSearch):
         payload = await self._fetch(
             f"{_CLUSTERS}&origin=FACETED_SEARCH&q=all&query=({words}"
             "flagshipSearchIntent:ORGANIZATIONS_PEOPLE_ALUMNI,queryParameters:"
-            f"(currentCompany:List({identifier}),resultType:List(ORGANIZATION_ALUMNI)),"
+            f"(currentCompany:List({identifier}),{studied}"
+            "resultType:List(ORGANIZATION_ALUMNI)),"
             f"includeFiltersInResponse:true)&start={start}&count={count}"
         )
         people, found, items_seen = parse_people(payload)

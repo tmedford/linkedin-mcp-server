@@ -18,7 +18,7 @@
       },
       "company_people": {
         "coroutine": true,
-        "signature": "(self, company_name: 'str', keywords: 'str | None' = None, start: 'int' = 0, count: 'int' = 12) -> 'dict[str, Any]'"
+        "signature": "(self, company_name: 'str', keywords: 'str | None' = None, start: 'int' = 0, count: 'int' = 12, schools: 'list[str] | None' = None) -> 'dict[str, Any]'"
       },
       "company_posts": {
         "coroutine": true,
