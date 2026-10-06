@@ -367,8 +367,9 @@ class VoyagerCompany(VoyagerPeopleSearch):
             # and the answer would be the whole company read as its alumni.
             raise LinkedInScraperException(
                 f"schools takes LinkedIn school ids (digits), got {schools!r}. "
-                "The id is in demographics.schools of this tool's answer, in a "
-                "profile's education, and in the people tab's facetSchool."
+                "The id is in demographics.schools of this tool's answer and in "
+                "the people tab's facetSchool. It is not the school id a "
+                "profile's education carries."
             )
         company = await self._company(company_name)
         identifier = company.get("company_id")

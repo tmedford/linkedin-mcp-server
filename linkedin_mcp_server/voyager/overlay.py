@@ -1807,7 +1807,9 @@ def install_voyager_overlay(
             schools: Optional LinkedIn school ids. Keeps only people who
                 studied at any of them, whatever their degree to you: the
                 alumni of your schools at this company. An id comes from
-                demographics.schools here or from a profile's education.
+                demographics.schools here or the people tab's facetSchool,
+                not from a profile's education, which numbers schools
+                differently.
 
         Returns:
             Dict with url, sections (employees -> text) and references (the

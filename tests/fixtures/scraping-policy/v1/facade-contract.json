@@ -319,7 +319,7 @@
                 }
               ],
               "default": null,
-              "description": "Optional LinkedIn school ids. Keeps only people who\nstudied at any of them, whatever their degree to you: the\nalumni of your schools at this company. An id comes from\ndemographics.schools here or from a profile's education."
+              "description": "Optional LinkedIn school ids. Keeps only people who\nstudied at any of them, whatever their degree to you: the\nalumni of your schools at this company. An id comes from\ndemographics.schools here or the people tab's facetSchool,\nnot from a profile's education, which numbers schools\ndifferently."
             },
             "start": {
               "default": 0,
