@@ -306,6 +306,21 @@
               "default": null,
               "description": "Optional filter by name, title or skill."
             },
+            "schools": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional LinkedIn school ids. Keeps only people who\nstudied at any of them, whatever their degree to you: the\nalumni of your schools at this company. An id comes from\ndemographics.schools here or from a profile's education."
+            },
             "start": {
               "default": 0,
               "description": "0-based offset. Paging is the caller's loop.",
