@@ -13,13 +13,19 @@ from pydantic import Field
 from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    InvalidReferenceError,
 )
 from linkedin_mcp_server.dependencies import get_ready_extractor, handle_auth_error
 from linkedin_mcp_server.error_handler import raise_tool_error
-from linkedin_mcp_server.scraping.contracts import (
+from linkedin_mcp_server.linkedin.contracts import (
     SEND_INTERRUPTED_WARNING,
+    before_the_reply_deadline,
     refuse_an_invalid_message,
+)
+from linkedin_mcp_server.linkedin.identifiers import (
+    normalize_person_identifier,
+    normalize_profile_urn,
+    normalize_thread_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,28 +40,36 @@ def register_messaging_tools(
         timeout=tool_timeout,
         title="Get Inbox",
         annotations={"readOnlyHint": True, "openWorldHint": True},
-        tags={"messaging", "scraping"},
-        exclude_args=["extractor"],
+        tags={"messaging"},
     )
     async def get_inbox(
         ctx: Context,
         limit: Annotated[int, Field(ge=1, le=50)] = 20,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         List recent conversations from the LinkedIn messaging inbox.
+
+        The returned inbox text and result URL come from the ordinary messaging
+        inbox. Click-derived conversation references are collected separately
+        after requesting the compose page, which avoided inbox auto-opening on
+        the measured variant. A row contributes a click-derived reference only
+        after its click is followed by an observed different thread path. The
+        scan stops at its first unverifiable click. section_errors.inbox
+        reports that stop or unavailable scan rows; captured inbox text and
+        independently extracted anchors retain their normal handling. A known
+        thread_id can bypass row attribution when calling get_conversation.
 
         Args:
             ctx: FastMCP context for progress reporting
             limit: Maximum number of conversations to load (1-50, default 20)
 
         Returns:
-            Dict with url, sections (inbox -> raw text), and optional references.
+            Dict with url, sections (inbox -> raw text), optional references, and
+            optional section_errors (inbox -> why click-derived references are
+            incomplete).
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_inbox"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_inbox")
             logger.info("Fetching inbox (limit=%d)", limit)
 
             await ctx.report_progress(
@@ -84,15 +98,13 @@ def register_messaging_tools(
         # The docstring below has always said so. An unread message the user has
         # not seen is state, and losing it is not something a reader should do.
         annotations={"openWorldHint": True},
-        tags={"messaging", "scraping"},
-        exclude_args=["extractor"],
+        tags={"messaging"},
     )
     async def get_conversation(
         ctx: Context,
         linkedin_username: str | None = None,
         thread_id: str | None = None,
         index: Annotated[int, Field(ge=0)] = 0,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Read a specific messaging conversation.
@@ -105,6 +117,15 @@ def register_messaging_tools(
         anchor hrefs or thread-id attributes, so this is the only available
         path. Each visit selects the row in the LinkedIn UI and may mark it
         as read. Pass thread_id directly to skip this enumeration.
+
+        Username resolution scans matching rows from a requested compose page
+        first. Its indexable sequence ends before the first unresolved click,
+        missing matching click target, or admitted row that fails the existing
+        exact display-name check. An index outside that verified prefix is
+        refused with its reason. Search is a fallback only when the inbox scan
+        has no observed matching result and no such barrier; it never
+        substitutes a result after a stopped or gapped inbox scan. Pass a known
+        thread_id to bypass username/index resolution.
 
         Args:
             ctx: FastMCP context for progress reporting
@@ -120,16 +141,17 @@ def register_messaging_tools(
         """
         if not linkedin_username and not thread_id:
             raise_tool_error(
-                LinkedInScraperException(
+                InvalidReferenceError(
                     "Provide at least one of linkedin_username or thread_id"
                 ),
                 "get_conversation",
             )
-
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_conversation"
-            )
+            if thread_id:
+                thread_id = normalize_thread_id(thread_id)
+            else:
+                linkedin_username = normalize_person_identifier(linkedin_username or "")
+            extractor = await get_ready_extractor(ctx, tool_name="get_conversation")
             logger.info(
                 "Fetching conversation: username=%s, thread_id=%s, index=%d",
                 linkedin_username,
@@ -167,16 +189,21 @@ def register_messaging_tools(
         # documented in those terms.
         annotations={"openWorldHint": True},
         tags={"messaging", "search"},
-        exclude_args=["extractor"],
     )
     async def search_conversations(
         keywords: str,
         ctx: Context,
         limit: Annotated[int, Field(ge=1, le=50)] = 20,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Search messages by keyword.
+
+        Click-derived references require an observed different thread path
+        after each row click. The first unverifiable click stops further row
+        clicks and is reported in section_errors.search_results. Already-read
+        text and independently extracted anchors retain their normal handling.
+        A result without that diagnostic does not guarantee that every
+        conversation was enumerated.
 
         Args:
             keywords: Search keywords to filter conversations
@@ -187,12 +214,12 @@ def register_messaging_tools(
                 a low cap is preferable for noisy queries.
 
         Returns:
-            Dict with url, sections (search_results -> raw text), and optional references.
+            Dict with url, sections (search_results -> raw text), optional
+            references, and optional section_errors (search_results -> where
+            click-derived references stopped).
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="search_conversations"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="search_conversations")
             logger.info(
                 "Searching conversations: keywords='%s', limit=%d", keywords, limit
             )
@@ -220,7 +247,6 @@ def register_messaging_tools(
         title="Send Message",
         annotations={"destructiveHint": True, "openWorldHint": True},
         tags={"messaging", "actions"},
-        exclude_args=["extractor"],
     )
     async def send_message(
         linkedin_username: str,
@@ -228,7 +254,6 @@ def register_messaging_tools(
         confirm_send: bool,
         ctx: Context,
         profile_urn: str | None = None,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Compose and send a new message to a LinkedIn user.
@@ -243,17 +268,29 @@ def register_messaging_tools(
         The recipient must be directly messageable from the profile page. If
         LinkedIn does not expose a normal Message action, use connect_with_person
         first, then retry send_message only after the connection request is
-        accepted. Recipient authorization comes from validating one
+        accepted. A ``status`` of ``enter_to_send_enabled`` means the account
+        has LinkedIn's "Press Enter to Send" preference on, which hides the Send
+        button; relay the returned instructions to the user, who switches it to
+        "Click Send to send" before retrying. The dry run (confirm_send False)
+        reports it too. Recipient authorization comes from validating one
         recipient-specific Message action carrying the target URN, then following
         its browser navigation and pinning the exact final route. Visible profile
         links or recipient URNs in the composer are optional corroboration; any
         contradiction fails closed. No Voyager or other private API is used. This
         is a write operation when confirm_send is True.
 
+        ``thread_id`` is present only on ``sent``: the conversation the
+        confirmed message was observed in, or null when the page stayed on
+        the compose route. ``retry_safe`` stays the authority for whether a
+        retry is safe.
+
         Args:
             linkedin_username: LinkedIn username of the recipient; a full profile URL is accepted too
-            message: Single-line message text to send. C0 control characters and
-                DEL are rejected, including CR, LF, and tab.
+            message: Message text. LF, CRLF and CR all end a line; an empty line
+                separates paragraphs and is kept. Whitespace-only lines count as
+                empty, and leading and trailing whitespace of the whole message
+                is removed, as LinkedIn does when sending. Tab, other control
+                characters, DEL, U+0085, U+2028 and U+2029 are refused.
             confirm_send: Must be True to send the message
             ctx: FastMCP context for progress reporting
             profile_urn: Optional profile URN (e.g. ACoAAB...) to verify against
@@ -264,13 +301,19 @@ def register_messaging_tools(
 
         Returns:
             Dict with url, status, message, recipient_selected, sent, and
-            retry_safe. ``sent`` is true only after the submitted message's DOM
-            node gains a different opaque event ID; this does not claim delivery
-            or read status. It is false both where nothing was submitted and
+            retry_safe. ``thread_id`` is present only on ``sent``. ``sent``
+            is true only after the thread shows the submitted
+            text under a new server message ID (or its DOM node gains a
+            different event ID); this does not claim delivery or read status.
+            It is false both where nothing was submitted and
             where the outcome is unknown. ``retry_safe`` separates the two: it
             is false from the moment a submission is attempted, and calling
             again while it is
-            false can deliver the message twice.
+            false can deliver the message twice. A ``status`` of
+            ``outcome_unknown`` is that same warning from the transport rather
+            than the page: the browser process went away with the call in
+            flight, so ``sent`` is absent instead of false and only LinkedIn
+            itself can say whether the message left.
         """
         try:
             # Answered before a session is acquired. Caller-owned message
@@ -284,9 +327,10 @@ def register_messaging_tools(
             refusal = refuse_an_invalid_message(linkedin_username, message)
             if refusal is not None:
                 return refusal
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="send_message"
-            )
+            linkedin_username = normalize_person_identifier(linkedin_username)
+            if profile_urn is not None:
+                profile_urn = normalize_profile_urn(profile_urn)
+            extractor = await get_ready_extractor(ctx, tool_name="send_message")
             logger.info(
                 "Sending message to %s (confirm_send=%s)",
                 linkedin_username,
@@ -303,14 +347,19 @@ def register_messaging_tools(
             )
 
             try:
-                await ctx.report_progress(progress=100, total=100, message="Complete")
-            except BaseException:
                 # The send has already answered, and this notification is the
                 # last await inside FastMCP's `anyio.fail_after()`. A deadline
-                # landing here discards a result that may say the send was
-                # confirmed, and nothing can hand it back afterwards, so the
-                # log line is all that is left. Quiet where the result says a
-                # retry is safe, because then there is nothing to warn about.
+                # landing here would discard a result that may say the send was
+                # confirmed, so a notification that stalls gives up first.
+                with before_the_reply_deadline():
+                    await ctx.report_progress(
+                        progress=100, total=100, message="Complete"
+                    )
+            except BaseException:
+                # Cancellation from outside, such as a client that cancels,
+                # which nothing can answer, so the log line is all that is
+                # left. Quiet where the result says a retry is safe, because
+                # then there is nothing to warn about.
                 if result.get("retry_safe") is False:
                     logger.warning(SEND_INTERRUPTED_WARNING)
                 raise

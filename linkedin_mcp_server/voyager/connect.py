@@ -50,7 +50,7 @@ from urllib.parse import quote
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 from linkedin_mcp_server.voyager.profile_views import (
@@ -248,7 +248,7 @@ class VoyagerConnect(VoyagerProfileViews):
         on the page that the incoming request is still there, and clicks
         nothing otherwise. Success is read back from the API.
         """
-        from linkedin_mcp_server.scraping import connection as upstream
+        from linkedin_mcp_server.linkedin import connection as upstream
 
         if self._connection is None:
             return result(
@@ -317,14 +317,14 @@ class VoyagerConnect(VoyagerProfileViews):
         dry run reported as ``invitation_received``. Nothing is ever sent to
         someone who invited the signed-in member.
         """
-        from linkedin_mcp_server.scraping.identifiers import (
+        from linkedin_mcp_server.linkedin.identifiers import (
             normalize_person_identifier,
             person_profile_url,
         )
 
         note = (note or "").strip() or None
         if note is not None and len(note) > NOTE_LIMIT:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"The note is {len(note)} characters; LinkedIn's invitation "
                 f"note holds {NOTE_LIMIT}. Shorten it by {len(note) - NOTE_LIMIT}."
             )
@@ -359,7 +359,7 @@ class VoyagerConnect(VoyagerProfileViews):
                 f"{before['state']} ({before['state_detail']}).",
             )
         if not before["member_id"] or not before["public_identifier"]:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} profile for {username!r} has no member "
                 "id or public identifier, which the request is built from."
             )

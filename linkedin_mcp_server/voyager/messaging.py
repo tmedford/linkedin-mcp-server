@@ -30,7 +30,7 @@ from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 from linkedin_mcp_server.voyager.client import VoyagerReader, person_identifier
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 
@@ -79,7 +79,7 @@ def _set_cursor(url: str, cursor: str) -> str:
         r"\)(?!.*\))", lambda _: f",nextCursor:{cursor})", url, count=1
     )
     if count == 0:
-        raise LinkedInScraperException(
+        raise LinkedInOperationError(
             f"Could not place a cursor into the conversations query: {url!r} "
             "has no variables block to append to."
         )
@@ -98,7 +98,7 @@ def _set_count(url: str, count: int) -> str:
         return _COUNT_RE.sub(lambda _: f"count:{count}", url)
     replaced, n = re.subn(r"\)(?!.*\))", lambda _: f",count:{count})", url, count=1)
     if n == 0:
-        raise LinkedInScraperException(
+        raise LinkedInOperationError(
             f"Could not pin a page size into the conversations query: {url!r} "
             "has no variables block to append to."
         )
@@ -274,7 +274,7 @@ class VoyagerMessagingReader(VoyagerReader):
             return _drop_cursor(cursored[-1]), "cursored"
         if page_load:
             return page_load[-1], "unconfirmed" if control_seen else "single-page"
-        raise LinkedInScraperException(
+        raise LinkedInOperationError(
             "No messengerConversations request was observed. The messaging page "
             "did not load, or LinkedIn changed the messaging client."
         )
@@ -566,7 +566,7 @@ class VoyagerMessagingReader(VoyagerReader):
         url, paging = await self._discover_query()
 
         if paging == "unconfirmed":
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "The paging control was present and clicked, but no "
                 "cursor-bearing conversations query followed, so only the first "
                 "page is reachable and there is no way to tell a short mailbox "
@@ -574,7 +574,7 @@ class VoyagerMessagingReader(VoyagerReader):
                 "would look complete."
             )
         if cursor and paging != "cursored":
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "A cursor was supplied but no paging query is available for "
                 "this mailbox, so it cannot be honoured. Call without one."
             )
@@ -585,7 +585,7 @@ class VoyagerMessagingReader(VoyagerReader):
             if normalized not in KNOWN_CATEGORIES:
                 # An unrecognised category returns an empty page rather than an
                 # error, which would read as "you have none of those".
-                raise LinkedInScraperException(
+                raise LinkedInOperationError(
                     f"Unknown category {normalized!r}. Known: "
                     f"{', '.join(sorted(KNOWN_CATEGORIES))}. An unrecognised "
                     "category returns an empty result rather than an error, so "
@@ -631,7 +631,7 @@ class VoyagerMessagingReader(VoyagerReader):
         # required. An error that names an impossible remedy reads as a dead
         # end, so name the possible one first.
         if category is not None and not category.strip():
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "category was blank. OMIT the argument to inherit the "
                 "messaging page's own category (in practice PRIMARY_INBOX), "
                 f"or pass one of: {', '.join(sorted(KNOWN_CATEGORIES))}. "
@@ -639,7 +639,7 @@ class VoyagerMessagingReader(VoyagerReader):
                 "carries a category and there is none meaning 'all'."
             )
         if cursor is not None and not cursor.strip():
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "cursor was blank. OMIT the argument entirely for the first "
                 "page, or pass a next_cursor from a previous call. An empty "
                 "string is rejected rather than treated as the first page, "
@@ -654,7 +654,7 @@ class VoyagerMessagingReader(VoyagerReader):
             payload = await self._fetch(url)
         except (AuthenticationError, RateLimitError):
             raise
-        except LinkedInScraperException:
+        except LinkedInOperationError:
             # A cached query outlives the deploy that issued it: LinkedIn
             # rotates the persisted queryId and every later call fails against a
             # hash that no longer exists. Without this the session stays broken
@@ -673,7 +673,7 @@ class VoyagerMessagingReader(VoyagerReader):
         # Entities present but none parsed as a Conversation is a shape change,
         # which is the one failure that silently turns a full page into a zero.
         if not rows and payload.get("included"):
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "Conversations payload changed shape: "
                 f"{len(payload['included'])} included entities but zero parsed "
                 "as Conversation. Refusing to report this as an empty page."

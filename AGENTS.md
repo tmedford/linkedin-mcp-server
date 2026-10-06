@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -17,9 +17,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Docker build: `docker build -t linkedin-mcp-server .`
 - Install browser: `uv run patchright install chromium`
 
-## Scraping Rules
+## LinkedIn Page Rules
 
-- **One section = one navigation.** Each entry in `PERSON_SECTIONS` / `COMPANY_SECTIONS` (`scraping/fields.py`) maps to exactly one page navigation. Never combine multiple URLs behind a single section.
+- **Voyager / private API.** Out of scope. [Read the rendered page](docs/decisions/2026-09-16-rendered-page.md).
+- **One section = one navigation.** Each entry in `PERSON_SECTIONS` / `COMPANY_SECTIONS` (`linkedin/fields.py`) maps to exactly one page navigation. Never combine multiple URLs behind a single section.
 - **Minimize DOM dependence.** Prefer innerText and URL navigation over DOM selectors. When DOM access is unavoidable, use minimal generic selectors (`a[href*="/jobs/view/"]`) — never class names tied to LinkedIn's layout.
 - **Detection must be locale-independent.** Classification logic — connection state, action availability, button identity — must rely on URL patterns (`/preload/custom-invite/?vanityName=USER`, `/in/USER/edit/intro/`, `/messaging/compose/`), attribute *presence* (`aria-label` exists, `aria-expanded` exists, `aria-disabled` exists), or structural counts — never on text values like "Connect", "Follow", "Message", "1st", "Pending". The verb in an `aria-label` is locale-dependent; whether the attribute exists is not. Where text is genuinely the only signal, guard it behind an explicit per-locale table and document the limitation in code.
 
@@ -95,17 +96,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   written by a fork is therefore still refused; that one is not repairable from
   `Last Version`, and the error says so by naming the number to go back to
   rather than a browser.
-- **Never trim `_COMPARABLE_PRODUCTS` to one name.** At the current lock two
-  are live at once, on the same release: Playwright downloads its own Chromium
-  build for Linux arm64 and Chrome for Testing everywhere else, so the
-  published arm64 container reports `Chromium` while the amd64 one and macOS
-  report `Google Chrome for Testing`, at the same revision. Dropping either
-  entry turns the guard off for a shipped platform. That is the split *at the
-  lock* and it does not hold across the whole supported range: at the declared
-  floor every platform reports `Chromium`, and revision 1200 moved macOS and
-  Linux x64 together, leaving only Linux arm64 behind. Which is the point:
-  both managed names occur, and which one where depends on when and where, so
-  neither is redundant. The third entry, `google chrome`, is not a managed
+- **Never trim `_COMPARABLE_PRODUCTS` to one name.** `uvx` and `pip` resolve
+  the declared patchright range fresh, and the two managed names split across
+  it: at the declared floor every platform reports `Chromium`, revision 1200
+  moved macOS and Linux x64 to `Google Chrome for Testing`, and Linux arm64
+  followed only at patchright 1.63.0. So both names are in the field on any
+  release, even when every published image reports the same one, and dropping
+  either turns the guard off for a supported install. Which name a platform
+  reports at a given revision is a measurement, never an inference from the
+  version number. The third entry, `google chrome`, is not a managed
   browser at all but what an operator's own binary reports under `CHROME_PATH`,
   and it earns its place only when *that* Chrome is the older one: the guard
   reads the running binary, never the profile's writer. `browsers.json` is not
@@ -138,7 +137,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Tool Return Format
 
-All scraping tools return: `{url, sections: {name: raw_text}}`.
+All tools that read LinkedIn return: `{url, sections: {name: raw_text}}`.
 
 Optional additional keys:
 
@@ -146,18 +145,21 @@ Optional additional keys:
 - `section_errors: {section_name: {error_type, error_message, issue_template_path, runtime, ...}}`
 - `unknown_sections: [name, ...]`
 - `job_ids: [id, ...]` (search_jobs and get_saved_jobs)
+- `total: {count, exact}` (search_jobs only) — the result count LinkedIn advertises on the first page; `exact` is false for a lower bound such as "500+"
+- `promoted_job_ids: [id, ...]` (search_jobs only) — the subset of `job_ids` shown as promoted; present only when every page could be read, so an empty list means none were
 - `references["feed"]` (get_feed only) — every entry is `kind: "feed_post"`; non-post anchors (sidebar profiles, employer logos) are filtered. URLs may carry either `/feed/update/<urn>/` (DOM-anchor-derived) or `/posts/<slug>` (SDUI-derived) form; both are valid LinkedIn permalinks. Cap is 50 entries, matching `get_feed`'s `num_posts` ceiling.
+- `references["search_results"]` (search_posts only) — DOM references first, then up to 50 `kind: "feed_post"` permalinks read from the page's JSON/document payload responses (`/feed/update/<urn>/` or `/posts/<slug>`, both valid). Captured permalinks are appended, not aligned to result order.
+- `apply: {type, url?}` (get_job_apply_url, which returns no `sections`) — `type` is `easy_apply`, `external`, `applied`, `closed` or `unknown`; `url` is the employer's application link as LinkedIn gives it, never opened, present for external postings
 
 ## Tests
 
-- **A test that cannot fail is not a test.** Before committing one, mutate
-  the code it covers and watch it fail. A test that survives the mutation
-  asserts something every implementation satisfies (a count that holds
-  either way, a branch merely touched), and the usual repair is to assert
-  the log line, the elapsed time, or a count scoped to the thing under
-  test. Fixtures that reload on every scroll event mask a premature stop:
-  slow them down until one batch lands per round, or the mutation survives
-  for the wrong reason.
+- **Tautologies.** Assert an observable contract independent of the
+  implementation. Before committing a test, mutate the covered behaviour
+  to introduce a plausible regression and watch that test fail. Reject
+  language restatements and redundant assertions. Pin an always-loaded
+  instruction pointer. A sentence in a disclosed doc is not a test.
+  For scroll-stop tests, let one batch land per round so a premature
+  stop fails the test.
 - **Browser-DOM tests belong where the unit suite mocks `page.evaluate`.**
   Extractor JS never executes under a mock, so a `browser_dom` test is its
   only coverage. Prefer a unit test elsewhere, and keep in mind that a
@@ -189,16 +191,36 @@ curl -s -X POST http://127.0.0.1:8000/mcp \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_person_profile","arguments":{"linkedin_username":"williamhgates","sections":"posts"}}}'
 ```
 
+## Live Request Limits
+
+Live checks share one LinkedIn account, so every session counts toward the
+same limits. One tool call can cost several browser actions:
+`get_person_profile` loads one page per section and a second one for a
+section LinkedIn rate-limits, `send_message` takes three, and
+`connect_with_person` up to seven.
+
+- Per tool: at most 10 calls a minute and 100 a day.
+- Profiles: at most one page load a second for `get_person_profile` and
+  `get_company_profile`, counted per section.
+- Invitations: at most 30 a day, 10 seconds apart. Count every outgoing
+  invitation attempt, whatever it returns: `send_failed`, an error, or
+  `outcome_unknown` may still have sent one.
+- On a login challenge, a CAPTCHA, or a rate-limit page, stop all live checks
+  for 24 hours.
+
 ## Release Process
 
 ```bash
 git checkout main && git pull
 uv version --bump minor          # or: major, patch — updates pyproject.toml AND uv.lock
+uv run towncrier build --version "$(uv version --short)" --yes
+# optional: under the new version heading in docs/CHANGELOG.md, above the categories, add a `### Highlights` list of up to three `**Lead-in.** sentence ([#N](link))` bullets
+git add pyproject.toml uv.lock docs/CHANGELOG.md  # docs/CHANGELOG.md again, for the Highlights edit
 gt create -m "chore: Bump version to X.Y.Z"
 gt submit                        # merge PR to trigger release workflow
 ```
 
-The CI release workflow automatically updates `manifest.json`, `docker-compose.yml` and `server.json` with the new version. Do not update them manually.
+The CI release workflow automatically updates `manifest.json`, `docker-compose.yml` and `.github/mcp/server.json` with the new version. Do not update them manually.
 
 After the workflow completes, file a PR against
 [`docker/mcp-registry`](https://github.com/docker/mcp-registry) updating
@@ -215,9 +237,11 @@ this server no longer has, and `USER_AGENT` now refuses to start
 validates a changed entry by pulling the image and listing its tools over stdio,
 so the tag it moves to has to be a release where that works.
 
-`server.json` is a different registry: the official one at
+`.github/mcp/server.json` is a different registry: the official one at
 `registry.modelcontextprotocol.io`, which is a service reached through
-`mcp-publisher` and has no PR flow. This server has never been listed there.
+`mcp-publisher` and has no PR flow. Use the explicit path for
+`mcp-publisher validate .github/mcp/server.json` or
+`mcp-publisher publish .github/mcp/server.json`. This server has never been listed there.
 Publishing is a maintainer decision rather than a release step, and it cannot
 succeed before a release that carries the `mcp-name` token in `README.md` and
 the `io.modelcontextprotocol.server.name` label in the `Dockerfile`: ownership
@@ -240,8 +264,8 @@ A writable host bind needs the operator to name its exact path in
 `MCP_GATEWAY_DOCKER_BIND_ALLOW_WRITABLE_PATHS`. By default the gateway allows
 binds only under the temporary directories and mounts those read-only, and a
 separate variable widens the read-only set without making anything writable. The
-session directory has to be written to, and no field in `server.json` can ask
-for that.
+session directory has to be written to, and no field in `.github/mcp/server.json`
+can ask for that.
 
 ## Commit Messages
 
@@ -251,23 +275,17 @@ for that.
 
 ## Development Workflow
 
-Always read [`CONTRIBUTING.md`](CONTRIBUTING.md) before filing an issue or working on this repository.
+Always read [`CONTRIBUTING.md`](.github/CONTRIBUTING.md) before filing an issue or working on this repository.
 
-- Write a short synthetic prompt that would reproduce the PR diff if given to a fresh Claude Code session. Don't copy the user's first message — distill the conversation into a single instruction that captures the full scope of changes. This tells the maintainer what was intended, which is often more useful than reviewing the full diff. Use a Markdown blockquote under a `## Synthetic prompt` heading, followed by the model attribution:
-  ```
-  ## Synthetic prompt
-
-  > Add `skills` and `projects` sections to `get_person_profile`, following the certifications PR pattern. Update fields, tests, docs, and manifest.
-
-  Generated with <model name and version>
-  ```
+- Write a short synthetic prompt that would reproduce the PR diff if given to a fresh Claude Code session. Don't copy the user's first message — distill the conversation into a single instruction that captures the full scope of changes. This tells the maintainer what was intended, which is often more useful than reviewing the full diff. Use a Markdown blockquote under a `## Synthetic prompt` heading.
+- End every PR body with `Generated with <model> for <job> in <tool> via <host>.` CI requires that line, including the period. For example, `Generated with Claude Opus 5.5 for implementation in Claude Code via T3 Code.` For several models, write `Generated with <model 1> for <job 1> and <model 2> for <job 2> in <tool> via <host>.` Every model needs a job. Commas or `/` list several jobs for one model.
 - When implementing a new feature/fix:
   1. Packet: before filing or commenting on a GitHub issue, read [.agents/skills/issue-packet/SKILL.md](.agents/skills/issue-packet/SKILL.md).
   2. Branch from `main`: `feature/issue-number-short-description`
   3. Implement and test
   4. Update README.md and docs/docker-hub.md if relevant
-  5. Create a draft PR; only convert to regular PR when ready to merge
-  6. Review with AI agents first, then manual review. PRs are squash-merged into `main` (one commit per PR), so keep the PR title as the conventional-commit subject; commits within a PR are for review only.
+  5. Create a draft PR; only convert to regular PR when ready to merge. A `feat`, `fix` or breaking (`type!:`) PR then adds `changelog.d/<PR>.<type>.md`; see CONTRIBUTING
+  6. Review with AI agents first, then manual review. PRs are squash-merged into `main` (one commit per PR), so keep the PR title as the conventional-commit subject; commits within a PR are for review only. The squash commit title is `<PR title> (#N)`, which an API or CLI merge sets explicitly.
 
 ### Submitting
 
@@ -326,6 +344,6 @@ test "$reviewed" = "$head"
 
 ## btca
 
-When you need up-to-date information about technologies used in this project, use the `btca-local` skill to search the actual source repos. `btca.config.jsonc` is the resource registry; every resource is pre-cloned at `~/.btca/agent/sandbox/<resourceName>` (e.g. `fastmcp`, `playwrightPython`). "Use btca with `<resource>` resource" means: search that clone. If a resource is missing from the sandbox, clone it with the url and branch from the manifest (the skill's "clone main by default" does not apply to registered resources).
+When you need up-to-date information about technologies used in this project, use the `btca-local` skill to search the actual source repos. `.agents/btca.config.jsonc` is the resource registry; every resource is pre-cloned at `~/.btca/agent/sandbox/<resourceName>` (e.g. `fastmcp`, `playwrightPython`). "Use btca with `<resource>` resource" means: search that clone. If a resource is missing from the sandbox, clone it with the url and branch from the manifest (the skill's "clone main by default" does not apply to registered resources).
 
-**New dependencies:** When adding a new dependency, always add its repo to `btca.config.jsonc` (verify the default branch first: `gh api repos/OWNER/REPO --jq '.default_branch'`) and clone it into the sandbox. Resource names are shared across projects in the sandbox, so pick a name that identifies the repo unambiguously (`playwrightPython`, not `playwright`).
+**New dependencies:** When adding a new dependency, always add its repo to `.agents/btca.config.jsonc` (verify the default branch first: `gh api repos/OWNER/REPO --jq '.default_branch'`) and clone it into the sandbox. Resource names are shared across projects in the sandbox, so pick a name that identifies the repo unambiguously (`playwrightPython`, not `playwright`).

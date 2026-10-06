@@ -10,7 +10,7 @@ import pytest
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
 )
 from linkedin_mcp_server.voyager import message_search as search_module
 from linkedin_mcp_server.voyager.message_search import (
@@ -157,7 +157,7 @@ async def test_no_matches_is_a_real_zero_in_the_shape_linkedin_sends_it():
 async def test_a_missing_container_is_refused_rather_than_read_as_no_matches():
     search, _, _ = _search(ME_ANSWER, _page(0, key=""))
 
-    with pytest.raises(LinkedInScraperException, match="changed shape"):
+    with pytest.raises(LinkedInOperationError, match="changed shape"):
         await search.search_messages("Temporal")
 
 
@@ -176,7 +176,7 @@ async def test_keywords_and_cursor_cannot_inject_query_syntax():
 async def test_blank_keywords_are_refused_before_any_request(keywords):
     search, page, _ = _search()
 
-    with pytest.raises(LinkedInScraperException, match="keywords was blank"):
+    with pytest.raises(LinkedInOperationError, match="keywords was blank"):
         await search.search_messages(keywords)
 
     assert page.requests == []
@@ -185,7 +185,7 @@ async def test_blank_keywords_are_refused_before_any_request(keywords):
 async def test_a_blank_cursor_is_refused_rather_than_read_as_page_one():
     search, page, _ = _search()
 
-    with pytest.raises(LinkedInScraperException, match="cursor was blank"):
+    with pytest.raises(LinkedInOperationError, match="cursor was blank"):
         await search.search_messages("Temporal", cursor=" ")
 
     assert page.requests == []

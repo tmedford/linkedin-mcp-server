@@ -16,7 +16,7 @@ import pytest
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 from linkedin_mcp_server.voyager.invitations import VoyagerInvitationsReader
@@ -100,7 +100,7 @@ class TestTheWrappedPayload:
         """
         moved = {"data": {"rows": [_row()]}, "included": []}
         reader = _Reader(moved)
-        with pytest.raises(LinkedInScraperException, match="changed shape"):
+        with pytest.raises(LinkedInOperationError, match="changed shape"):
             await reader.get_invitations()
 
     async def test_a_genuinely_empty_board_is_allowed_to_be_empty(self):
@@ -196,14 +196,14 @@ class TestBoards:
 
     async def test_an_unknown_direction_is_refused_before_any_request(self):
         reader = _Reader(_payload([]))
-        with pytest.raises(LinkedInScraperException, match="direction was"):
+        with pytest.raises(LinkedInOperationError, match="direction was"):
             await reader.get_invitations(direction="pending")
         assert reader.fetched == [], "a bad argument must not cost a request"
 
     @pytest.mark.parametrize("kwargs", [{"start": -1}, {"count": 0}])
     async def test_nonsense_paging_is_refused_before_any_request(self, kwargs):
         reader = _Reader(_payload([]))
-        with pytest.raises(LinkedInScraperException, match="start must be"):
+        with pytest.raises(LinkedInOperationError, match="start must be"):
             await reader.get_invitations(**kwargs)
         assert reader.fetched == []
 
@@ -249,7 +249,7 @@ class TestTransportFailuresKeepTheirType:
         [
             AuthenticationError("rejected"),
             RateLimitError("slow down"),
-            LinkedInScraperException("broke"),
+            LinkedInOperationError("broke"),
         ],
     )
     async def test_the_error_propagates_rather_than_becoming_zero(self, error):
@@ -323,7 +323,7 @@ class TestUnresolvedReferences:
     async def test_a_listed_row_missing_from_the_answer_is_refused(self):
         payload = _normalized("received", "ilan-rado")
         payload["data"]["*elements"].append("urn:li:fs_relInvitationView:gone")
-        with pytest.raises(LinkedInScraperException, match="not in the answer"):
+        with pytest.raises(LinkedInOperationError, match="not in the answer"):
             await _Reader(payload).get_invitations()
 
     async def test_a_view_whose_invitation_is_missing_is_refused(self):
@@ -333,5 +333,5 @@ class TestUnresolvedReferences:
             for e in payload["included"]
             if e["entityUrn"] != "urn:li:fs_relInvitation:1"
         ]
-        with pytest.raises(LinkedInScraperException, match="not in the answer"):
+        with pytest.raises(LinkedInOperationError, match="not in the answer"):
             await _Reader(payload).get_invitations()

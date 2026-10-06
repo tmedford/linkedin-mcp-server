@@ -3,8 +3,8 @@ name: Sync upstream
 # Keeps this fork current with stickerdaniel/linkedin-mcp-server.
 #
 # The fork carries one addition upstream declined (#997): the get_conversations
-# tool in scraping/voyager_messaging.py, plus additive changes to
-# scraping/extractor.py and tools/messaging.py. That divergence is permanent, so
+# tool in voyager/messaging.py, plus additive changes to
+# linkedin/extractor.py and tools/messaging.py. That divergence is permanent, so
 # this merges rather than resets, and it only pushes once the tests covering
 # that tool still pass. A conflict or a failing test fails the run and leaves
 # main alone, which is the point: a red workflow is cheap, a silently broken
@@ -70,33 +70,33 @@ jobs:
       - name: Re-derive the generated architecture doc
         if: env.behind != '0'
         run: |
-          # docs/scraping-architecture.md is GENERATED from the scraping package
-          # and frozen by tests/scraping/test_architecture_docs.py. Upstream edits
+          # docs/linkedin-architecture.md is GENERATED from the linkedin package
+          # and frozen by tests/linkedin/test_architecture_docs.py. Upstream edits
           # it and so do we, so git text-merges it - and a text merge of a
           # generated file can come out conflict-free and still disagree with the
           # code it claims to describe. Re-derive it from the merged source rather
-          # than trusting the merge, or every upstream change under scraping/
+          # than trusting the merge, or every upstream change under linkedin/
           # halts this sync on a diff no human needs to read.
-          uv run python scripts/generate_scraping_architecture.py
-          if git diff --quiet -- docs/scraping-architecture.md; then
+          uv run python scripts/generate_linkedin_architecture.py
+          if git diff --quiet -- docs/linkedin-architecture.md; then
             echo "Doc already agreed with the merged source."
           else
-            git add docs/scraping-architecture.md
-            git commit -m "docs: regenerate scraping architecture after upstream merge"
+            git add docs/linkedin-architecture.md
+            git commit -m "docs: regenerate linkedin architecture after upstream merge"
             echo "Re-derived the doc; the text merge was not authoritative."
           fi
 
       - name: Test the tool this fork exists for
         if: env.behind != '0'
         run: |
-          uv run pytest tests/test_voyager_messaging.py tests/scraping/ tests/test_tools.py -q
+          uv run pytest tests/test_voyager_messaging.py tests/linkedin/ tests/test_tools.py -q
           # A clean merge is not a working one. If upstream moved something
           # voyager_messaging depends on, this is where it shows.
 
       - name: Confirm the fork's addition survived
         if: env.behind != '0'
         run: |
-          grep -q "async def get_conversations" linkedin_mcp_server/scraping/extractor.py
+          grep -q "async def get_conversations" linkedin_mcp_server/linkedin/extractor.py
           grep -q "async def get_conversations" linkedin_mcp_server/voyager/messaging.py
           echo "get_conversations still present on both the reader and the facade."
 

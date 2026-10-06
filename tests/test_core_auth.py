@@ -9,7 +9,10 @@ from patchright.async_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
 
-from linkedin_mcp_server.core.exceptions import AuthenticationError
+from linkedin_mcp_server.core.exceptions import (
+    AccountRestrictedError,
+    AuthenticationError,
+)
 from linkedin_mcp_server.core.auth import (
     _REMEMBER_ME_CONTAINER_SELECTOR,
     detect_auth_barrier,
@@ -20,39 +23,53 @@ from linkedin_mcp_server.core.auth import (
 )
 
 
-def _barrier_page(*, picker: bool = False) -> MagicMock:
-    """A page mock whose locator answers per selector, as the real one does.
+def _barrier_page(
+    *,
+    url: str = "https://www.linkedin.com/feed/",
+    title: str = "LinkedIn",
+    body: str = "",
+    picker: bool = False,
+    document_url: str | None = None,
+) -> MagicMock:
+    """A page double holding one document, read the way the detector reads it.
 
-    `MagicMock().count()` is not awaitable, so a page left unwired sends the
-    structural check down its own exception path and every assertion about the
-    text table passes for the wrong reason. Answering one count for every
-    selector is the next version of that mistake: the check could be moved to
-    `main`, or to any element a LinkedIn page always carries, and the picker
-    would still be found here while a real page without the container is
-    missed.
+    The detector asks for the document's address, title, picker and, on the
+    full check, body text in a single evaluation, and judges them together.
+    Answering each from separate mocks is what let a portal's title be paired
+    with LinkedIn's address. ``document_url`` is that document's own address
+    when it differs from the driver's ``page.url``: a redirect the driver has
+    not reported yet.
+
+    ``body_reads`` counts the evaluations that asked for the body text, which
+    the quick check exists to skip.
     """
     page = MagicMock()
+    page.url = url
+    page.body_reads = 0
 
-    def locator(selector: str, *args: object, **kwargs: object) -> MagicMock:
-        found = MagicMock()
-        found.count = AsyncMock(
-            return_value=1
-            if picker and selector == _REMEMBER_ME_CONTAINER_SELECTOR
-            else 0
-        )
-        return found
+    async def evaluate(script: str, arg: object = None) -> dict[str, object]:
+        if not isinstance(arg, dict) or set(arg) != {"picker", "includeBody"}:
+            raise AssertionError(f"not the barrier read: {script[:60]!r}")
+        assert arg["picker"] == _REMEMBER_ME_CONTAINER_SELECTOR
+        if arg["includeBody"]:
+            page.body_reads += 1
+        return {
+            "href": document_url or page.url,
+            "title": title,
+            "picker": picker,
+            "body": body if arg["includeBody"] else "",
+        }
 
-    page.locator = MagicMock(side_effect=locator)
+    page.evaluate = AsyncMock(side_effect=evaluate)
     return page
 
 
 @pytest.mark.asyncio
 async def test_detect_auth_barrier_for_account_picker():
-    page = _barrier_page()
-    page.url = "https://www.linkedin.com/login"
-    page.title = AsyncMock(return_value="LinkedIn Login, Sign in | LinkedIn")
-    page.evaluate = AsyncMock(
-        return_value="Welcome Back\nSign in using another account\nJoin now"
+    page = _barrier_page(
+        url="https://www.linkedin.com/login",
+        title="LinkedIn Login, Sign in | LinkedIn",
+        body="Welcome Back\nSign in using another account\nJoin now",
     )
 
     result = await detect_auth_barrier(page)
@@ -63,11 +80,10 @@ async def test_detect_auth_barrier_for_account_picker():
 
 @pytest.mark.asyncio
 async def test_detect_auth_barrier_for_continue_as_account_picker():
-    page = _barrier_page()
-    page.url = "https://www.linkedin.com/checkpoint/lg/login-submit"
-    page.title = AsyncMock(return_value="LinkedIn Sign In")
-    page.evaluate = AsyncMock(
-        return_value="Continue as Daniel Sticker\nSign in using another account"
+    page = _barrier_page(
+        url="https://www.linkedin.com/checkpoint/lg/login-submit",
+        title="LinkedIn Sign In",
+        body="Continue as Daniel Sticker\nSign in using another account",
     )
 
     result = await detect_auth_barrier(page)
@@ -77,11 +93,10 @@ async def test_detect_auth_barrier_for_continue_as_account_picker():
 
 @pytest.mark.asyncio
 async def test_detect_auth_barrier_for_choose_account_picker():
-    page = _barrier_page()
-    page.url = "https://www.linkedin.com/checkpoint/lg/login-submit"
-    page.title = AsyncMock(return_value="LinkedIn Sign In")
-    page.evaluate = AsyncMock(
-        return_value="Choose an account\nSign in using another account"
+    page = _barrier_page(
+        url="https://www.linkedin.com/checkpoint/lg/login-submit",
+        title="LinkedIn Sign In",
+        body="Choose an account\nSign in using another account",
     )
 
     result = await detect_auth_barrier(page)
@@ -91,10 +106,11 @@ async def test_detect_auth_barrier_for_choose_account_picker():
 
 @pytest.mark.asyncio
 async def test_detect_auth_barrier_returns_none_for_authenticated_page():
-    page = _barrier_page()
-    page.url = "https://www.linkedin.com/feed/"
-    page.title = AsyncMock(return_value="LinkedIn Feed")
-    page.evaluate = AsyncMock(return_value="Home\nMy Network\nJobs\nMessaging")
+    page = _barrier_page(
+        url="https://www.linkedin.com/feed/",
+        title="LinkedIn Feed",
+        body="Home\nMy Network\nJobs\nMessaging",
+    )
 
     result = await detect_auth_barrier(page)
 
@@ -103,15 +119,16 @@ async def test_detect_auth_barrier_returns_none_for_authenticated_page():
 
 @pytest.mark.asyncio
 async def test_detect_auth_barrier_quick_skips_body_text_on_authenticated_page():
-    page = _barrier_page()
-    page.url = "https://www.linkedin.com/feed/"
-    page.title = AsyncMock(return_value="LinkedIn Feed")
-    page.evaluate = AsyncMock(return_value="Home\nMy Network\nJobs\nMessaging")
+    page = _barrier_page(
+        url="https://www.linkedin.com/feed/",
+        title="LinkedIn Feed",
+        body="Home\nMy Network\nJobs\nMessaging",
+    )
 
     result = await detect_auth_barrier_quick(page)
 
     assert result is None
-    page.evaluate.assert_not_awaited()
+    assert page.body_reads == 0
 
 
 @pytest.mark.asyncio
@@ -146,11 +163,11 @@ async def test_a_localized_account_picker_is_still_a_barrier():
     address and title, so the words are the only other thing the detector had
     and they are English.
     """
-    page = _barrier_page(picker=True)
-    page.url = "https://www.linkedin.com/jobs/search/?keywords=test"
-    page.title = AsyncMock(return_value="Emplois | LinkedIn")
-    page.evaluate = AsyncMock(
-        return_value="Bon retour\nSe connecter avec un autre compte"
+    page = _barrier_page(
+        picker=True,
+        url="https://www.linkedin.com/jobs/search/?keywords=test",
+        title="Emplois | LinkedIn",
+        body="Bon retour\nSe connecter avec un autre compte",
     )
 
     result = await detect_auth_barrier(page)
@@ -162,10 +179,11 @@ async def test_a_localized_account_picker_is_still_a_barrier():
 @pytest.mark.asyncio
 async def test_a_localized_search_page_is_not_a_barrier():
     """A page in another language is not a barrier for being in another language."""
-    page = _barrier_page()
-    page.url = "https://www.linkedin.com/jobs/search/?keywords=test"
-    page.title = AsyncMock(return_value="Emplois | LinkedIn")
-    page.evaluate = AsyncMock(return_value="Accueil\nRéseau\nEmplois\nMessagerie")
+    page = _barrier_page(
+        url="https://www.linkedin.com/jobs/search/?keywords=test",
+        title="Emplois | LinkedIn",
+        body="Accueil\nRéseau\nEmplois\nMessagerie",
+    )
 
     result = await detect_auth_barrier(page)
 
@@ -179,19 +197,21 @@ async def test_the_quick_check_asks_the_page_for_a_picker():
     A picker served in place of the page that was asked for carries that
     page's address and that page's title. The quick check runs after every
     navigation, so leaving the container to the full check let a picker in an
-    uncovered locale reach every scraping tool as page text. It costs one
+    uncovered locale reach every reading tool as page text. It costs one
     selector count; the body read is what the quick path exists to skip.
     """
-    page = _barrier_page(picker=True)
-    page.url = "https://www.linkedin.com/feed/"
-    page.title = AsyncMock(return_value="LinkedIn Feed")
-    page.evaluate = AsyncMock(return_value="Startseite\nMein Netzwerk")
+    page = _barrier_page(
+        picker=True,
+        url="https://www.linkedin.com/feed/",
+        title="LinkedIn Feed",
+        body="Startseite\nMein Netzwerk",
+    )
 
     result = await detect_auth_barrier_quick(page)
 
     assert result is not None
     assert _REMEMBER_ME_CONTAINER_SELECTOR in result
-    page.evaluate.assert_not_awaited()
+    assert page.body_reads == 0
 
 
 @pytest.mark.asyncio
@@ -205,10 +225,7 @@ async def test_the_quick_check_asks_the_page_for_a_picker():
 )
 async def test_linkedin_s_own_auth_routes_still_count(url: str):
     """Every host LinkedIn serves them from, and the bare domain."""
-    page = _barrier_page()
-    page.url = url
-    page.title = AsyncMock(return_value="LinkedIn")
-    page.evaluate = AsyncMock(return_value="")
+    page = _barrier_page(url=url, title="LinkedIn")
 
     result = await detect_auth_barrier(page)
 
@@ -219,22 +236,22 @@ async def test_linkedin_s_own_auth_routes_still_count(url: str):
 @pytest.mark.asyncio
 async def test_a_healthy_page_costs_the_quick_check_nothing_but_the_count():
     """The container is absent on an ordinary page, and that ends it."""
-    page = _barrier_page()
-    page.url = "https://www.linkedin.com/feed/"
-    page.title = AsyncMock(return_value="LinkedIn Feed")
-    page.evaluate = AsyncMock(return_value="Home\nMy Network")
+    page = _barrier_page(
+        url="https://www.linkedin.com/feed/",
+        title="LinkedIn Feed",
+        body="Home\nMy Network",
+    )
 
     assert await detect_auth_barrier_quick(page) is None
-    page.evaluate.assert_not_awaited()
+    assert page.body_reads == 0
 
 
 @pytest.mark.asyncio
 async def test_detect_auth_barrier_ignores_continue_as_in_page_content():
-    page = _barrier_page()
-    page.url = "https://www.linkedin.com/jobs/view/123456/"
-    page.title = AsyncMock(return_value="Software Engineer at Acme - LinkedIn")
-    page.evaluate = AsyncMock(
-        return_value="We need someone to continue as a senior engineer on our team."
+    page = _barrier_page(
+        url="https://www.linkedin.com/jobs/view/123456/",
+        title="Software Engineer at Acme - LinkedIn",
+        body="We need someone to continue as a senior engineer on our team.",
     )
 
     result = await detect_auth_barrier(page)
@@ -244,11 +261,10 @@ async def test_detect_auth_barrier_ignores_continue_as_in_page_content():
 
 @pytest.mark.asyncio
 async def test_detect_auth_barrier_ignores_choose_account_in_page_content():
-    page = _barrier_page()
-    page.url = "https://www.linkedin.com/jobs/view/123456/"
-    page.title = AsyncMock(return_value="Software Engineer at Acme - LinkedIn")
-    page.evaluate = AsyncMock(
-        return_value="You will choose an account strategy for the next quarter."
+    page = _barrier_page(
+        url="https://www.linkedin.com/jobs/view/123456/",
+        title="Software Engineer at Acme - LinkedIn",
+        body="You will choose an account strategy for the next quarter.",
     )
 
     result = await detect_auth_barrier(page)
@@ -258,10 +274,11 @@ async def test_detect_auth_barrier_ignores_choose_account_in_page_content():
 
 @pytest.mark.asyncio
 async def test_detect_auth_barrier_ignores_auth_substrings_in_slugs():
-    page = _barrier_page()
-    page.url = "https://www.linkedin.com/company/challenge-labs/"
-    page.title = AsyncMock(return_value="Challenge Labs | LinkedIn")
-    page.evaluate = AsyncMock(return_value="Challenge Labs builds developer tools.")
+    page = _barrier_page(
+        url="https://www.linkedin.com/company/challenge-labs/",
+        title="Challenge Labs | LinkedIn",
+        body="Challenge Labs builds developer tools.",
+    )
 
     result = await detect_auth_barrier(page)
 
@@ -269,27 +286,180 @@ async def test_detect_auth_barrier_ignores_auth_substrings_in_slugs():
 
 
 @pytest.mark.asyncio
-async def test_resolve_remember_me_prompt_clicks_saved_account():
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://portal.invalid/login",
+        "https://portal.invalid/checkpoint/challenge/",
+        "https://linkedin.com.filter.example/authwall",
+        "about:blank",
+    ],
+)
+async def test_a_login_page_linkedin_did_not_serve_is_not_a_barrier(url: str):
+    """A filter page can copy LinkedIn's title, route and picker id.
+
+    Reporting it as a barrier ends in a retired session and a login opened
+    through the very page that is in the way.
+    """
+    page = _barrier_page(
+        picker=True,
+        url=url,
+        title="LinkedIn Login, Sign in | LinkedIn",
+        body="Welcome Back\nSign in using another account\nJoin now",
+    )
+
+    assert await detect_auth_barrier_quick(page) is None
+    assert await detect_auth_barrier(page) is None
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_restriction_route_is_not_a_restricted_account():
+    page = _barrier_page(
+        url="https://portal.invalid/login/login-restriction/", title="LinkedIn"
+    )
+
+    assert await detect_auth_barrier(page) is None
+
+
+@pytest.mark.asyncio
+async def test_a_title_read_after_a_redirect_is_not_paired_with_linkedin():
+    """The driver still names LinkedIn; the document that answered is a portal's."""
+    page = _barrier_page(
+        url="https://www.linkedin.com/feed/",
+        document_url="https://portal.invalid/login",
+        title="LinkedIn Login",
+        body="Welcome Back\nSign in using another account\nJoin now",
+        picker=True,
+    )
+
+    assert await detect_auth_barrier_quick(page) is None
+    assert await detect_auth_barrier(page) is None
+
+
+@pytest.mark.asyncio
+async def test_linkedin_s_login_title_is_a_barrier():
+    page = _barrier_page(
+        url="https://www.linkedin.com/in/testuser/", title="LinkedIn Login"
+    )
+
+    result = await detect_auth_barrier_quick(page)
+
+    assert result is not None and result.startswith("login title")
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_to_the_restriction_route_is_judged_by_the_document():
+    page = _barrier_page(
+        url="https://www.linkedin.com/feed/",
+        document_url="https://www.linkedin.com/flagship-web/login/login-restriction/",
+    )
+
+    with pytest.raises(AccountRestrictedError):
+        await detect_auth_barrier_quick(page)
+
+
+def _chooser_page(
+    url: str = "https://www.linkedin.com/login",
+    chooser_document: str = "https://www.linkedin.com/login",
+) -> tuple[MagicMock, MagicMock]:
+    """A page whose saved-account button lives in a document at *chooser_document*."""
     page = MagicMock()
+    page.url = url
+    button = MagicMock()
+    button.evaluate = AsyncMock(return_value=chooser_document)
+    button.scroll_into_view_if_needed = AsyncMock()
+    button.click = AsyncMock()
+    button.dispose = AsyncMock()
     target = MagicMock()
     target.wait_for = AsyncMock()
-    target.scroll_into_view_if_needed = AsyncMock()
-    target.click = AsyncMock()
+    target.element_handle = AsyncMock(return_value=button)
     target.first = target
     page.locator.return_value = target
     page.wait_for_selector = AsyncMock()
     page.wait_for_load_state = AsyncMock()
+    return page, button
+
+
+@pytest.mark.asyncio
+async def test_the_remember_me_button_is_not_clicked_on_a_foreign_page():
+    page, button = _chooser_page(
+        url="https://portal.invalid/login",
+        chooser_document="https://portal.invalid/login",
+    )
+
+    assert await resolve_remember_me_prompt(page) is False
+    button.click.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_chooser_that_moved_to_a_portal_while_awaited_is_not_clicked():
+    """Entry saw LinkedIn; the button that turned up belongs to a portal's page."""
+    page, button = _chooser_page(chooser_document="https://portal.invalid/login")
+
+    assert await resolve_remember_me_prompt(page) is False
+    button.click.assert_not_awaited()
+    button.dispose.assert_awaited_once()
+
+
+_RESTRICTION_URLS = [
+    # The route measured on 2026-09-27.
+    "https://www.linkedin.com/flagship-web/login/login-restriction/",
+    "https://www.linkedin.com/login/login-restriction/",
+    "https://www.linkedin.com/flagship-web/login/login-restriction",
+    "https://www.linkedin.com/login/login-restriction?trk=guest_homepage",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", _RESTRICTION_URLS)
+async def test_a_restricted_account_is_not_an_auth_barrier(url: str):
+    """No login clears it, so it must not be reported as one to log in past."""
+    page = _barrier_page(url=url, title="LinkedIn Login, Sign in | LinkedIn")
+
+    with pytest.raises(AccountRestrictedError, match="identity verification"):
+        await detect_auth_barrier_quick(page)
+    with pytest.raises(AccountRestrictedError):
+        await detect_auth_barrier(page)
+    with pytest.raises(AccountRestrictedError):
+        await is_logged_in(page)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("url", "barrier"),
+    [
+        ("https://www.linkedin.com/login/", "auth blocker URL"),
+        ("https://www.linkedin.com/login/login-restriction-help/", "auth blocker URL"),
+        ("https://www.linkedin.com/login-restriction-help/", None),
+        ("https://www.linkedin.com/in/login-restriction/", None),
+    ],
+)
+async def test_near_misses_of_the_restriction_route(url: str, barrier: str | None):
+    page = _barrier_page(url=url, title="LinkedIn")
+
+    result = await detect_auth_barrier_quick(page)
+
+    if barrier is None:
+        assert result is None
+    else:
+        assert result is not None and result.startswith(barrier)
+
+
+@pytest.mark.asyncio
+async def test_resolve_remember_me_prompt_clicks_saved_account():
+    page, button = _chooser_page()
 
     result = await resolve_remember_me_prompt(page)
 
     assert result is True
-    target.click.assert_awaited_once()
+    button.click.assert_awaited_once()
     page.wait_for_load_state.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_resolve_remember_me_prompt_returns_false_when_absent():
     page = MagicMock()
+    page.url = "https://www.linkedin.com/login"
     page.wait_for_selector = AsyncMock(side_effect=Exception("missing"))
 
     result = await resolve_remember_me_prompt(page)
@@ -300,6 +470,7 @@ async def test_resolve_remember_me_prompt_returns_false_when_absent():
 @pytest.mark.asyncio
 async def test_resolve_remember_me_prompt_returns_false_when_button_is_not_visible():
     page = MagicMock()
+    page.url = "https://www.linkedin.com/login"
     target = MagicMock()
     target.wait_for = AsyncMock(side_effect=PlaywrightTimeoutError("not visible"))
     locator = MagicMock()
@@ -327,6 +498,13 @@ def _manual_login_page() -> MagicMock:
     page.is_closed.return_value = False
     page.context.cookies = AsyncMock(return_value=[])
     return page
+
+
+def _tab(url: str = "https://www.linkedin.com/login") -> MagicMock:
+    """Another tab in the login browser; a real one always has an address."""
+    tab = MagicMock()
+    tab.url = url
+    return tab
 
 
 @pytest.mark.asyncio
@@ -445,7 +623,7 @@ async def test_wait_for_manual_login_waits_for_applicable_cookie(monkeypatch):
 async def test_wait_for_manual_login_survives_tracked_tab_closing(monkeypatch):
     page = _manual_login_page()
     page.is_closed.return_value = True
-    page.context.pages = [MagicMock()]
+    page.context.pages = [_tab()]
     page.context.cookies = AsyncMock(side_effect=[[], [_linkedin_cookie()]])
     monkeypatch.setattr(
         "linkedin_mcp_server.core.auth.resolve_remember_me_prompt",
@@ -528,7 +706,7 @@ async def test_wait_for_manual_login_checks_cookie_before_repeated_prompt(monkey
 @pytest.mark.asyncio
 async def test_wait_for_manual_login_does_not_poll_other_tabs(monkeypatch):
     page = _manual_login_page()
-    page.context.pages = [page, MagicMock(), MagicMock()]
+    page.context.pages = [page, _tab(), _tab()]
     resolve_prompt = AsyncMock(return_value=True)
 
     class _FakeLoop:
@@ -661,3 +839,46 @@ async def test_wait_for_manual_login_does_not_log_waiting_after_cookie(
         await wait_for_manual_login(page, timeout=0)
 
     assert "Still waiting for manual login" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restricted_tab", [0, 1], ids=["tracked tab", "other tab"])
+@pytest.mark.parametrize("with_cookie", [False, True], ids=["no cookie", "cookie"])
+async def test_wait_for_manual_login_stops_on_a_restricted_account(
+    monkeypatch, restricted_tab: int, with_cookie: bool
+):
+    """A restricted account gets no li_at, so without this the wait never ends.
+
+    Unlimited budget and the real sleep: a loop that keeps waiting spends its
+    one-second polls until the outer bound fails the test. With a cookie as
+    well, the restriction page still wins rather than reading as a login.
+    """
+    page = _manual_login_page()
+    if with_cookie:
+        page.context.cookies = AsyncMock(
+            return_value=[{"name": "li_at", "value": "token"}]
+        )
+    restriction = "https://www.linkedin.com/flagship-web/login/login-restriction/"
+    tabs = [page, _tab("https://www.linkedin.com/feed/")]
+    tabs[restricted_tab].url = restriction
+    page.context.pages = tabs
+    monkeypatch.setattr(
+        "linkedin_mcp_server.core.auth.resolve_remember_me_prompt",
+        AsyncMock(return_value=False),
+    )
+
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(AccountRestrictedError, match="will not open a login window"):
+        await asyncio.wait_for(wait_for_manual_login(page, timeout=0), timeout=3)
+
+    assert asyncio.get_running_loop().time() - started < 0.5
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_tab_on_the_restriction_path_does_not_end_the_login():
+    """Only LinkedIn can restrict the account; another site's path says nothing."""
+    page = _manual_login_page()
+    page.context.cookies = AsyncMock(return_value=[{"name": "li_at", "value": "t"}])
+    page.context.pages = [page, _tab("https://portal.invalid/login/login-restriction/")]
+
+    await asyncio.wait_for(wait_for_manual_login(page, timeout=0), timeout=3)

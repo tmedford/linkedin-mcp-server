@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -31,9 +32,9 @@ validate_title = cast(Callable[[str], str | None], _VALIDATOR.validate_title)
 
 _CHECK_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "check-pr-title.yml"
 _LABEL_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "label-pr.yml"
-_RELEASE_CONFIG = _REPO_ROOT / ".github" / "release.yml"
 _RELEASE_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "release.yml"
-_CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
+# A full commit SHA, so a moved tag cannot swap the code these workflows run.
+_CHECKOUT = re.compile(r"uses: actions/checkout@[0-9a-f]{40} ")
 _DERIVED_LABELS = {
     "breaking-change",
     "enhancement",
@@ -41,6 +42,7 @@ _DERIVED_LABELS = {
     "documentation",
     "refactoring",
     "chore",
+    "dependencies",
 }
 
 
@@ -372,28 +374,6 @@ else:
     return result, set(state["labels"]), calls
 
 
-def _release_category(label: str) -> str | None:
-    release = _RELEASE_CONFIG.read_text(encoding="utf-8")
-    exclude, categories = release.split("  categories:\n", maxsplit=1)
-    excluded = {
-        line.removeprefix("      - ")
-        for line in exclude.splitlines()
-        if line.startswith("      - ")
-    }
-    if label in excluded:
-        return None
-
-    current_title: str | None = None
-    for line in categories.splitlines():
-        if line.startswith("    - title: "):
-            current_title = json.loads(line.removeprefix("    - title: "))
-        elif line.startswith("        - ") and current_title is not None:
-            category_label = line.removeprefix("        - ").strip('"')
-            if category_label in {label, "*"}:
-                return current_title
-    return None
-
-
 @pytest.mark.parametrize(
     "title",
     [
@@ -491,7 +471,7 @@ def test_pr_title_workflow_is_automatic_required_check() -> None:
     assert "pull-requests: write" not in workflow
     assert "group: pr-title-${{ github.event.pull_request.number }}" in workflow
     assert "cancel-in-progress: true" in workflow
-    assert _CHECKOUT in workflow
+    assert _CHECKOUT.search(workflow)
     assert "ref: ${{ github.workflow_sha }}" in workflow
     assert "persist-credentials: false" in workflow
     assert "github.event.pull_request.head" not in workflow
@@ -564,22 +544,22 @@ def test_label_workflow_matches_breaking_marker_without_normalizing() -> None:
 
 
 @pytest.mark.parametrize(
-    ("title", "expected_label", "expected_category"),
+    ("title", "expected_label"),
     [
-        ("refactor: Keep internals tidy", "refactoring", None),
-        (
-            "refactor(config)!: Change configuration",
-            "breaking-change",
-            "⚠️ Breaking Changes",
-        ),
-        ("feat!: Replace the public contract", "breaking-change", "⚠️ Breaking Changes"),
+        ("refactor: Keep internals tidy", "refactoring"),
+        ("refactor(config)!: Change configuration", "breaking-change"),
+        ("feat!: Replace the public contract", "breaking-change"),
+        ("fix(deps): update all major dependencies (major)", "dependencies"),
+        ("chore(deps): lock file maintenance", "dependencies"),
+        ("fix(deps)!: Drop the old runtime", "breaking-change"),
+        ("fix(deps-dev): Keep the scope exact", "bug"),
+        ("feat(deps): Add a dependency-backed feature", "enhancement"),
     ],
 )
-def test_pr_title_label_release_lifecycle(
+def test_pr_title_label_lifecycle(
     tmp_path: Path,
     title: str,
     expected_label: str,
-    expected_category: str | None,
 ) -> None:
     assert validate_title(title) is None
     attached = (_DERIVED_LABELS - {expected_label}) | {"triage"}
@@ -588,7 +568,6 @@ def test_pr_title_label_release_lifecycle(
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert final_labels == {expected_label, "triage"}
-    assert _release_category(expected_label) == expected_category
     edited_labels = {call[-1] for call in calls}
     assert edited_labels == _DERIVED_LABELS
 
@@ -635,7 +614,7 @@ def test_label_workflow_uses_trusted_validator_and_current_title() -> None:
     assert "set -euo pipefail" in workflow
     assert "      contents: read\n      pull-requests: write\n" in workflow
     assert "contents: write" not in workflow
-    assert _CHECKOUT in workflow
+    assert _CHECKOUT.search(workflow)
     assert "ref: ${{ github.workflow_sha }}" in workflow
     assert "persist-credentials: false" in workflow
     assert "github.event.pull_request.head" not in workflow
@@ -660,8 +639,8 @@ def test_label_workflow_removes_only_attached_stale_labels() -> None:
 
     assert '"breaking-change",' in workflow
     assert (
-        "for stale in breaking-change enhancement bug documentation refactoring chore;"
-        in workflow
+        "for stale in breaking-change enhancement bug documentation refactoring chore"
+        " dependencies;" in workflow
     )
     assert "ATTACHED_DERIVED=" in workflow
     assert 'if is_attached "$stale"; then' in workflow
@@ -670,18 +649,6 @@ def test_label_workflow_removes_only_attached_stale_labels() -> None:
     assert "|| true" not in workflow
     assert "2>/dev/null" not in workflow
     assert "Labels outside this fixed derived set are untouched." in workflow
-
-
-def test_release_notes_put_breaking_changes_first() -> None:
-    release = _RELEASE_CONFIG.read_text(encoding="utf-8")
-    exclude, categories = release.split("  categories:\n", maxsplit=1)
-
-    assert "breaking-change" not in exclude
-    assert categories.startswith(
-        '    - title: "⚠️ Breaking Changes"\n      labels:\n        - breaking-change\n'
-    )
-    assert _release_category("breaking-change") == "⚠️ Breaking Changes"
-    assert _release_category("refactoring") is None
 
 
 def test_release_restores_pr_title_required_check() -> None:

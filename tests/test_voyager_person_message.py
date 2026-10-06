@@ -10,7 +10,7 @@ import pytest
 
 from linkedin_mcp_server.core.exceptions import (
     InvalidReferenceError,
-    LinkedInScraperException,
+    LinkedInOperationError,
 )
 from linkedin_mcp_server.voyager.person_message import (
     VoyagerPersonMessage,
@@ -128,7 +128,7 @@ async def test_anything_but_exactly_one_member_stops_before_any_write(urns):
     key = "*elements" if urns else "elements"
     sender, page = _sender(ME_ANSWER, _profiles(*urns, key=key))
 
-    with pytest.raises(LinkedInScraperException, match="not exactly one"):
+    with pytest.raises(LinkedInOperationError, match="not exactly one"):
         await sender.message_person("ada-lovelace", "hello", confirm_send=True)
 
     assert page.writes == []
@@ -137,7 +137,7 @@ async def test_anything_but_exactly_one_member_stops_before_any_write(urns):
 async def test_a_lookup_whose_shape_moved_is_not_read_as_nobody_found():
     sender, _ = _sender(ME_ANSWER, _profiles(key=""))
 
-    with pytest.raises(LinkedInScraperException, match="changed shape"):
+    with pytest.raises(LinkedInOperationError, match="changed shape"):
         await sender.message_person("ada-lovelace", "hello", confirm_send=True)
 
 

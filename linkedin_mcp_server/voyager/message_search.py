@@ -38,7 +38,7 @@ from urllib.parse import quote
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 from linkedin_mcp_server.voyager.messaging import MESSAGING_URL, VoyagerMessagingReader
@@ -127,11 +127,11 @@ class VoyagerMessageSearch(VoyagerMessagingReader):
         """Read ONE page of conversations matching ``keywords``."""
         keywords = keywords.strip()
         if not keywords:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "keywords was blank. Pass the word or phrase to search for."
             )
         if cursor is not None and not cursor.strip():
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "cursor was blank. OMIT the argument for the first page, or "
                 "pass a next_cursor from a previous call."
             )
@@ -143,11 +143,11 @@ class VoyagerMessageSearch(VoyagerMessagingReader):
             payload = await self._fetch(self._search_url(mailbox_urn, keywords, cursor))
         except (AuthenticationError, RateLimitError):
             raise
-        except LinkedInScraperException as exc:
+        except LinkedInOperationError as exc:
             logger.info("Search query failed (%s); observing the query id again", exc)
             renewed = True
             if await self._discover_query_id(keywords) is None:
-                raise LinkedInScraperException(
+                raise LinkedInOperationError(
                     "Voyager message-search request failed and no keyword "
                     "query was observed on the search page, so the query id "
                     "could not be renewed."

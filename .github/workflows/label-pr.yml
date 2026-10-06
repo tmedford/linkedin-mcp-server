@@ -4,11 +4,10 @@ on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
 
-# Release notes are generated from labels (see .github/release.yml), and GitHub
-# offers no way to filter them by title or author. Without a label, a docs or
-# chore PR lands in the changelog as user-facing noise. This derives the label
-# from the conventional-commit type in the PR title so the filtering works
-# without anyone remembering to label by hand.
+# Labels are for triage: they let the PR list be filtered by kind of change.
+# Release notes do not read them; those come from changelog.d fragments. This
+# derives the label from the conventional-commit type in the PR title so the
+# filtering works without anyone remembering to label by hand.
 # pull_request_target is required so PRs from forks get a writable token.
 # It is safe here only because the job checks out the trusted workflow revision,
 # never the PR branch, and matches current API data against a fixed case list.
@@ -25,7 +24,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout the trusted workflow revision
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
@@ -62,6 +61,7 @@ jobs:
               "documentation",
               "refactoring",
               "chore",
+              "dependencies",
           }
           try:
               pr = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -89,16 +89,22 @@ jobs:
           # Match only a type at the exact start of a structurally valid prefix.
           # The title stays in a variable, so a crafted value cannot inject shell.
           TYPE=""
+          SCOPE=""
           BREAKING=""
           if [ "$TITLE_VALID" = true ]; then
             if [[ "$PR_TITLE" =~ ^([a-z]+)(\([^()]+\))?(!)?:\ [^[:space:]] ]]; then
               TYPE="${BASH_REMATCH[1]}"
+              SCOPE="${BASH_REMATCH[2]-}"
               BREAKING="${BASH_REMATCH[3]-}"
             fi
           fi
 
+          # Renovate titles runtime updates fix(deps) and the rest chore(deps).
+          # Both are dependency updates, not bug fixes or triage chores.
           if [ "$BREAKING" = "!" ]; then
             LABEL="breaking-change"
+          elif [ "$SCOPE" = "(deps)" ] && { [ "$TYPE" = fix ] || [ "$TYPE" = chore ]; }; then
+            LABEL="dependencies"
           else
             case "$TYPE" in
               feat)           LABEL="enhancement" ;;
@@ -125,7 +131,7 @@ jobs:
           # Idempotency is explicit: only attached stale derived labels are
           # removed, and the desired label is added only when it is absent.
           # Labels outside this fixed derived set are untouched.
-          for stale in breaking-change enhancement bug documentation refactoring chore; do
+          for stale in breaking-change enhancement bug documentation refactoring chore dependencies; do
             [ "$stale" = "$LABEL" ] && continue
             if is_attached "$stale"; then
               gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label "$stale"

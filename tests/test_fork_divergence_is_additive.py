@@ -42,7 +42,7 @@ UPSTREAM_CANDIDATES = ("upstream/main", "origin/main")
 #: Paths whose divergence is not covered by this rule. Generated files are
 #: re-derived from the tree rather than written by hand, so a deletion in one
 #: is an output of a change rather than the change itself.
-EXEMPT_PREFIXES = ("docs/scraping-architecture.md",)
+EXEMPT_PREFIXES = ("docs/linkedin-architecture.md",)
 
 #: The rule is enforced strictly here: a deletion in shipped code is what a
 #: future upstream edit collides with, and it changes what the server does.
@@ -55,10 +55,13 @@ SOURCE_ROOT = "linkedin_mcp_server/"
 #: with a reason, not a blanket exemption for tests -- a test file that starts
 #: diverging for any other reason still fails this.
 TEST_INVENTORY_EXEMPTIONS = {
-    "tests/scraping/test_facade_contracts.py": "counts tools and facade delegates",
-    "tests/scraping/test_policy_traces.py": "counts served tool schemas",
-    "tests/test_daemon_election.py": "asserts the exact served tool inventory",
-    "tests/fixtures/scraping-policy/v1/facade-contract.json": (
+    "tests/linkedin/test_facade_contracts.py": "counts tools and facade delegates",
+    "tests/linkedin/test_policy_traces.py": "counts served tool schemas",
+    "tests/fixtures/tool-contract/tools.json": (
+        "generated: records every served tool as it goes on the wire, so "
+        "superseding one necessarily replaces its entry"
+    ),
+    "tests/fixtures/policy-traces/v1/facade-contract.json": (
         "generated: records every served tool's schema, so superseding one "
         "necessarily removes its entry"
     ),

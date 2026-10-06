@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
-from linkedin_mcp_server.scraping.contracts import FilterValidationError
+from linkedin_mcp_server.core.exceptions import LinkedInOperationError
+from linkedin_mcp_server.linkedin.contracts import FilterValidationError
 from linkedin_mcp_server.voyager.content import VoyagerContent, parse_content_posts
 
 
@@ -253,7 +253,7 @@ async def test_an_unknown_recency_is_refused_before_any_request():
 async def test_posts_marked_but_not_parsed_are_refused():
     broken = '0:["$","div",null,{"viewTrackingSpecs":{"viewName":"feed-full-update"}}]'
 
-    with pytest.raises(LinkedInScraperException, match="changed shape"):
+    with pytest.raises(LinkedInOperationError, match="changed shape"):
         await _reader(_Page(broken)).search_posts("x", max_pages=1)
 
 

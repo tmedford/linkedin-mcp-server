@@ -36,7 +36,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
+from linkedin_mcp_server.core.exceptions import LinkedInOperationError
 from linkedin_mcp_server.voyager.client import VoyagerReader, person_identifier
 
 logger = logging.getLogger(__name__)
@@ -95,11 +95,11 @@ class VoyagerInvitationsReader(VoyagerReader):
         proves nothing either way and is reported as ``None``.
         """
         if direction not in ("received", "sent"):
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"direction was {direction!r}. Pass 'received' or 'sent'."
             )
         if start < 0 or count < 1:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"start must be >= 0 and count >= 1, got start={start}, count={count}."
             )
 
@@ -182,7 +182,7 @@ class VoyagerInvitationsReader(VoyagerReader):
                 if not isinstance(row, dict):
                     # Dropping it would under-report the board quietly, the
                     # same class of failure as a false zero.
-                    raise LinkedInScraperException(
+                    raise LinkedInOperationError(
                         f"Voyager invitations row {element!r} is not in the "
                         "answer it was listed in. Refusing to report a board "
                         "with rows missing."
@@ -204,7 +204,7 @@ class VoyagerInvitationsReader(VoyagerReader):
             if not isinstance(invitation, dict):
                 # The view alone has no state, time or members: read as the
                 # invitation it would become a blank row passed off as one.
-                raise LinkedInScraperException(
+                raise LinkedInOperationError(
                     f"Voyager invitations: {row['*invitation']!r} is not in the "
                     "answer that pointed at it."
                 )

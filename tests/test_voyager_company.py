@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
+from linkedin_mcp_server.core.exceptions import LinkedInOperationError
 from linkedin_mcp_server.voyager.company import (
     VoyagerCompany,
     parse_companies,
@@ -162,7 +162,7 @@ async def test_company_people_without_schools_sends_no_school_filter():
 async def test_a_school_name_is_refused_before_any_request():
     reader, page = _reader(_company(), _people(["ada"]))
 
-    with pytest.raises(LinkedInScraperException, match="school ids"):
+    with pytest.raises(LinkedInOperationError, match="school ids"):
         await reader.get_company_people("acme", schools=["Georgia Tech"])
 
     assert page.requests == []
@@ -172,7 +172,7 @@ async def test_a_school_name_is_refused_before_any_request():
 async def test_a_school_id_in_non_ascii_digits_is_refused(school):
     reader, page = _reader(_company(), _people(["ada"]))
 
-    with pytest.raises(LinkedInScraperException, match="school ids"):
+    with pytest.raises(LinkedInOperationError, match="school ids"):
         await reader.get_company_people("acme", schools=[school])
 
     assert page.requests == []
@@ -181,7 +181,7 @@ async def test_a_school_id_in_non_ascii_digits_is_refused(school):
 async def test_an_unknown_company_is_refused_by_name():
     reader, _ = _reader({"data": {"*elements": []}, "included": []})
 
-    with pytest.raises(LinkedInScraperException, match="no company named 'nope'"):
+    with pytest.raises(LinkedInOperationError, match="no company named 'nope'"):
         await reader.get_company("nope")
 
 

@@ -22,7 +22,7 @@ import socket
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -59,6 +59,56 @@ def _collect(channel: ControlListener, *, timeout: float, nonce: str = _NONCE) -
     """
     channel.start_accepting(nonce=nonce, timeout=timeout)
     channel.attached_within(timeout=timeout)
+
+
+class _DropObservedSocket:
+    """A real accepted socket whose first close records the drop."""
+
+    def __init__(self, connection: socket.socket, dropped_at: list[float]) -> None:
+        self._connection = connection
+        self._dropped_at = dropped_at
+        self._closed = False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    def close(self) -> None:
+        if self._closed:
+            self._connection.close()
+            return
+        self._closed = True
+        self._connection.close()
+        self._dropped_at.append(time.monotonic())
+
+
+class _DropObservedListener:
+    """Wrap accepted sockets without relying on platform selector support."""
+
+    def __init__(self, listener: socket.socket, dropped_at: list[float]) -> None:
+        self._listener = listener
+        self._dropped_at = dropped_at
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._listener, name)
+
+    def accept(self) -> tuple[_DropObservedSocket, Any]:
+        connection, address = self._listener.accept()
+        return _DropObservedSocket(connection, self._dropped_at), address
+
+
+class _PublicationObservedEvent:
+    """Timestamp the signal after the connection is published."""
+
+    def __init__(self, event: threading.Event) -> None:
+        self._event = event
+        self.published_at: float | None = None
+
+    def set(self) -> None:
+        self.published_at = time.monotonic()
+        self._event.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self._event.wait(timeout)
 
 
 class TestAuthorization:
@@ -147,29 +197,57 @@ class TestAuthorization:
         # Measured, and the reason this is not _BACKLOG silent peers plus a
         # child: a seventeenth connect is not refused but dropped, and the client
         # then waits a full second on a SYN retransmit for a slot that nothing is
-        # draining. A share-of-what-is-left bound is what survives this; every
-        # fixed per-peer span, floors included, is emptied by enough repetitions.
+        # draining.
         silent = [
             socket.create_connection((listener.host, listener.port))
             for _ in range(process_control._BACKLOG - 1)
         ]
         child = _attach(listener)
+        dropped_at: list[float] = []
+        raw_listener = listener._listener
+        assert raw_listener is not None
+        listener._listener = cast(Any, _DropObservedListener(raw_listener, dropped_at))
+        publication = _PublicationObservedEvent(listener._attached)
+        listener._attached = cast(Any, publication)
         try:
             began = time.monotonic()
-            _collect(listener, timeout=daemon_election._PREPARED_READ_SECONDS)
-            elapsed = time.monotonic() - began
-            listener.send(_RECORD)
+            deadline = began + daemon_election._PREPARED_READ_SECONDS
+            # Production starts the drain with the whole spawn budget. The
+            # owner's later attachment wait is the one-second bound asserted
+            # below; using it as the drain budget geometrically shrinks the peer
+            # allowances into a shape production never runs.
+            listener.start_accepting(nonce=_NONCE, timeout=30.0)
+            listener.attached_within(timeout=max(deadline - time.monotonic(), 0.0))
 
-            assert child.readline() == _RECORD
-            # Keep a quarter of the production wait for the owner. The peer
-            # allowances consume about three eighths; requiring the complete
-            # drain below one half left only one eighth for thread scheduling
-            # and socket cleanup, and a loaded runner spent 0.535s on a correct
-            # handoff. Three quarters still fails any peer that can spend the
-            # whole wait while leaving realistic scheduler margin.
-            assert elapsed < daemon_election._PREPARED_READ_SECONDS * 3 / 4, (
-                "a full queue of silent peers spent the production wait"
+            assert publication.published_at is not None
+            assert publication.published_at <= deadline, (
+                "the owner was published after its production window"
             )
+            assert len(dropped_at) == len(silent), (
+                "the owner was reached before every silent peer was dropped"
+            )
+
+            # Observe the server's close calls directly. This is portable to
+            # Windows and avoids charging scheduler or socket-notification lag to
+            # the drain. A few delayed peers are harmless, but most peers still
+            # have to be refused at the production allowance's pace.
+            allowance = daemon_election._PREPARED_READ_SECONDS / (
+                2 * process_control._BACKLOG
+            )
+            intervals = [
+                later - earlier
+                for earlier, later in zip(dropped_at, dropped_at[1:], strict=False)
+            ]
+            threshold = 1.5 * allowance
+            fast_intervals = sum(interval < threshold for interval in intervals)
+            required_fast = (3 * len(intervals) + 3) // 4
+            assert fast_intervals >= required_fast, (
+                f"only {fast_intervals} of {len(intervals)} silent peers were "
+                "refused at the production allowance's pace"
+            )
+
+            listener.send(_RECORD)
+            assert child.readline() == _RECORD
         finally:
             for peer in silent:
                 peer.close()
@@ -480,23 +558,54 @@ class TestWorkerLifetime:
             first.close()
             second.close()
 
+    @pytest.mark.parametrize("parked_in", ["_drain_queue", "_proves_itself"])
     def test_a_peer_that_authenticates_late_gets_the_abort(
-        self, listener: ControlListener
+        self, listener: ControlListener, parked_in: str
     ):
-        # The same thing through the socket rather than the method. Whether the
-        # worker was between accepts or already reading this peer, the peer ends
-        # up with end of file and the channel with nothing attached.
+        # The same thing through the socket rather than the method, with the
+        # worker held where the close finds it: between accepts, or already
+        # reading this peer. Either way the peer is cut off and the channel ends
+        # with nothing attached. A peer the worker never accepted is reset with
+        # the listening socket rather than shut down, so it reads a reset where
+        # an accepted one reads end of file; both are the abort. A timeout is
+        # not: that peer is still waiting.
+        parked, release = threading.Event(), threading.Event()
+        held = getattr(listener, parked_in)
+
+        def park(*args: object) -> object:
+            parked.set()
+            assert release.wait(5.0)
+            return held(*args)
+
+        setattr(listener, parked_in, park)
         peer = socket.create_connection((listener.host, listener.port))
         try:
             listener.start_accepting(nonce=_NONCE, timeout=5.0)
+            worker = listener._drain
+            assert worker is not None
+            assert parked.wait(5.0)
             listener.close()
             with contextlib.suppress(OSError):
                 peer.sendall(f"attach {_NONCE}\n".encode("ascii"))
+            release.set()
+            # Judged once the worker is done, not at whatever instant the peer
+            # happens to read: close lets a worker that is still unwinding finish.
+            worker.join(5.0)
+            assert not worker.is_alive(), (
+                "the accept worker outlived the closed channel"
+            )
             peer.settimeout(5.0)
 
-            assert peer.recv(16) == b""
+            try:
+                received = peer.recv(16)
+            except ConnectionResetError:
+                received = b""
+            except TimeoutError:
+                pytest.fail("the late peer was left waiting instead of cut off")
+            assert received == b"", "the late peer was answered instead of cut off"
             assert listener._connection is None
         finally:
+            release.set()
             peer.close()
 
     def test_the_worker_and_its_socket_are_gone_after_close(
@@ -772,6 +881,9 @@ class TestOwnerFinalization:
                 pass
 
             def report(self, code: str) -> None:
+                pass
+
+            def attached(self, _log_path: Path, _nonce: str) -> None:
                 pass
 
             def close(self) -> None:

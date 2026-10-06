@@ -4,17 +4,26 @@ from __future__ import annotations
 
 import json
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import FunctionTool
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
-from linkedin_mcp_server.scraping.contracts import FilterValidationError
+from linkedin_mcp_server.core.exceptions import LinkedInOperationError
+from linkedin_mcp_server.linkedin.contracts import FilterValidationError
 from linkedin_mcp_server.server import create_mcp_server
 from linkedin_mcp_server.voyager import overlay
 from linkedin_mcp_server.voyager.people_search import VoyagerPeopleSearch, parse_people
+
+
+async def _run(tool, *args, extractor, **kwargs):
+    """Call a served tool with ``extractor`` answering its readiness call."""
+    with patch(
+        "linkedin_mcp_server.voyager.overlay.get_ready_extractor",
+        AsyncMock(return_value=extractor),
+    ):
+        return await tool.fn(*args, **kwargs)
 
 
 def _result(index: int, *, distance: str = "DISTANCE_2") -> dict[str, Any]:
@@ -142,7 +151,7 @@ async def test_a_numeric_location_is_used_as_the_geo_without_a_lookup():
 async def test_an_unrecognised_place_is_refused_rather_than_searched_unfiltered():
     search, page = _search({"body": json.dumps({"data": {"elements": []}})})
 
-    with pytest.raises(LinkedInScraperException, match="does not recognise"):
+    with pytest.raises(LinkedInOperationError, match="does not recognise"):
         await search.find_people("recruiter", location="Remote")
 
     assert len(page.requests) == 1
@@ -165,7 +174,7 @@ async def test_the_end_is_measured_from_the_page_never_from_the_reported_total()
 async def test_a_moved_container_is_refused_rather_than_read_as_no_results():
     search, _ = _search(_page_of([], key=""))
 
-    with pytest.raises(LinkedInScraperException, match="changed shape"):
+    with pytest.raises(LinkedInOperationError, match="changed shape"):
         await search.find_people("recruiter")
 
 
@@ -196,7 +205,7 @@ async def test_a_filter_linkedin_would_ignore_is_refused_before_any_request(argu
 async def test_unusable_paging_or_keywords_are_refused_before_any_request(arguments):
     search, page = _search()
 
-    with pytest.raises(LinkedInScraperException):
+    with pytest.raises(LinkedInOperationError):
         call: dict[str, Any] = {"keywords": "recruiter", **arguments}
         await search.find_people(**call)
 
@@ -225,7 +234,8 @@ async def test_the_tool_forwards_upstream_style_arguments(mock_context):
     extractor.find_people = AsyncMock(return_value={"people": []})
     tool = await _tool()
 
-    await tool.fn(
+    await _run(
+        tool,
         "recruiter",
         mock_context,
         location="New York",
@@ -252,7 +262,7 @@ async def test_a_refused_filter_reaches_the_caller_with_its_correction(mock_cont
     tool = await _tool()
 
     with pytest.raises(ToolError, match="numeric id"):
-        await tool.fn("recruiter", mock_context, extractor=extractor)
+        await _run(tool, "recruiter", mock_context, extractor=extractor)
 
 
 async def test_a_full_page_with_a_promo_in_it_is_not_the_end():

@@ -13,6 +13,11 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools import ToolResult
 
 from linkedin_mcp_server.config import get_config
+from linkedin_mcp_server.daemon_liveness import (
+    abandoned_before_browser_work,
+    abandoned_call_error,
+    browser_work_begins,
+)
 from linkedin_mcp_server.exceptions import BrowserBusyError
 from linkedin_mcp_server.profile_lease import get_profile_lease
 
@@ -59,22 +64,22 @@ class SequentialToolExecutionMiddleware(Middleware):
     ) -> ToolResult:
         tool_name = context.message.name
         wait_started = time.perf_counter()
-        logger.debug("Waiting for scraper lock for tool '%s'", tool_name)
+        logger.debug("Waiting for browser lock for tool '%s'", tool_name)
         await self._report_progress(
             context,
-            message="Queued waiting for scraper lock",
+            message="Queued waiting for the browser lock",
         )
 
         async with self._lock:
             wait_seconds = time.perf_counter() - wait_started
             logger.debug(
-                "Acquired scraper lock for tool '%s' after %.3fs",
+                "Acquired browser lock for tool '%s' after %.3fs",
                 tool_name,
                 wait_seconds,
             )
             await self._report_progress(
                 context,
-                message="Scraper lock acquired, starting tool",
+                message="Browser lock acquired, starting tool",
             )
             return await self._run_owning_the_profile(context, call_next, tool_name)
 
@@ -112,6 +117,19 @@ class SequentialToolExecutionMiddleware(Middleware):
             logger.info("Tool '%s' gave up waiting for the shared browser", tool_name)
             raise ToolError(str(BrowserBusyError()))
 
+        # After every wait this call can spend queued, and before the browser is
+        # touched: the last point at which an owner can still decline work its
+        # client has given up on. Nothing awaits between here and the body.
+        # Only the reference taken above is returned, and the browser-call count
+        # is left alone, because the body never began.
+        if abandoned_before_browser_work():
+            lease.release()
+            logger.info("Tool '%s' was abandoned before it began", tool_name)
+            raise abandoned_call_error()
+        # From here on the call may act, so an owner that has to cut it off
+        # reports its outcome as unknown rather than as a call that never ran.
+        browser_work_begins()
+
         hold_started = time.perf_counter()
         try:
             # Marks the browser as in use so the background handoff poll cannot
@@ -122,7 +140,7 @@ class SequentialToolExecutionMiddleware(Middleware):
         finally:
             hold_seconds = time.perf_counter() - hold_started
             logger.debug(
-                "Released scraper lock for tool '%s' after %.3fs",
+                "Released browser lock for tool '%s' after %.3fs",
                 tool_name,
                 hold_seconds,
             )

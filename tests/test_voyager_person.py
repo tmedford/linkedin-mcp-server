@@ -11,7 +11,7 @@ import pytest
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
 )
 from linkedin_mcp_server.voyager import person as person_module
 from linkedin_mcp_server.voyager import jobs as jobs_module
@@ -494,11 +494,11 @@ async def test_nobody_found_and_a_moved_shape_are_different_failures():
     nobody, _ = _reader(
         {"body": json.dumps({"data": {"elements": []}, "included": []})}
     )
-    with pytest.raises(LinkedInScraperException, match="not exactly one"):
+    with pytest.raises(LinkedInOperationError, match="not exactly one"):
         await nobody.get_person("ghost")
 
     moved, _ = _reader({"body": json.dumps({"data": {"other": 1}, "included": []})})
-    with pytest.raises(LinkedInScraperException, match="changed shape"):
+    with pytest.raises(LinkedInOperationError, match="changed shape"):
         await moved.get_person("ghost")
 
 
@@ -599,7 +599,7 @@ async def test_no_mutual_connections_is_a_real_zero_and_a_missing_list_is_not():
     moved, _ = _reader(
         RESOLVED, {"body": json.dumps({"data": {"x": 1}, "included": []})}
     )
-    with pytest.raises(LinkedInScraperException, match="changed shape"):
+    with pytest.raises(LinkedInOperationError, match="changed shape"):
         await moved.get_mutual_connections("ada-lovelace")
 
 
@@ -689,7 +689,7 @@ async def test_a_short_page_of_posts_is_the_end_and_an_empty_one_proves_nothing(
 async def test_a_negative_offset_is_refused_before_any_request():
     reader, page = _reader()
 
-    with pytest.raises(LinkedInScraperException, match="start must be"):
+    with pytest.raises(LinkedInOperationError, match="start must be"):
         await reader.get_mutual_connections("ada-lovelace", start=-1)
 
     assert page.requests == []
@@ -730,7 +730,7 @@ async def test_posts_page_by_token_because_the_endpoint_ignores_an_offset():
 async def test_a_blank_posts_cursor_is_refused_rather_than_read_as_page_one():
     reader, page = _reader()
 
-    with pytest.raises(LinkedInScraperException, match="cursor was blank"):
+    with pytest.raises(LinkedInOperationError, match="cursor was blank"):
         await reader.get_person_posts("ada-lovelace", cursor="  ")
 
     assert page.requests == []

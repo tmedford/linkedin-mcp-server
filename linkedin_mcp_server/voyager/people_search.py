@@ -38,7 +38,7 @@ import re
 from typing import Any
 from urllib.parse import quote
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
+from linkedin_mcp_server.core.exceptions import LinkedInOperationError
 from linkedin_mcp_server.voyager.client import VoyagerReader
 
 logger = logging.getLogger(__name__)
@@ -186,7 +186,7 @@ class VoyagerPeopleSearch(VoyagerReader):
         if not candidates:
             # Refused rather than searched without it: an ignored filter
             # answers with the unfiltered set while reading as filtered.
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"LinkedIn does not recognise {location!r} as a place, so it "
                 "cannot be used as a location filter. Try a city, region or "
                 "country name, or put the word in keywords."
@@ -203,14 +203,14 @@ class VoyagerPeopleSearch(VoyagerReader):
         count: int = DEFAULT_COUNT,
     ) -> dict[str, Any]:
         """Read one page of people matching a search."""
-        from linkedin_mcp_server.scraping.search_urls import build_people_search_url
+        from linkedin_mcp_server.linkedin.search_urls import build_people_search_url
 
         if not keywords.strip():
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "keywords was blank. Pass the words to search for."
             )
         if start < 0 or not 1 <= count <= MAX_COUNT:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"start must be >= 0 and count between 1 and {MAX_COUNT}, got "
                 f"start={start}, count={count}."
             )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+import ctypes
 from dataclasses import asdict, dataclass, fields
 import functools
 import json
@@ -14,8 +15,10 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import sys
+import time
 from collections.abc import Callable, Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from linkedin_mcp_server.common_utils import (
@@ -24,6 +27,9 @@ from linkedin_mcp_server.common_utils import (
     utcnow_iso,
 )
 from linkedin_mcp_server.config import get_config
+
+if TYPE_CHECKING:
+    from linkedin_mcp_server.profile_lease import ProfileLease
 
 logger = logging.getLogger(__name__)
 
@@ -144,10 +150,158 @@ def profile_exists(profile_dir: Path | None = None) -> bool:
 
 def get_runtime_id() -> str:
     """Return a deterministic identity for the current browser runtime."""
-    os_name = _normalize_os(platform.system())
-    arch = _normalize_arch(platform.machine())
+    system, machine = _platform_names()
+    os_name = _normalize_os(system)
+    arch = _normalize_arch(machine)
     runtime_kind = "container" if _is_container_runtime() else "host"
     return f"{os_name}-{arch}-{runtime_kind}"
+
+
+def _platform_names() -> tuple[str, str]:
+    """Name the OS and the processor architecture, never over WMI.
+
+    ``platform.system()`` and ``platform.machine()`` are both
+    ``platform.uname()``, which on Windows runs two WMI queries, and a WMI
+    query can take a CPython 3.12 process down with it (#838). Windows is
+    therefore decided from ``sys.platform``: asking in order to decide whether
+    to avoid asking would defeat it.
+
+    See ``docs/decisions/2026-09-19-windows-runtime-identity.md``.
+    """
+    if sys.platform != "win32":
+        return platform.system(), platform.machine()
+    return "Windows", (
+        _native_machine_win32()
+        or os.environ.get("PROCESSOR_ARCHITEW6432", "")
+        or os.environ.get("PROCESSOR_ARCHITECTURE", "")
+    )
+
+
+# IMAGE_FILE_MACHINE values returned by IsWow64Process2. The spellings are the
+# ones CPython 3.12 produced from Win32_Processor.Architecture, so a stripped
+# environment keeps the runtime directory it used before the WMI removal.
+_WINDOWS_MACHINE_TYPES = {
+    0x014C: "x86",
+    0x0162: "MIPS",
+    0x0166: "MIPS",
+    0x0168: "MIPS",
+    0x0169: "MIPS",
+    0x0184: "Alpha",
+    0x01C0: "ARM",
+    0x01C2: "ARM",
+    0x01C4: "ARM",
+    0x01F0: "PowerPC",
+    0x0200: "ia64",
+    0x8664: "AMD64",
+    0xAA64: "ARM64",
+}
+
+# GetNativeSystemInfo uses the Win32_Processor.Architecture enumeration rather
+# than IMAGE_FILE_MACHINE. It is only a fallback on Windows versions older than
+# IsWow64Process2, which predate Windows on ARM64.
+_WINDOWS_ARCHITECTURES = (
+    "x86",
+    "MIPS",
+    "Alpha",
+    "PowerPC",
+    "",
+    "ARM",
+    "ia64",
+    "",
+    "",
+    "AMD64",
+    "",
+    "",
+    "ARM64",
+)
+
+
+def _native_machine_win32() -> str:
+    """Ask the kernel for the native machine architecture, rather than WMI.
+
+    Asked before the architecture variables because the WMI query this
+    replaces was authoritative before them. Under x64 emulation on ARM64, the
+    variables can describe AMD64 while the native machine remains ARM64.
+
+    Every failure returns the empty string so the caller can consult the
+    architecture variables and report unknown only when they are absent too.
+    """
+    try:
+        # WinDLL exists only on Windows, and a type checker running elsewhere
+        # resolves the attribute against its own platform.
+        kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+        get_current_process = kernel32.GetCurrentProcess
+        get_current_process.argtypes = []
+        get_current_process.restype = ctypes.c_void_p
+
+        try:
+            is_wow64_process2 = kernel32.IsWow64Process2
+        except AttributeError:
+            return _native_machine_legacy_win32(kernel32, ctypes)
+
+        is_wow64_process2.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ushort),
+            ctypes.POINTER(ctypes.c_ushort),
+        )
+        is_wow64_process2.restype = ctypes.c_int
+        process_machine = ctypes.c_ushort()
+        native_machine = ctypes.c_ushort()
+        if not is_wow64_process2(
+            get_current_process(),
+            ctypes.byref(process_machine),
+            ctypes.byref(native_machine),
+        ):
+            logger.debug("IsWow64Process2 did not name the native machine")
+            return ""
+        machine = _WINDOWS_MACHINE_TYPES.get(native_machine.value, "")
+        if not machine:
+            logger.debug(
+                "IsWow64Process2 returned unknown native machine %#x",
+                native_machine.value,
+            )
+        return machine
+    except (
+        AttributeError,
+        ctypes.ArgumentError,
+        OSError,
+        TypeError,
+        ValueError,
+    ):
+        logger.debug("the kernel did not name the architecture", exc_info=True)
+        return ""
+
+
+def _native_machine_legacy_win32(kernel32: Any, ctypes: Any) -> str:
+    """Read x86/AMD64 on Windows versions older than IsWow64Process2."""
+
+    class _SystemInfo(ctypes.Structure):
+        _fields_ = (
+            ("wProcessorArchitecture", ctypes.c_ushort),
+            ("wReserved", ctypes.c_ushort),
+            ("dwPageSize", ctypes.c_ulong),
+            ("lpMinimumApplicationAddress", ctypes.c_void_p),
+            ("lpMaximumApplicationAddress", ctypes.c_void_p),
+            ("dwActiveProcessorMask", ctypes.c_void_p),
+            ("dwNumberOfProcessors", ctypes.c_ulong),
+            ("dwProcessorType", ctypes.c_ulong),
+            ("dwAllocationGranularity", ctypes.c_ulong),
+            ("wProcessorLevel", ctypes.c_ushort),
+            ("wProcessorRevision", ctypes.c_ushort),
+        )
+
+    get_native_system_info = kernel32.GetNativeSystemInfo
+    get_native_system_info.argtypes = (ctypes.POINTER(_SystemInfo),)
+    get_native_system_info.restype = None
+    info = _SystemInfo()
+    get_native_system_info(ctypes.byref(info))
+    if info.wProcessorArchitecture not in (0, 9):
+        logger.debug(
+            "GetNativeSystemInfo returned unsupported architecture %d",
+            info.wProcessorArchitecture,
+        )
+        return ""
+    return _WINDOWS_ARCHITECTURES[info.wProcessorArchitecture]
 
 
 def _normalize_os(system: str) -> str:
@@ -682,8 +836,67 @@ def profile_in_use_by(profile_dir: Path) -> Path | None:
     return candidate
 
 
+def _held_lock_refusal(lock: Path, action: str) -> str:
+    """Why *lock* blocks *action*, naming the file and what would free it.
+
+    A lock from another host is refused without knowing whether its writer is
+    alive, and the most common writer that is not is this machine itself under
+    an earlier host name: macOS changes the name it reports when the network
+    does. Chromium never removes that lock, so the message has to say which
+    files to delete and on what condition, or nothing short of guessing frees
+    the profile.
+    """
+    try:
+        owner = os.readlink(lock).rpartition("-")[0]
+    except OSError:
+        owner = ""
+    this_host = socket.gethostname()
+    if not owner or owner == this_host:
+        return (
+            f"The browser profile is in use by another process ({lock}). "
+            f"Stop the running server or container before {action}."
+        )
+    return (
+        f"The browser profile is locked by host {owner!r} ({lock}), and this "
+        f"machine is {this_host!r}, so whether that process still runs cannot "
+        f"be checked. Stop any server, browser or container using the profile "
+        f"before {action}. If none is, the lock is left over, often from this "
+        f"machine under an earlier host name: delete {_CHROMIUM_LOCK_NAME}, "
+        f"SingletonCookie and SingletonSocket in {lock.parent} and try again."
+    )
+
+
+#: How often a synchronous wait asks for the lease again: the async wait's pace.
+_LEASE_POLL_SECONDS = 0.1
+
+
+def _take_within(lease: ProfileLease, seconds: float) -> bool:
+    """Take a reference to *lease*, waiting up to *seconds* for another holder.
+
+    The synchronous counterpart of ``ProfileLease.acquire``, for the one caller
+    that must wait from synchronous code: a logout that has just asked a shared
+    browser to retire. The same nonblocking primitive and the same announcement,
+    so a holder that hands over on request hears this waiter, and nothing is
+    left blocking in a worker after the deadline. With no wait it is exactly
+    ``try_acquire``.
+    """
+    if lease.try_acquire():
+        return True
+    deadline = time.monotonic() + max(seconds, 0.0)
+    if time.monotonic() >= deadline:
+        return False
+    with lease.announce():
+        while (remaining := deadline - time.monotonic()) > 0:
+            time.sleep(min(_LEASE_POLL_SECONDS, remaining))
+            if lease.try_acquire():
+                return True
+    return False
+
+
 @contextmanager
-def _exclusive_profile(profile_dir: Path, *, action: str) -> Iterator[None]:
+def _exclusive_profile(
+    profile_dir: Path, *, action: str, wait_seconds: float = 0.0
+) -> Iterator[None]:
     """Hold the profile exclusively for the duration of an auth-state mutation.
 
     Checking and then releasing before the move would leave a window in which
@@ -708,6 +921,10 @@ def _exclusive_profile(profile_dir: Path, *, action: str) -> Iterator[None]:
     of ``runtime-profiles/<runtime>/profile`` while sharing the mounted auth
     root, so checking only the source would move a live container's profile out
     from under it.
+
+    *wait_seconds* is for a caller that has reason to expect the holder to let
+    go, such as a shared browser that has just agreed to retire. The reference
+    taken after the wait is the same single one, released on the way out.
     """
     from linkedin_mcp_server.profile_lease import get_profile_lease
 
@@ -717,7 +934,7 @@ def _exclusive_profile(profile_dir: Path, *, action: str) -> Iterator[None]:
             "This server still has a browser open on the profile. "
             f"Close it before {action}."
         )
-    if not lease.try_acquire():
+    if not _take_within(lease, wait_seconds):
         raise RuntimeError(
             "The browser profile is in use by another process. "
             f"Stop the running server or container before {action}."
@@ -733,10 +950,7 @@ def _exclusive_profile(profile_dir: Path, *, action: str) -> Iterator[None]:
             None,
         )
         if lock is not None:
-            raise RuntimeError(
-                f"The browser profile is in use by another process (found {lock.name}). "
-                f"Stop the running server or container before {action}."
-            )
+            raise RuntimeError(_held_lock_refusal(lock, action))
         yield
     finally:
         lease.release()
@@ -1015,21 +1229,128 @@ def _retire(backup_dir: Path, targets: list[Path]) -> None:
             logger.warning("Could not re-retire %s: %s", target, exc)
 
 
-def clear_auth_state(source_profile_dir: Path | None = None) -> bool:
+@dataclass(frozen=True)
+class AuthStateIdentity:
+    """Which stored session a logout was confirmed for, without its contents.
+
+    Read from metadata only, never from the cookies themselves: the login
+    generation or, without one, the cookie file's inode, size and modification
+    time, whether the profile has anything in it, and the metadata file's own
+    identity when it is there but could not be read.
+    """
+
+    login_generation: str | None
+    cookies: tuple[int, int, int] | None
+    profile: bool
+    unreadable_state: tuple[int, int, int] | None = None
+
+
+class SessionChangedError(RuntimeError):
+    """The stored session is no longer the one the logout was confirmed for.
+
+    A ``RuntimeError`` like the busy-profile refusal beside it, because a caller
+    reads both the same way: nothing was deleted, and saying why is enough.
+    """
+
+
+def _file_identity(path: Path) -> tuple[int, int, int] | None:
+    """*path*'s inode, size and modification time, or ``None`` when absent.
+
+    Any other failure to stat it is raised: a file that is there but cannot be
+    read is not the same as one that is not there.
+    """
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+def auth_state_identity(source_profile_dir: Path | None = None) -> AuthStateIdentity:
+    """Identify the stored session, to compare against later under the lease.
+
+    Every login and import writes a fresh generation once its cookies are
+    exported, so where there is one it alone says which session this is. The
+    cookie file is deliberately left out then: a browser closing on the source
+    profile re-exports its cookies (``_close_browser_locked``), and the shared
+    browser a logout has just asked to retire does exactly that during the
+    handover, so its stat moves while the session stays the same. Without a
+    generation no server runs on the profile, which is what makes the cookie
+    file's stat a usable stand-in for state written before generations existed.
+
+    Raises:
+        OSError: The cookie file or the profile is there but cannot be read.
+    """
+    profile_dir = canonical(source_profile_dir or get_source_profile_dir())
+    state = load_source_state(profile_dir)
+    profile = profile_exists(profile_dir)
+    if state is not None:
+        return AuthStateIdentity(state.login_generation, None, profile)
+    # The loader reads a file it cannot parse as no file at all, which is
+    # right for a server deciding whether to log in and wrong here: a
+    # generation that became unreadable, or a login half-written over older
+    # state, would compare equal to what the user confirmed. Its own identity
+    # tells them apart, while a file that was already unreadable when the user
+    # was asked still compares equal and can be cleared.
+    return AuthStateIdentity(
+        None,
+        _file_identity(portable_cookie_path(profile_dir)),
+        profile,
+        _file_identity(source_state_path(profile_dir)),
+    )
+
+
+def clear_auth_state(
+    source_profile_dir: Path | None = None,
+    *,
+    wait_seconds: float = 0.0,
+    confirmed: AuthStateIdentity | None = None,
+) -> bool:
     """Remove source auth artifacts, derived runtime profiles and quarantines.
 
     The ownership marker is deliberately not among the targets. Logout is
     exactly when the next run needs it: erasing it would leave a custom root
     unclaimed, and the login that follows would be refused.
 
+    *wait_seconds* bounds a wait for another holder of the profile to let go,
+    and only a logout that has asked a shared browser to retire passes one.
+
+    *confirmed* is the session the user agreed to delete, read before they were
+    asked. Given one, this deletes nothing unless the session on disk is still
+    that one once the profile is held. A prompt can stay open indefinitely and
+    the handover wait is long too, and another client that signs in or imports
+    in between leaves a session nobody agreed to delete.
+
     Raises:
         ProfileRootRefusedError: The root is not one this server owns.
+        SessionChangedError: The session on disk is no longer *confirmed*, or
+            could not be read to tell. Nothing was deleted.
         RuntimeError: Another process is using the profile. Deleting it out from
             under a live browser corrupts that session and, with several clients,
             destroys everyone's rather than just this caller's.
     """
     profile_dir = _owned(source_profile_dir)
-    with _exclusive_profile(profile_dir, action="clearing the stored session"):
+    with _exclusive_profile(
+        profile_dir, action="clearing the stored session", wait_seconds=wait_seconds
+    ):
+        # Under the lease and before the first deletion: read any earlier, and
+        # a login completing in between would still be deleted.
+        if confirmed is not None:
+            try:
+                current = auth_state_identity(profile_dir)
+            except OSError as exc:
+                raise SessionChangedError(
+                    "The stored LinkedIn session could not be read to confirm it "
+                    "is the one you agreed to clear. Nothing was deleted."
+                ) from exc
+            if current != confirmed:
+                raise SessionChangedError(
+                    "The stored LinkedIn session changed after you confirmed: "
+                    "another client signed in or imported a session in the "
+                    "meantime. Nothing was deleted. Run --logout again to clear "
+                    "the session stored now."
+                )
+
         # Quarantines hold previous sessions' cookies, so a logout that left them
         # behind would not be the "clear all stored auth state" the CLI
         # advertises.

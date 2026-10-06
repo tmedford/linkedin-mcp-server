@@ -32,7 +32,7 @@ Three more differences apply to every tool:
 
 ## Tools
 
-All tools except `close_session` read or write through the API.
+Every tool reads or writes through the API except two that upstream provides unchanged: `get_job_apply_url`, which reads the posting's page, and `close_session`.
 
 **Messaging**
 
@@ -80,6 +80,7 @@ All tools except `close_session` read or write through the API.
 | `search_jobs` | Search jobs by keywords and location |
 | `get_job_details` | One job posting in full |
 | `get_saved_jobs` | The jobs in your tracker, by stage |
+| `get_job_apply_url` | How a posting takes applications, and the employer's application link. From upstream; reads the page without clicking anything |
 | `get_feed` | Posts from your home feed |
 | `search_posts` | Search posts by keyword. Unlike searching on the page, nothing is added to your search history |
 

@@ -87,7 +87,7 @@ from urllib.parse import parse_qs, urlparse
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 from linkedin_mcp_server.voyager.client import VoyagerReader
@@ -635,7 +635,7 @@ class VoyagerProfileViews(VoyagerReader):
         finally:
             page.remove_listener("request", _capture)
         if not seen:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "The profile-views page sent no component request to copy "
                 "headers from, so its viewer list cannot be asked for. The "
                 "page did not load, or LinkedIn changed how it is built."
@@ -676,13 +676,13 @@ class VoyagerProfileViews(VoyagerReader):
                 f"Voyager {self.surface} list request rate limited: HTTP {status}"
             )
         if status != 200:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} list request failed: HTTP {status}"
             )
         text = answer.get("text") or ""
         rows = parse_stream_rows(text)
         if not rows and "viewer-list-item" in text:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} list changed shape: rows are marked "
                 "in the answer but none parsed. Refusing to report that as "
                 "the end of the list."
@@ -733,24 +733,24 @@ class VoyagerProfileViews(VoyagerReader):
         covers and needs ``full``.
         """
         if days is not None and days not in TIME_RANGES:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"days was {days!r}. LinkedIn offers these periods: "
                 f"{', '.join(str(d) for d in TIME_RANGES)}. Omit it for "
                 "LinkedIn's default."
             )
         if sort not in SORTS:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"sort was {sort!r}. Pass one of: {', '.join(SORTS)}."
             )
         if sort != "recent" and not full:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "sort needs the full list (full=True). The quick read returns "
                 "LinkedIn's highlights as they are."
             )
         selections: dict[str, list[str]] = {}
         if interesting is not None:
             if interesting not in INTERESTING:
-                raise LinkedInScraperException(
+                raise LinkedInOperationError(
                     f"interesting was {interesting!r}. Pass one of: "
                     f"{', '.join(INTERESTING)}."
                 )
@@ -765,18 +765,18 @@ class VoyagerProfileViews(VoyagerReader):
             # Measured: the bare number filters; a URN in its place answers
             # HTTP 500. Refused here so the mistake names its own correction.
             if not str(value).strip().isdigit():
-                raise LinkedInScraperException(
+                raise LinkedInOperationError(
                     f"{name} was {value!r}. Pass LinkedIn's numeric id on its "
                     "own, not a URN or a name."
                 )
             selections[filter_name] = [str(value).strip()]
         if selections and not full:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "Filters need the full list (full=True). The quick read "
                 "returns LinkedIn's highlights as they are."
             )
         if days is not None and not full:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "days needs the full list (full=True). The quick read has no "
                 "period to choose: it returns LinkedIn's highlights as they are."
             )
@@ -1213,13 +1213,13 @@ class VoyagerRecruiterViews(VoyagerProfileViews):
                 f"Voyager {self.surface} list request rate limited: HTTP {status}"
             )
         if status != 200:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} list request failed: HTTP {status}"
             )
         text = answer.get("text") or ""
         rows = parse_recruiter_rows(text)
         if not rows and _ROW_MARKER in text:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} list changed shape: rows are marked "
                 "in the answer but none parsed. Refusing to report that as "
                 "the end of the list."
@@ -1229,7 +1229,7 @@ class VoyagerRecruiterViews(VoyagerProfileViews):
     async def get_recruiter_views(self, days: int | None = None) -> dict[str, Any]:
         """Every recruiter LinkedIn lists as having viewed the profile."""
         if days is not None and days not in TIME_RANGES:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"days was {days!r}. LinkedIn offers these periods: "
                 f"{', '.join(str(d) for d in TIME_RANGES)}. Omit it for 90."
             )

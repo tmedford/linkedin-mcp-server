@@ -50,7 +50,7 @@ from typing import Any
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 from linkedin_mcp_server.voyager.client import VoyagerReader
@@ -163,7 +163,7 @@ class VoyagerThreadReply(VoyagerReader):
             payload = await self._fetch(messages_query_url(page, conversation_urn))
         except (AuthenticationError, RateLimitError):
             raise
-        except LinkedInScraperException as exc:
+        except LinkedInOperationError as exc:
             logger.info("Thread preview unavailable: %s", exc)
             return {"thread_readable": None}
 

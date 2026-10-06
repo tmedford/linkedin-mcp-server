@@ -290,7 +290,7 @@ def _upstream(state: str, clicks: bool = True) -> MagicMock:
 
 
 def _accepting_reader(page: _Page, helper: MagicMock, monkeypatch) -> VoyagerConnect:
-    from linkedin_mcp_server.scraping import connection as upstream
+    from linkedin_mcp_server.linkedin import connection as upstream
 
     # The signals stand in for the page; the state is what they detect to.
     monkeypatch.setattr(upstream, "detect_connection_state", lambda signals: signals)

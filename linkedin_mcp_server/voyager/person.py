@@ -93,7 +93,7 @@ from urllib.parse import quote
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 from linkedin_mcp_server.voyager.client import VoyagerReader, company_id
@@ -899,7 +899,7 @@ class VoyagerPersonReader(VoyagerReader):
             rows=urns, payload=payload, path=_ELEMENTS_PATH, container_found=found
         )
         if len(urns) != 1:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} found {len(urns)} members for "
                 f"{identifier!r}, not exactly one. Pass the /in/ public "
                 "identifier exactly as a profile URL shows it."
@@ -916,7 +916,7 @@ class VoyagerPersonReader(VoyagerReader):
             payload = await self._fetch(self._url(identifier, TOP_CARD))
         except (AuthenticationError, RateLimitError):
             raise
-        except LinkedInScraperException as exc:
+        except LinkedInOperationError as exc:
             logger.info("Relationship read unavailable: %s", exc)
             return None
         for entity in payload.get("included") or []:
@@ -939,7 +939,7 @@ class VoyagerPersonReader(VoyagerReader):
             payload = await self._fetch(self._url(identifier, TOP_CARD_NETWORK))
         except (AuthenticationError, RateLimitError):
             raise
-        except LinkedInScraperException as exc:
+        except LinkedInOperationError as exc:
             logger.info("Network counts unavailable: %s", exc)
             return None
         return parse_network(payload)
@@ -955,7 +955,7 @@ class VoyagerPersonReader(VoyagerReader):
             )._prefetch_headers()
         except (AuthenticationError, RateLimitError):
             raise
-        except LinkedInScraperException as exc:
+        except LinkedInOperationError as exc:
             logger.info("Profile cards unavailable: %s", exc)
             return None
         # Best effort to the end: the profile itself is already read, so a
@@ -1001,7 +1001,7 @@ class VoyagerPersonReader(VoyagerReader):
                 )
             except (AuthenticationError, RateLimitError):
                 raise
-            except LinkedInScraperException as exc:
+            except LinkedInOperationError as exc:
                 logger.info("Interests (%s) unavailable: %s", kind, exc)
                 continue
             interests[key] = parse_interests(payload)
@@ -1013,14 +1013,14 @@ class VoyagerPersonReader(VoyagerReader):
             payload = await self._fetch(self._url(identifier, CONTACT_INFO))
         except (AuthenticationError, RateLimitError):
             raise
-        except LinkedInScraperException as exc:
+        except LinkedInOperationError as exc:
             logger.info("Contact read unavailable: %s", exc)
             return None
         return parse_contact(payload)
 
     async def _member_id(self, linkedin_username: str) -> tuple[str, str]:
         """A member's id and canonical profile URL, from any identifier."""
-        from linkedin_mcp_server.scraping.identifiers import (
+        from linkedin_mcp_server.linkedin.identifiers import (
             normalize_person_identifier,
             person_profile_url,
         )
@@ -1040,7 +1040,7 @@ class VoyagerPersonReader(VoyagerReader):
             rows=urns, payload=payload, path=_ELEMENTS_PATH, container_found=found
         )
         if len(urns) != 1:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} found {len(urns)} members for "
                 f"{identifier!r}, not exactly one. Pass the /in/ public "
                 "identifier exactly as a profile URL shows it."
@@ -1075,7 +1075,7 @@ class VoyagerPersonReader(VoyagerReader):
     ) -> dict[str, Any]:
         """Read one page of the connections you share with a member."""
         if start < 0 or count < 1:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"start must be >= 0 and count >= 1, got start={start}, count={count}."
             )
         member_id, url = await self._member_id(linkedin_username)
@@ -1100,9 +1100,9 @@ class VoyagerPersonReader(VoyagerReader):
     ) -> dict[str, Any]:
         """Read one page of a member's posts and reposts, newest activity first."""
         if count < 1:
-            raise LinkedInScraperException(f"count must be >= 1, got {count}.")
+            raise LinkedInOperationError(f"count must be >= 1, got {count}.")
         if cursor is not None and not cursor.strip():
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "cursor was blank. OMIT the argument for the first page, or "
                 "pass a next_cursor from a previous call."
             )
@@ -1154,7 +1154,7 @@ class VoyagerPersonReader(VoyagerReader):
         self, linkedin_username: str, compare_to_me: bool = True
     ) -> dict[str, Any]:
         """Read one member's whole profile, and what it shares with yours."""
-        from linkedin_mcp_server.scraping.identifiers import (
+        from linkedin_mcp_server.linkedin.identifiers import (
             normalize_person_identifier,
             person_profile_url,
         )

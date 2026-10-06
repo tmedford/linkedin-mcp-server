@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
+from linkedin_mcp_server.core.exceptions import LinkedInOperationError
 from linkedin_mcp_server.voyager import profile_views as views_module
 from linkedin_mcp_server.voyager.profile_views import (
     VoyagerRecruiterViews,
@@ -212,14 +212,14 @@ async def test_marked_rows_that_do_not_parse_are_refused():
                 "text": '0:["$","div",null,{"viewTrackingSpecs":{"viewName":"viewer-list-item"}}]',
             }
 
-    with pytest.raises(LinkedInScraperException, match="changed shape"):
+    with pytest.raises(LinkedInOperationError, match="changed shape"):
         await _reader(Broken([])).get_recruiter_views()
 
 
 async def test_an_unknown_period_is_refused_before_any_request():
     page = _Page([])
 
-    with pytest.raises(LinkedInScraperException, match="7, 14, 28, 90, 365"):
+    with pytest.raises(LinkedInOperationError, match="7, 14, 28, 90, 365"):
         await _reader(page).get_recruiter_views(days=30)
 
     assert page.bodies == []

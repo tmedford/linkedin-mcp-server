@@ -48,7 +48,7 @@ from urllib.parse import quote
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 from linkedin_mcp_server.voyager.client import VoyagerReader, person_identifier
@@ -97,7 +97,7 @@ def normalize_thread_reference(value: str) -> str:
     to compose the facade, so a top-level import the other way is a cycle for
     whoever imports this module first.
     """
-    from linkedin_mcp_server.scraping.identifiers import normalize_thread_id
+    from linkedin_mcp_server.linkedin.identifiers import normalize_thread_id
 
     return normalize_thread_id(value)
 
@@ -238,7 +238,7 @@ class VoyagerThreadReader(VoyagerReader):
         that was searched. One-to-one threads sort ahead of group threads,
         because "my conversation with X" means the one with only X in it.
         """
-        from linkedin_mcp_server.scraping.identifiers import (
+        from linkedin_mcp_server.linkedin.identifiers import (
             normalize_person_identifier,
         )
         from linkedin_mcp_server.voyager.message_search import VoyagerMessageSearch
@@ -277,15 +277,15 @@ class VoyagerThreadReader(VoyagerReader):
         first), ``count`` and ``query_id_renewed``.
         """
         if not thread_id and not linkedin_username:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "Provide at least one of linkedin_username or thread_id"
             )
         if not thread_id:
             if index < 0:
-                raise LinkedInScraperException(f"index must be >= 0, got {index}.")
+                raise LinkedInOperationError(f"index must be >= 0, got {index}.")
             threads = await self._threads_with(linkedin_username or "")
             if index >= len(threads):
-                raise LinkedInScraperException(
+                raise LinkedInOperationError(
                     f"Could not find a conversation for {linkedin_username} at "
                     f"index {index}: a message search on their name found "
                     f"{len(threads)} conversation(s) they are in. A thread the "
@@ -295,7 +295,7 @@ class VoyagerThreadReader(VoyagerReader):
             thread_id = threads[index].get("thread_url") or ""
         thread_id = normalize_thread_reference(thread_id)
         if not is_thread_id(thread_id):
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "thread_id is not a messaging thread id. Pass the thread id or "
                 "thread_url exactly as a previous result returned it."
             )
@@ -308,11 +308,11 @@ class VoyagerThreadReader(VoyagerReader):
             payload = await self._fetch(messages_query_url(page, urn))
         except (AuthenticationError, RateLimitError):
             raise
-        except LinkedInScraperException as exc:
+        except LinkedInOperationError as exc:
             logger.info("Thread query failed (%s); observing the query id again", exc)
             renewed = True
             if await self._discover_query_id() is None:
-                raise LinkedInScraperException(
+                raise LinkedInOperationError(
                     "Voyager thread request failed and no messengerMessages "
                     "request was observed on the messaging page, so the query "
                     "id could not be renewed."

@@ -12,7 +12,7 @@ import pytest
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 from linkedin_mcp_server.voyager import messaging as vm_module
@@ -141,14 +141,14 @@ class TestBlankInputs:
     @pytest.mark.parametrize("blank", ["", "   ", "\t"])
     async def test_blank_category_is_rejected(self, blank):
         reader = _Reader([_payload([], None)])
-        with pytest.raises(LinkedInScraperException, match="category was blank"):
+        with pytest.raises(LinkedInOperationError, match="category was blank"):
             await reader.get_conversations(category=blank)
         assert reader.fetched == [], "a blank must not cost a request"
 
     @pytest.mark.parametrize("blank", ["", "  "])
     async def test_blank_cursor_is_rejected(self, blank):
         reader = _Reader([_payload([], None)])
-        with pytest.raises(LinkedInScraperException, match="cursor was blank"):
+        with pytest.raises(LinkedInOperationError, match="cursor was blank"):
             await reader.get_conversations(cursor=blank)
 
     @pytest.mark.parametrize("kwargs", [{"cursor": ""}, {"category": ""}])
@@ -163,7 +163,7 @@ class TestBlankInputs:
         as the sole way out.
         """
         reader = _Reader([_payload([], None)])
-        with pytest.raises(LinkedInScraperException) as exc:
+        with pytest.raises(LinkedInOperationError) as exc:
             await reader.get_conversations(**kwargs)
         msg = str(exc.value)
         assert "OMIT" in msg, f"remedy must name omitting the argument: {msg}"
@@ -184,7 +184,7 @@ class TestBlankInputs:
         """An unknown category returns an empty page from LinkedIn, so it must
         be refused here rather than read back as 'you have none of those'."""
         reader = _Reader([_payload([], None)])
-        with pytest.raises(LinkedInScraperException, match="Unknown category"):
+        with pytest.raises(LinkedInOperationError, match="Unknown category"):
             await reader.get_conversations(category="UNREAD")
         assert reader.fetched == []
 
@@ -251,7 +251,7 @@ class TestEmptyPagesAreNeverTheEnd:
     async def test_included_entities_but_no_conversations_is_a_parse_failure(self):
         payload = _payload([], None, included=[{"$type": "x.Y", "entityUrn": "u"}])
         reader = _Reader([payload])
-        with pytest.raises(LinkedInScraperException, match="changed shape"):
+        with pytest.raises(LinkedInOperationError, match="changed shape"):
             await reader.get_conversations()
 
 
@@ -300,7 +300,7 @@ class TestDiscoveryIsPaidOnce:
     async def test_a_cursor_against_a_single_page_mailbox_is_refused(self):
         reader = _Reader([_payload(_rows(1), None)])
         reader.paging_state = "single-page"
-        with pytest.raises(LinkedInScraperException, match="cannot be honoured"):
+        with pytest.raises(LinkedInOperationError, match="cannot be honoured"):
             await reader.get_conversations(cursor="SEED")
 
 
@@ -400,7 +400,7 @@ class TestReviewRegressions:
             page = _Page()
 
         reader = VoyagerMessagingReader(session=_SessionWithPage(), navigator=None)
-        with pytest.raises(LinkedInScraperException) as excinfo:
+        with pytest.raises(LinkedInOperationError) as excinfo:
             await reader._fetch(QUERY_URL)
         assert not isinstance(excinfo.value, (AuthenticationError, RateLimitError))
 
@@ -478,7 +478,7 @@ class TestDiscovery:
         """The genuinely broken case must stay distinguishable from the two
         above, rather than being swallowed by the new fallback."""
         reader = self._reader_with_requests([])
-        with pytest.raises(LinkedInScraperException, match="No messengerConversations"):
+        with pytest.raises(LinkedInOperationError, match="No messengerConversations"):
             await reader._discover_query()
 
 
@@ -574,7 +574,7 @@ class TestRetryCannotSkipValidation:
                 self.fetched.append(url)
                 if len(self.fetched) == 1:
                     # the cached query has gone stale
-                    raise LinkedInScraperException("HTTP 400")
+                    raise LinkedInOperationError("HTTP 400")
                 return self._pages[0]
 
             async def _discover_query_uncached(self):
@@ -585,7 +585,7 @@ class TestRetryCannotSkipValidation:
                 )
 
         reader = _StaleThenSinglePage([_payload(_rows(PAGE_SIZE), "N")])
-        with pytest.raises(LinkedInScraperException, match="cannot be honoured"):
+        with pytest.raises(LinkedInOperationError, match="cannot be honoured"):
             await reader.get_conversations(cursor="PAGE2")
 
     async def test_rediscovery_that_still_pages_completes_the_retry(self):
@@ -593,7 +593,7 @@ class TestRetryCannotSkipValidation:
             async def _fetch(self, url: str) -> dict:
                 self.fetched.append(url)
                 if len(self.fetched) == 1:
-                    raise LinkedInScraperException("HTTP 400")
+                    raise LinkedInOperationError("HTTP 400")
                 return self._pages[0]
 
         reader = _StaleThenFine([_payload(_rows(PAGE_SIZE), "N")])

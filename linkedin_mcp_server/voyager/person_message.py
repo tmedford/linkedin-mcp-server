@@ -38,7 +38,7 @@ import re
 from typing import Any
 from urllib.parse import quote
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
+from linkedin_mcp_server.core.exceptions import LinkedInOperationError
 from linkedin_mcp_server.voyager.thread import thread_url
 from linkedin_mcp_server.voyager import thread_reply
 from linkedin_mcp_server.voyager.thread_reply import VoyagerThreadReply
@@ -80,7 +80,7 @@ def refuse_an_invalid_person_message(
 
     Raises ``InvalidReferenceError`` for a username that is not one.
     """
-    from linkedin_mcp_server.scraping.identifiers import (
+    from linkedin_mcp_server.linkedin.identifiers import (
         normalize_person_identifier,
         person_profile_url,
     )
@@ -122,7 +122,7 @@ class VoyagerPersonMessage(VoyagerThreadReply):
             rows=urns, payload=payload, path=_ELEMENTS_PATH, container_found=found
         )
         if len(urns) != 1:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} found {len(urns)} members for "
                 f"{username!r}, not exactly one. Pass the /in/ public "
                 "identifier exactly as a profile URL shows it."
@@ -142,7 +142,7 @@ class VoyagerPersonMessage(VoyagerThreadReply):
         profile_urn: str | None = None,
     ) -> dict[str, Any]:
         """Send a message to a person with explicit confirmation gating."""
-        from linkedin_mcp_server.scraping.identifiers import (
+        from linkedin_mcp_server.linkedin.identifiers import (
             normalize_person_identifier,
             person_profile_url,
         )

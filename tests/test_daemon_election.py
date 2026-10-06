@@ -29,7 +29,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -87,6 +87,13 @@ _THREAD_START_SECONDS = 5.0
 _POSIX_ONLY = pytest.mark.skipif(
     os.name == "nt", reason="the lock is handed to the child only on POSIX"
 )
+
+#: Set by the manual election soak workflow, which arms ``DontShowUI`` before
+#: clearing ``SEM_NOGPFAULTERRORBOX`` in the diagnostic frontend below. Product
+#: CI runs the same stress without changing the inherited error mode.
+_ELECTION_SOAK = "LINKEDIN_MCP_ELECTION_SOAK"
+# Captured before the autouse fixture removes every LINKEDIN* variable.
+_ELECTION_SOAK_ENABLED = bool(os.environ.get(_ELECTION_SOAK))
 
 
 async def _until(condition: Callable[[], bool], *, seconds: float) -> float:
@@ -220,6 +227,86 @@ def _attachment_for(profile: Path, config: AppConfig, port: int) -> Attachment:
     return Attachment(descriptor=descriptor, token=token)
 
 
+@contextlib.contextmanager
+def _a_healthy_owner(profile: Path, config: AppConfig, monkeypatch: pytest.MonkeyPatch):
+    """The owner's real HTTP server, on loopback, inside this process.
+
+    Built by ``daemon_owner.create_owner_server``, so the endpoint, its bearer
+    check and the MCP server behind it are production's, and it speaks whatever
+    protocol era the installed FastMCP does. Only the browser lifespan is stood
+    in, so nothing is installed, launched or closed. Yields the attachment a
+    frontend would read for it.
+    """
+    import linkedin_mcp_server.server as server_module
+
+    for name in (
+        "initialize_bootstrap",
+        "get_runtime_policy",
+        "report_retained_browser_revisions_if_ready",
+    ):
+        monkeypatch.setattr(server_module, name, lambda *_a, **_k: None)
+
+    async def nothing(*_a: Any, **_k: Any) -> None:
+        return None
+
+    for name in (
+        "start_background_browser_setup_if_needed",
+        "watch_for_handoff_requests",
+        "stop_background_browser_setup",
+        "close_browser",
+    ):
+        monkeypatch.setattr(server_module, name, nothing)
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(64)
+    attachment = _attachment_for(profile, config, listener.getsockname()[1])
+    server = daemon_owner.create_owner_server(
+        config=config,
+        token=attachment.token,
+        host="127.0.0.1",
+        port=attachment.descriptor.port,
+    )
+    thread = threading.Thread(
+        target=lambda: asyncio.run(server.serve(sockets=[listener])), daemon=True
+    )
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not server.started:
+            assert thread.is_alive(), "the owner's server stopped while starting"
+            assert time.monotonic() < deadline, "the owner's server never started"
+            time.sleep(0.01)
+        yield attachment
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+        listener.close()
+
+
+class TestThePublicationProbe:
+    """What an owner proves about itself before it publishes a descriptor."""
+
+    def test_the_owner_proves_its_own_endpoint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """An authenticated round trip against the owner's real server.
+
+        Asked with a ping on the era a default client negotiates, a healthy
+        owner fails its own probe and never publishes. The wrong token is the
+        other half: a probe that passed whatever it was told would publish an
+        endpoint nobody can use.
+        """
+        profile = _profile(tmp_path)
+        config = _config(profile)
+
+        with _a_healthy_owner(profile, config, monkeypatch) as attachment:
+            url = attachment.descriptor.url
+            asyncio.run(daemon_owner._probe(url, attachment.token))
+            with pytest.raises(Exception, match="Server returned an error response"):
+                asyncio.run(daemon_owner._probe(url, new_token()))
+
+
 class TestLiveness:
     """A descriptor is a file. Only a request that is answered is a process."""
 
@@ -237,8 +324,9 @@ class TestLiveness:
             auth_root,
             profile,
             config,
-            deadline_seconds=0,
-            connect=lambda attachment: Reach.REFUSED,
+            deadline_seconds=0.1,
+            settlement_seconds=0,
+            connect=lambda attachment, timeout: Reach.REFUSED,
         )
 
         assert not outcome.worth_connecting
@@ -261,8 +349,9 @@ class TestLiveness:
             auth_root,
             profile,
             config,
-            deadline_seconds=0,
-            connect=lambda attachment: Reach.REFUSED,
+            deadline_seconds=0.1,
+            settlement_seconds=0,
+            connect=lambda attachment, timeout: Reach.REFUSED,
         )
 
         assert descriptor_file.exists()
@@ -279,14 +368,17 @@ class TestLiveness:
             auth_root,
             profile,
             config,
-            deadline_seconds=0,
-            connect=lambda attachment: Reach.ANSWERED,
+            deadline_seconds=0.1,
+            settlement_seconds=0,
+            connect=lambda attachment, timeout: Reach.ANSWERED,
         )
 
         assert outcome.worth_connecting
         assert not outcome.started_owner
 
-    def test_a_corpse_is_not_probed_over_and_over(self, tmp_path: Path):
+    def test_a_corpse_is_not_probed_over_and_over(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         # The descriptor stays on disk until a live owner overwrites it, so a
         # loop that re-read it would probe the same dead endpoint every pass.
         # Each probe is a network timeout, which is how a fail-fast path turns
@@ -295,10 +387,15 @@ class TestLiveness:
         config = _config(profile)
         auth_root = profile.parent
         _publish_stale_owner(auth_root, profile, config)
+        # A real start would key its state under the account's own home, out of
+        # this test's reach. Failing it leaves the dead endpoint the only one.
+        monkeypatch.setattr(
+            election_module, "_start_owner", lambda *a, **k: _Attempt.FAILED
+        )
 
         probes: list[Attachment] = []
 
-        def never_answers(attachment: Attachment) -> Reach:
+        def never_answers(attachment: Attachment, timeout: float) -> Reach:
             probes.append(attachment)
             # REFUSED, which is what a corpse really produces: its port is
             # closed, so the kernel turns the connection away rather than
@@ -308,7 +405,12 @@ class TestLiveness:
             return Reach.REFUSED
 
         obtain_owner(
-            auth_root, profile, config, deadline_seconds=1.0, connect=never_answers
+            auth_root,
+            profile,
+            config,
+            deadline_seconds=1.0,
+            settlement_seconds=0,
+            connect=never_answers,
         )
 
         # Exactly once for the corpse. Stated as a count rather than as
@@ -354,7 +456,8 @@ class TestSilenceIsNotDeath:
 
         began = time.monotonic()
         refused = election_module._reachable(
-            _attachment_for(profile, config, dead_port)
+            _attachment_for(profile, config, dead_port),
+            election_module._REACHABLE_SECONDS,
         )
         refusal_took = time.monotonic() - began
 
@@ -366,7 +469,8 @@ class TestSilenceIsNotDeath:
         try:
             began = time.monotonic()
             silent = election_module._reachable(
-                _attachment_for(profile, config, frozen.getsockname()[1])
+                _attachment_for(profile, config, frozen.getsockname()[1]),
+                election_module._REACHABLE_SECONDS,
             )
             silence_took = time.monotonic() - began
         finally:
@@ -385,6 +489,32 @@ class TestSilenceIsNotDeath:
         assert silence_took >= election_module._REACHABLE_SECONDS - 0.5, (
             f"the silence took only {silence_took:.2f}s"
         )
+
+    def test_a_healthy_owner_answers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The third answer, from the owner's own server, unstubbed.
+
+        A default FastMCP 4 client negotiates the 2026-07-28 era with this
+        owner, and that era has no ping: asked with one, a healthy owner came
+        back as ``REFUSED``, which the election reads as a descriptor to bury.
+        The two sockets above cannot show that, because neither ever answers.
+        A token this owner does not accept still reads as a refusal.
+        """
+        profile = _profile(tmp_path)
+        config = _config(profile)
+
+        with _a_healthy_owner(profile, config, monkeypatch) as attachment:
+            answered = election_module._reachable(
+                attachment, election_module._REACHABLE_SECONDS
+            )
+            stranger = election_module._reachable(
+                Attachment(descriptor=attachment.descriptor, token=new_token()),
+                election_module._REACHABLE_SECONDS,
+            )
+
+        assert answered is Reach.ANSWERED, f"a healthy owner read as {answered}"
+        assert stranger is Reach.REFUSED, f"a rejected token read as {stranger}"
 
     def test_an_owner_that_is_slow_twice_is_still_attached_to(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -405,7 +535,7 @@ class TestSilenceIsNotDeath:
         answers = [Reach.SILENT, Reach.SILENT, Reach.ANSWERED]
         probes: list[Attachment] = []
 
-        def slow_to_answer(attachment: Attachment) -> Reach:
+        def slow_to_answer(attachment: Attachment, timeout: float) -> Reach:
             probes.append(attachment)
             return answers[min(len(probes) - 1, len(answers) - 1)]
 
@@ -444,21 +574,25 @@ class TestSilenceIsNotDeath:
             auth_root,
             profile,
             config,
-            deadline_seconds=0,
-            connect=lambda attachment: Reach.SILENT,
+            deadline_seconds=0.1,
+            settlement_seconds=0,
+            connect=lambda attachment, timeout: Reach.SILENT,
         )
         refused = obtain_owner(
             auth_root,
             profile,
             config,
-            deadline_seconds=0,
-            connect=lambda attachment: Reach.REFUSED,
+            deadline_seconds=0.1,
+            settlement_seconds=0,
+            connect=lambda attachment, timeout: Reach.REFUSED,
         )
 
         assert silent.attachment_lookup.reason != refused.attachment_lookup.reason
         assert not silent.worth_connecting
 
-    def test_a_refusal_still_buries_on_the_first_probe(self, tmp_path: Path):
+    def test_a_refusal_still_buries_on_the_first_probe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """The corpse path keeps its fail-fast, and the grace does not leak into it.
 
         Written as "would have answered next time" rather than "never answers":
@@ -471,10 +605,15 @@ class TestSilenceIsNotDeath:
         config = _config(profile)
         auth_root = profile.parent
         _publish_stale_owner(auth_root, profile, config)
+        # A real start would key its state under the account's own home, out of
+        # this test's reach. Failing it leaves the buried endpoint the only one.
+        monkeypatch.setattr(
+            election_module, "_start_owner", lambda *a, **k: _Attempt.FAILED
+        )
 
         probes: list[Attachment] = []
 
-        def refuses_then_would_answer(attachment: Attachment) -> Reach:
+        def refuses_then_would_answer(attachment: Attachment, timeout: float) -> Reach:
             probes.append(attachment)
             return Reach.REFUSED if len(probes) == 1 else Reach.ANSWERED
 
@@ -483,6 +622,7 @@ class TestSilenceIsNotDeath:
             profile,
             config,
             deadline_seconds=1.0,
+            settlement_seconds=0,
             connect=refuses_then_would_answer,
         )
 
@@ -490,7 +630,7 @@ class TestSilenceIsNotDeath:
         assert not outcome.worth_connecting
 
     def test_an_owner_that_never_answers_does_not_outlast_the_deadline(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """Nothing is buried now, so the deadline is the only thing bounding this.
 
@@ -505,6 +645,12 @@ class TestSilenceIsNotDeath:
 
         held = DaemonLock(auth_root)
         assert held.try_acquire(), "could not simulate the frozen owner's lock"
+        # What a real child reports against that lock. A real one would look
+        # for it under the account's own home, find none, and leave its state
+        # there instead.
+        monkeypatch.setattr(
+            election_module, "_start_owner", lambda *a, **k: _Attempt.CONTENDED
+        )
         try:
             began = time.monotonic()
             outcome = obtain_owner(
@@ -512,7 +658,8 @@ class TestSilenceIsNotDeath:
                 profile,
                 config,
                 deadline_seconds=1.0,
-                connect=lambda attachment: Reach.SILENT,
+                settlement_seconds=0,
+                connect=lambda attachment, timeout: Reach.SILENT,
             )
             elapsed = time.monotonic() - began
         finally:
@@ -551,23 +698,23 @@ class TestRetryPacing:
             inspections += 1
             return real_inspect(*cast(Any, args))
 
-        real_look_up = election_module.look_up_owner
+        real_live_lookup = election_module._live_lookup
         passes = 0
 
-        def look_up(*args: object, **kwargs: object) -> OwnerLookup:
+        def live_lookup(*args: object, **kwargs: object):
             nonlocal passes
             passes += 1
-            return real_look_up(*cast(Any, args), **cast(Any, kwargs))
+            return real_live_lookup(*cast(Any, args), **cast(Any, kwargs))
 
         probes = 0
 
-        def refuse(_attachment: Attachment) -> Reach:
+        def refuse(_attachment: Attachment, timeout: float) -> Reach:
             nonlocal probes
             probes += 1
             return Reach.REFUSED
 
         monkeypatch.setattr(daemon_module, "_inspect", inspect)
-        monkeypatch.setattr(election_module, "look_up_owner", look_up)
+        monkeypatch.setattr(election_module, "_live_lookup", live_lookup)
         monkeypatch.setattr(
             election_module, "_start_owner", lambda *a, **k: _Attempt.FAILED
         )
@@ -580,7 +727,12 @@ class TestRetryPacing:
 
         began = time.monotonic()
         outcome = obtain_owner(
-            auth_root, profile, config, deadline_seconds=0.6, connect=refuse
+            auth_root,
+            profile,
+            config,
+            deadline_seconds=0.6,
+            settlement_seconds=0,
+            connect=refuse,
         )
         elapsed = time.monotonic() - began
 
@@ -614,23 +766,35 @@ class TestRetryPacing:
         auth_root = profile.parent
         stale = _publish_stale_owner(auth_root, profile, config)
 
+        paced = threading.Event()
+        abandoned = threading.Event()
         published = threading.Event()
+        publishers: list[threading.Thread] = []
         fresh: list[str] = []
+
+        def paced_sleep(seconds: float) -> None:
+            paced.set()
+            time.sleep(seconds)
 
         def replace_after_burial(*_args: object, **_kwargs: object) -> _Attempt:
             # Stands in for the owner a real start would have produced: the
-            # descriptor is replaced while the loop is inside its paced wait.
+            # descriptor is replaced once the loop is inside its paced wait, so
+            # the wait's first read cannot be what finds it.
             def publish_later() -> None:
-                time.sleep(0.1)
+                if not paced.wait(_PARKED) or abandoned.is_set():
+                    return
                 fresh.append(_publish_stale_owner(auth_root, profile, config))
                 published.set()
 
-            threading.Thread(target=publish_later, daemon=True).start()
+            paced.clear()
+            publisher = threading.Thread(target=publish_later, daemon=True)
+            publishers.append(publisher)
+            publisher.start()
             return _Attempt.FAILED
 
         seen: list[str] = []
 
-        def reach(attachment: Attachment) -> Reach:
+        def reach(attachment: Attachment, timeout: float) -> Reach:
             seen.append(attachment.descriptor.instance_id)
             return (
                 Reach.REFUSED
@@ -646,14 +810,28 @@ class TestRetryPacing:
         # At the production 0.2s the loop would come round again on its own and
         # a wait that simply slept would look identical to one that watched.
         monkeypatch.setattr(election_module, "_RETRY_SECONDS", 4.0)
+        monkeypatch.setattr(
+            election_module,
+            "time",
+            SimpleNamespace(monotonic=time.monotonic, sleep=paced_sleep),
+        )
 
         began = time.monotonic()
-        outcome = obtain_owner(
-            auth_root, profile, config, deadline_seconds=8.0, connect=reach
-        )
-        elapsed = time.monotonic() - began
+        try:
+            outcome = obtain_owner(
+                auth_root, profile, config, deadline_seconds=8.0, connect=reach
+            )
+            # Before the publisher is waited for: the descriptor is visible
+            # before its thread returns, and that return is not what is timed.
+            elapsed = time.monotonic() - began
+            assert published.wait(2.0), "the replacement was never published"
+        finally:
+            abandoned.set()
+            paced.set()
+            for publisher in publishers:
+                publisher.join(timeout=2.0)
+        assert not any(publisher.is_alive() for publisher in publishers)
 
-        assert published.is_set()
         assert outcome.worth_connecting, "the replacement generation was never seen"
         assert seen == [stale, fresh[0]]
         # One poll interval past publication, not the whole of the wait it landed
@@ -700,7 +878,8 @@ class TestFailingFast:
             profile,
             config,
             deadline_seconds=0.7,
-            connect=lambda attachment: Reach.REFUSED,
+            settlement_seconds=0,
+            connect=lambda attachment, timeout: Reach.REFUSED,
         )
         elapsed = time.monotonic() - started
 
@@ -745,12 +924,16 @@ class TestFailingFast:
         monkeypatch.setattr(election_module, "_MAX_OWNER_START_RETRY_SECONDS", 0.2)
 
         started = time.monotonic()
+        # Far past the handback bound, so the start is always reached; a slow
+        # first descriptor read could spend a 10ms budget before it. The bound
+        # below, not the budget, is what this asserts.
         outcome = obtain_owner(
             auth_root,
             profile,
             config,
-            deadline_seconds=1.0,
-            connect=lambda attachment: Reach.REFUSED,
+            deadline_seconds=5.0,
+            settlement_seconds=0,
+            connect=lambda attachment, timeout: Reach.REFUSED,
         )
         elapsed = time.monotonic() - started
 
@@ -784,7 +967,7 @@ class TestFailingFast:
                 profile,
                 _config(profile),
                 deadline_seconds=0.08,
-                connect=lambda attachment: Reach.REFUSED,
+                connect=lambda attachment, timeout: Reach.REFUSED,
             )
         finally:
             release.set()
@@ -819,13 +1002,13 @@ class TestFailingFast:
         assert lookup.state is OwnerState.ABSENT
         assert inspections == 1
 
-    def test_successful_commit_gets_a_fresh_descriptor_inspection(
+    def test_aborted_start_discards_an_inspection_begun_before_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         profile = _profile(tmp_path)
         config = _config(profile)
-        blocked = threading.Event()
-        release = threading.Event()
+        first_read_started = threading.Event()
+        release_first_read = threading.Event()
         real_inspect = daemon_module._inspect
         inspections = 0
 
@@ -833,8 +1016,8 @@ class TestFailingFast:
             nonlocal inspections
             inspections += 1
             if inspections == 1:
-                blocked.set()
-                release.wait()
+                first_read_started.set()
+                release_first_read.wait()
                 return OwnerLookup(state=OwnerState.ABSENT)
             return real_inspect(*cast(Any, args))
 
@@ -842,10 +1025,15 @@ class TestFailingFast:
             auth_root: Path,
             started_profile: Path,
             started_config: AppConfig,
+            *,
+            inspector: daemon_module._DescriptorInspector,
             **_kwargs: object,
         ) -> _Attempt:
+            assert first_read_started.is_set()
             _publish_stale_owner(auth_root, started_profile, started_config)
-            return _Attempt.STARTED
+            release_first_read.set()
+            assert inspector.settle_within(timeout=1.0)
+            return _Attempt.ABORTED
 
         monkeypatch.setattr(daemon_module, "_inspect", inspect)
         monkeypatch.setattr(daemon_module, "_DESCRIPTOR_READ_SECONDS", 0.01)
@@ -856,7 +1044,85 @@ class TestFailingFast:
                 profile,
                 config,
                 deadline_seconds=1.0,
-                connect=lambda attachment: Reach.ANSWERED,
+                connect=lambda attachment, timeout: Reach.ANSWERED,
+            )
+        finally:
+            release_first_read.set()
+
+        assert outcome.attachment_lookup.state is OwnerState.ATTACHABLE
+        assert inspections == 2
+
+    def test_successful_commit_gets_a_fresh_descriptor_inspection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        blocked = threading.Event()
+        published = threading.Event()
+        release = threading.Event()
+        reader_lock = threading.Lock()
+        real_inspect = daemon_module._inspect
+        real_inspect_until = daemon_module._DescriptorInspector.inspect_until
+        inspections = 0
+        active_readers = 0
+        max_active_readers = 0
+        first_inspector: daemon_module._DescriptorInspector | None = None
+
+        def inspect(*args: object) -> OwnerLookup:
+            nonlocal inspections, active_readers, max_active_readers
+            with reader_lock:
+                inspections += 1
+                inspection = inspections
+                active_readers += 1
+                max_active_readers = max(max_active_readers, active_readers)
+                if active_readers > 1:
+                    release.set()
+            try:
+                if inspection == 1:
+                    blocked.set()
+                    release.wait()
+                    return OwnerLookup(state=OwnerState.ABSENT)
+                return real_inspect(*cast(Any, args))
+            finally:
+                with reader_lock:
+                    active_readers -= 1
+
+        # The retained inspector releases its old reader before the post-publish
+        # lookup. A replacement instead starts a second native reader, whose entry
+        # above releases the first and records the overlap rather than deadlocking.
+        def inspect_until(
+            self: daemon_module._DescriptorInspector, *, timeout: float
+        ) -> OwnerLookup:
+            nonlocal first_inspector
+            if first_inspector is None:
+                first_inspector = self
+            elif published.is_set() and self is first_inspector:
+                release.set()
+            return real_inspect_until(self, timeout=timeout)
+
+        def start(
+            auth_root: Path,
+            started_profile: Path,
+            started_config: AppConfig,
+            **_kwargs: object,
+        ) -> _Attempt:
+            _publish_stale_owner(auth_root, started_profile, started_config)
+            published.set()
+            return _Attempt.STARTED
+
+        monkeypatch.setattr(daemon_module, "_inspect", inspect)
+        monkeypatch.setattr(
+            daemon_module._DescriptorInspector, "inspect_until", inspect_until
+        )
+        monkeypatch.setattr(daemon_module, "_DESCRIPTOR_READ_SECONDS", 0.01)
+        monkeypatch.setattr(election_module, "_start_owner", start)
+        try:
+            outcome = obtain_owner(
+                profile.parent,
+                profile,
+                config,
+                deadline_seconds=1.0,
+                connect=lambda attachment, timeout: Reach.ANSWERED,
             )
         finally:
             release.set()
@@ -864,6 +1130,7 @@ class TestFailingFast:
         assert blocked.is_set()
         assert outcome.worth_connecting
         assert inspections == 2
+        assert max_active_readers == 1
 
     def test_a_posix_election_never_waits_for_an_exclusion(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -937,7 +1204,7 @@ class TestFailingFast:
                 profile,
                 config,
                 deadline_seconds=2,
-                connect=lambda attachment: Reach.ANSWERED,
+                connect=lambda attachment, timeout: Reach.ANSWERED,
             )
         finally:
             releasing.cancel()
@@ -1384,7 +1651,7 @@ class TestFailingFast:
             profile,
             config,
             deadline_seconds=1.0,
-            connect=lambda attachment: Reach.REFUSED,
+            connect=lambda attachment, timeout: Reach.REFUSED,
         )
         elapsed = time.monotonic() - started
 
@@ -1404,6 +1671,7 @@ class TestFailingFast:
 _INSPECT_OWNER = """
 import faulthandler
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -1413,6 +1681,29 @@ from pathlib import Path
 # stderr, and the assertion could only report the number. This turns the next
 # one into a stack that names where it happened.
 faulthandler.enable()
+
+# A native crash here reaches no debugger while `SEM_NOGPFAULTERRORBOX` is in
+# the process error mode: `UnhandledExceptionFilter` returns at once, so there
+# is no dump, no `AeDebug` and no event-log entry, and the process just exits
+# carrying the 0xC0000005 this test reports. The bit is inherited, not set
+# here. Clear only that one and leave the rest, `SEM_FAILCRITICALERRORS`
+# included. See docs/windows-crash-dumps.md.
+#
+# Only under the soak variable, because clearing the bit turns crash reporting
+# back on and the no-dialog setting that makes that safe is armed by the soak
+# workflow alone. Nineteen ordinary tests run this same program through
+# `_run_frontend`, and the Windows CI job that runs several of them does not
+# set `DontShowUI`; leaving them on the default keeps a fault there exiting
+# rather than waiting for someone to click.
+if sys.platform == "win32" and os.environ.get("__ELECTION_SOAK__"):
+    import ctypes
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.GetErrorMode.restype = ctypes.c_uint
+    _kernel32.SetErrorMode.argtypes = [ctypes.c_uint]
+    _kernel32.SetErrorMode.restype = ctypes.c_uint
+    _SEM_NOGPFAULTERRORBOX = 0x0002
+    _kernel32.SetErrorMode(_kernel32.GetErrorMode() & ~_SEM_NOGPFAULTERRORBOX)
 
 from linkedin_mcp_server.config.schema import AppConfig
 from linkedin_mcp_server.daemon_election import obtain_owner
@@ -1460,7 +1751,14 @@ print(json.dumps({
     "url": attachment.descriptor.url if attachment else None,
     "frontend_holds_lock": DaemonLock(auth_root).try_acquire(),
 }))
-"""
+""".replace("__ELECTION_SOAK__", _ELECTION_SOAK)
+
+
+def _inspect_owner_environment() -> dict[str, str]:
+    environment = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+    if _ELECTION_SOAK_ENABLED:
+        environment[_ELECTION_SOAK] = "1"
+    return environment
 
 
 #: A frontend that elects an owner and then *stays alive*, which is what a real
@@ -1543,7 +1841,7 @@ def _run_frontend(profile: Path) -> dict[str, object]:
         [sys.executable, "-c", _INSPECT_OWNER, str(profile)],
         capture_output=True,
         text=True,
-        env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
+        env=_inspect_owner_environment(),
         cwd=_REPO_ROOT,
         timeout=180,
     )
@@ -2073,9 +2371,43 @@ class TestWindowsExclusionNamespace:
     inspection is blocked where the real one blocks.
     """
 
+    @pytest.fixture(autouse=True)
+    def _readers_end_with_the_test(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> Iterator[None]:
+        """Join this test's descriptor readers before its patches come off.
+
+        A reader looks ``_inspect`` up only when it runs. One still waiting at
+        teardown would find the production inspector back in place and run it
+        against whatever home the next test patches in.
+        """
+        before = set(threading.enumerate())
+        yield
+        for thread in threading.enumerate():
+            if thread not in before and thread.name == "daemon-descriptor-read":
+                thread.join(_PARKED)
+                assert not thread.is_alive(), "a descriptor reader outlived its test"
+
     @staticmethod
     def _legacy(home: Path) -> Path:
         return home / daemon_descriptor_module._LEGACY_WINDOWS_STATE_DIR
+
+    @staticmethod
+    def _exclusion(monkeypatch: pytest.MonkeyPatch) -> threading.Event:
+        """This test's own record of the name being excluded.
+
+        The real record is one flag for the whole process, and a reader thread
+        outlives the test that started it. A late write from the test before
+        would tell this test's election that a tombstone in that test's home
+        excludes the name in this one, and the election would spawn on it.
+        """
+        established = threading.Event()
+        monkeypatch.setattr(
+            daemon_descriptor_module,
+            "windows_exclusion_established",
+            established.is_set,
+        )
+        return established
 
     def _predecessor(self, home: Path, taken: list[str]) -> Callable[..., _Attempt]:
         """A child from a rolled-back package, competing for the legacy name."""
@@ -2100,6 +2432,7 @@ class TestWindowsExclusionNamespace:
         release = threading.Event()
         taken: list[str] = []
         inspections = 0
+        established = self._exclusion(monkeypatch)
 
         def inspect(*_args: object) -> OwnerLookup:
             nonlocal inspections
@@ -2111,7 +2444,7 @@ class TestWindowsExclusionNamespace:
             self._legacy(home).write_bytes(
                 daemon_descriptor_module._LEGACY_WINDOWS_TOMBSTONE
             )
-            daemon_descriptor_module._windows_exclusion_established = True
+            established.set()
             return OwnerLookup(state=OwnerState.ABSENT)
 
         monkeypatch.setattr(election_module, "_IS_WINDOWS", True)
@@ -2127,7 +2460,7 @@ class TestWindowsExclusionNamespace:
                 profile,
                 _config(profile),
                 deadline_seconds=0.4,
-                connect=lambda attachment: Reach.REFUSED,
+                connect=lambda attachment, timeout: Reach.REFUSED,
             )
             observed = list(taken)
             legacy_exists = self._legacy(home).exists()
@@ -2150,12 +2483,13 @@ class TestWindowsExclusionNamespace:
         profile = _profile(tmp_path)
         home = daemon_descriptor_module._account_home()
         taken: list[str] = []
+        established = self._exclusion(monkeypatch)
 
         def inspect(*_args: object) -> OwnerLookup:
             self._legacy(home).write_bytes(
                 daemon_descriptor_module._LEGACY_WINDOWS_TOMBSTONE
             )
-            daemon_descriptor_module._windows_exclusion_established = True
+            established.set()
             return OwnerLookup(state=OwnerState.ABSENT)
 
         monkeypatch.setattr(election_module, "_IS_WINDOWS", True)
@@ -2169,7 +2503,7 @@ class TestWindowsExclusionNamespace:
             profile,
             _config(profile),
             deadline_seconds=0.4,
-            connect=lambda attachment: Reach.REFUSED,
+            connect=lambda attachment, timeout: Reach.REFUSED,
         )
 
         # Startup proceeds the moment the inspection is safely done, and the
@@ -2195,6 +2529,7 @@ class TestWindowsExclusionNamespace:
         profile = _profile(tmp_path)
         home = daemon_descriptor_module._account_home()
         taken: list[str] = []
+        self._exclusion(monkeypatch)
 
         def inspect(*_args: object) -> OwnerLookup:
             # After the read budget rather than before it, so the election
@@ -2219,7 +2554,7 @@ class TestWindowsExclusionNamespace:
                 profile,
                 _config(profile),
                 deadline_seconds=30.0,
-                connect=lambda attachment: Reach.REFUSED,
+                connect=lambda attachment, timeout: Reach.REFUSED,
             )
         except Exception as exc:  # noqa: BLE001 - returned for the caller to judge
             escaped = exc
@@ -2921,7 +3256,8 @@ class TestSpawnCleanupBoundary:
             listeners.append(listener)
             return listener
 
-        def refuse(_stream: object) -> object:
+        def refuse(_stream: object, *, handshake_nonce: str) -> object:
+            assert handshake_nonce
             raise RuntimeError("can't start new thread")
 
         def stop(pid: int, **_kwargs: object) -> bool:
@@ -2945,6 +3281,20 @@ class TestSpawnCleanupBoundary:
             socket.create_connection(
                 (listeners[0].host, listeners[0].port), timeout=1.0
             ).close()
+
+
+def _await_fixture_imports(child: subprocess.Popen[Any], imported: Path) -> None:
+    """Hold a fixture owner's spawn until its interpreter has imported the server.
+
+    Startup's bound is for the owner, not for the interpreter loading the
+    package under a loaded test run, which alone can spend all five seconds
+    before ``main`` runs the behaviour a test is about.
+    """
+    deadline = time.monotonic() + 30.0
+    while not imported.exists():
+        assert child.poll() is None, "the fixture owner exited during its imports"
+        assert time.monotonic() < deadline, "the fixture owner never finished importing"
+        time.sleep(0.01)
 
 
 class TestAtomicStartupCommit:
@@ -3182,6 +3532,7 @@ class TestAtomicStartupCommit:
                 "rejected its startup configuration",
             ),
             (daemon_owner.BOOTSTRAP_STATE, "could not resolve its profile state"),
+            (daemon_owner.BOOTSTRAP_LOCK, "could not take ownership"),
             (daemon_owner.BOOTSTRAP_LOG, "daemon log could not be opened"),
             (daemon_owner.BOOTSTRAP_ATTACHED, "inspect the daemon log"),
         ],
@@ -3211,6 +3562,78 @@ class TestAtomicStartupCommit:
 
         assert message in caplog.text
         assert secret not in caplog.text
+
+    @pytest.mark.parametrize(
+        ("version", "nonce", "path"),
+        [
+            ("2", _HANDSHAKE_NONCE, "/tmp/daemon.log"),
+            (daemon_owner.BOOTSTRAP_LOG_HINT_VERSION, "wrong-nonce", "/tmp/daemon.log"),
+            (
+                daemon_owner.BOOTSTRAP_LOG_HINT_VERSION,
+                _HANDSHAKE_NONCE,
+                "relative/daemon.log",
+            ),
+            (
+                daemon_owner.BOOTSTRAP_LOG_HINT_VERSION,
+                _HANDSHAKE_NONCE,
+                "/tmp/not-daemon.log",
+            ),
+            (
+                daemon_owner.BOOTSTRAP_LOG_HINT_VERSION,
+                _HANDSHAKE_NONCE,
+                "/tmp/\x1b/daemon.log",
+            ),
+            (
+                daemon_owner.BOOTSTRAP_LOG_HINT_VERSION,
+                _HANDSHAKE_NONCE,
+                "/"
+                + "x" * daemon_owner.BOOTSTRAP_LOG_HINT_MAX_PATH_BYTES
+                + "/daemon.log",
+            ),
+        ],
+    )
+    def test_invalid_log_hints_fall_back_to_the_legacy_diagnosis(
+        self,
+        version: str,
+        nonce: str,
+        path: str,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        stream = io.BytesIO(
+            (
+                f"{daemon_owner.BOOTSTRAP_PREFIX} "
+                f"{daemon_owner.BOOTSTRAP_ATTACHED}\n"
+                f"{daemon_owner.BOOTSTRAP_LOG_HINT_PREFIX} "
+                f"{version} {nonce} {path}\n"
+            ).encode()
+        )
+
+        election_module._report_child_failure(
+            election_module._BootstrapReport(stream, handshake_nonce=_HANDSHAKE_NONCE)
+        )
+
+        assert "The daemon could not start; inspect the daemon log" in caplog.text
+        assert "inspect the daemon log at" not in caplog.text
+
+    def test_log_hint_requires_a_complete_bounded_record(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        path = "/tmp/daemon.log"
+        stream = io.BytesIO(
+            (
+                f"{daemon_owner.BOOTSTRAP_PREFIX} "
+                f"{daemon_owner.BOOTSTRAP_ATTACHED}\n"
+                f"{daemon_owner.BOOTSTRAP_LOG_HINT_PREFIX} "
+                f"{daemon_owner.BOOTSTRAP_LOG_HINT_VERSION} "
+                f"{_HANDSHAKE_NONCE} {path}"
+            ).encode()
+        )
+
+        election_module._report_child_failure(
+            election_module._BootstrapReport(stream, handshake_nonce=_HANDSHAKE_NONCE)
+        )
+
+        assert "inspect the daemon log at" not in caplog.text
 
     def test_a_blocked_bootstrap_pipe_cannot_pin_fallback(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3691,6 +4114,67 @@ class TestAtomicStartupCommit:
 
     @_POSIX_ONLY
     @pytest.mark.real_control_peer
+    def test_attached_child_failure_reports_the_actual_log_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        profile = _profile(tmp_path)
+        auth_root = profile.parent
+        home = tmp_path / "home"
+        monkeypatch.setattr(daemon_descriptor_module, "_account_home", lambda: home)
+        log_path = daemon_owner.daemon_log_path(auth_root)
+        bootstrap = tmp_path / "failing_owner.py"
+        imported = tmp_path / "owner-imported"
+        bootstrap.write_text(
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from linkedin_mcp_server import daemon_descriptor, daemon_owner\n"
+            "daemon_descriptor._account_home = lambda: Path(sys.argv[1])\n"
+            "class Lock:\n"
+            "    def release(self):\n"
+            "        pass\n"
+            "daemon_owner._take_lock = lambda *args, **kwargs: Lock()\n"
+            "def fail_logging(**kwargs):\n"
+            "    raise RuntimeError('failed after log attachment')\n"
+            "daemon_owner.configure_logging = fail_logging\n"
+            "Path(sys.argv[2]).write_text('imported')\n"
+            "raise SystemExit(daemon_owner.main([]))\n"
+        )
+        children: list[subprocess.Popen[Any]] = []
+        real = subprocess.Popen
+
+        def capture(command: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
+            if command[-2:] == ["-m", "linkedin_mcp_server.daemon_owner"]:
+                command = [command[0], str(bootstrap), str(home), str(imported)]
+            child = real(command, **kwargs)
+            children.append(child)
+            _await_fixture_imports(child, imported)
+            return child
+
+        monkeypatch.setattr(election_module.subprocess, "Popen", capture)
+        monkeypatch.setattr(
+            election_module.daemon_owner,
+            "daemon_log_path",
+            lambda _root: pytest.fail("the parent derived the daemon log path"),
+        )
+        try:
+            outcome = election_module._start_owner(
+                auth_root, profile, _config(profile), timeout=5.0
+            )
+
+            assert outcome is election_module._Attempt.FAILED
+            assert log_path.is_file(), "the child did not attach its diagnostic log"
+            assert repr(str(log_path)) in caplog.text
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=30)
+
+    @_POSIX_ONLY
+    @pytest.mark.real_control_peer
     def test_planted_child_log_fifo_is_refused_without_blocking(
         self,
         tmp_path: Path,
@@ -3704,6 +4188,7 @@ class TestAtomicStartupCommit:
         os.mkfifo(log_path)
         bootstrap = tmp_path / "blocked_log_owner.py"
         marker = tmp_path / "opening-log"
+        imported = tmp_path / "owner-imported"
         home = daemon_descriptor_module._account_home()
         bootstrap.write_text(
             "import sys\n"
@@ -3715,6 +4200,7 @@ class TestAtomicStartupCommit:
             "    Path(sys.argv[2]).write_text('opening')\n"
             "    return attach(root)\n"
             "daemon_owner._attach_daemon_log = marked\n"
+            "Path(sys.argv[3]).write_text('imported')\n"
             "raise SystemExit(daemon_owner.main([]))\n"
         )
         children: list[subprocess.Popen[Any]] = []
@@ -3722,15 +4208,22 @@ class TestAtomicStartupCommit:
 
         def capture(command: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
             if command[-2:] == ["-m", "linkedin_mcp_server.daemon_owner"]:
-                command = [command[0], str(bootstrap), str(home), str(marker)]
+                command = [
+                    command[0],
+                    str(bootstrap),
+                    str(home),
+                    str(marker),
+                    str(imported),
+                ]
             child = real(command, **kwargs)
             children.append(child)
+            _await_fixture_imports(child, imported)
             return child
 
         monkeypatch.setattr(election_module.subprocess, "Popen", capture)
         try:
             outcome = election_module._start_owner(
-                auth_root, profile, _config(profile), timeout=2.0
+                auth_root, profile, _config(profile), timeout=5.0
             )
 
             assert outcome is election_module._Attempt.ABORTED
@@ -3787,6 +4280,9 @@ class TestAtomicStartupCommit:
         profile = _profile(tmp_path)
         config = _config(profile)
         starts: list[bool] = []
+        # This is the platform-neutral ABORTED branch. Windows exclusion gating
+        # is orthogonal and would prevent the stub from reaching that branch.
+        monkeypatch.setattr(election_module, "_IS_WINDOWS", False)
         monkeypatch.setattr(
             election_module,
             "_start_owner",
@@ -3798,10 +4294,16 @@ class TestAtomicStartupCommit:
         monkeypatch.setattr(
             election_module,
             "_live_lookup",
-            lambda *args, **kwargs: (OwnerLookup(OwnerState.ABSENT), False),
+            lambda *args, **kwargs: (OwnerLookup(OwnerState.ABSENT), False, True),
         )
 
-        outcome = obtain_owner(profile.parent, profile, config, deadline_seconds=90.0)
+        outcome = obtain_owner(
+            profile.parent,
+            profile,
+            config,
+            deadline_seconds=0.01,
+            settlement_seconds=0,
+        )
 
         assert not outcome.worth_connecting
         assert starts == [True]
@@ -4362,6 +4864,360 @@ class TestAtomicStartupCommit:
 
 
 @pytest.mark.slow
+class TestAForwardedCallThroughTheRealOwner:
+    """A forwarded call on the 2026-07-28 era, through the owner's real HTTP server.
+
+    The owner is ``daemon_owner.create_owner_server`` on loopback in this
+    process: its token check, the call admission that wants every call marked,
+    the sequential middleware and the profile lease are all production's. What
+    is stood in is the browser (lifespan and the bookkeeping around a call) and
+    the owner's tools: it gets one synthetic tool, which takes an argument
+    because the owner's own argument check lists its tools before dispatching a
+    2026-07-28 call and skips that for a call with no arguments. The frontend
+    in front of it is the production proxy, over a real socket. No browser, no
+    profile contents and no account state are used; the profile is an empty
+    directory this test claims.
+    """
+
+    @staticmethod
+    @contextlib.asynccontextmanager
+    async def _a_real_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Serve the owner on loopback and yield what a test observes of it.
+
+        The synthetic tool ``hold_the_browser`` records every body that ran,
+        and the one called with ``"first"`` holds the call, and with it the
+        sequential lock and the profile lease, until *release* is set.
+        """
+        import linkedin_mcp_server.server as server_module
+        from fastmcp.server.dependencies import get_http_headers
+        from fastmcp.server.middleware import Middleware
+
+        from linkedin_mcp_server import update_check
+        from linkedin_mcp_server.config import set_config
+        from linkedin_mcp_server.daemon_liveness import CALL_HEADER, get_liveness
+        from linkedin_mcp_server.daemon_proxy import (
+            FrontendCallHeartbeatMiddleware,
+            _call_being_made,
+        )
+        from linkedin_mcp_server.drivers import browser
+        from linkedin_mcp_server.profile_claim import ensure_profile_claim
+        from linkedin_mcp_server.profile_lease import get_profile_lease
+        from linkedin_mcp_server.server_role import (
+            ServerRole,
+            reset_process_role_for_testing,
+        )
+
+        # Claimed while empty, before anything is created in it: the lease and
+        # the owner refuse an auth root that holds files that are not theirs.
+        auth_root = tmp_path / "auth"
+        auth_root.mkdir()
+        profile = auth_root / "profile"
+        ensure_profile_claim(profile)
+        profile.mkdir(exist_ok=True)
+        config = _config(profile)
+        config.server.tool_timeout_seconds = 10
+        set_config(config)
+
+        async def nothing(*_a: Any, **_k: Any) -> None:
+            return None
+
+        for name in (
+            "initialize_bootstrap",
+            "get_runtime_policy",
+            "report_retained_browser_revisions_if_ready",
+        ):
+            monkeypatch.setattr(server_module, name, lambda *_a, **_k: None)
+        for name in (
+            "start_background_browser_setup_if_needed",
+            "watch_for_handoff_requests",
+            "stop_background_browser_setup",
+            "close_browser",
+        ):
+            monkeypatch.setattr(server_module, name, nothing)
+        monkeypatch.setattr(browser, "note_call_started", lambda: None)
+        monkeypatch.setattr(browser, "note_activity", lambda: None)
+        monkeypatch.setattr(browser, "release_profile_if_idle_or_requested", nothing)
+        monkeypatch.setattr(update_check, "prime_from_cache", lambda: None)
+        monkeypatch.setattr(update_check, "refresh_latest_version", nothing)
+        monkeypatch.setattr(update_check, "pending_update_notice", lambda: None)
+        elections: list[object] = []
+        monkeypatch.setattr(
+            election_module, "obtain_owner", lambda *_a, **_k: elections.append(1)
+        )
+
+        held, release = asyncio.Event(), asyncio.Event()
+        bodies: list[dict[str, Any]] = []
+        listings: list[dict[str, Any]] = []
+
+        class NotesItsListings(Middleware):
+            async def on_list_tools(self, context: Any, call_next: Any) -> Any:
+                headers = get_http_headers()
+                while_held = held.is_set() and not release.is_set()
+                listed = await call_next(context)
+                # Recorded once the listing has completed, not when it began.
+                listings.append(
+                    {"method": headers.get("mcp-method"), "while_held": while_held}
+                )
+                return listed
+
+        build = server_module.create_mcp_server
+
+        def an_owner_with_a_synthetic_tool(*args: Any, **kwargs: Any) -> Any:
+            mcp = build(*args, **kwargs)
+            if kwargs.get("role") is ServerRole.OWNER:
+
+                @mcp.tool(
+                    name="hold_the_browser", annotations={"destructiveHint": True}
+                )
+                async def hold_the_browser(value: str) -> dict[str, str]:
+                    headers = get_http_headers()
+                    bodies.append(
+                        {
+                            "value": value,
+                            "call": headers.get(CALL_HEADER),
+                            "version": headers.get("mcp-protocol-version"),
+                            "method": headers.get("mcp-method"),
+                            "name": headers.get("mcp-name"),
+                            "session": headers.get("mcp-session-id"),
+                        }
+                    )
+                    if value == "first":
+                        held.set()
+                        await release.wait()
+                    return {"value": value}
+
+                mcp.add_middleware(NotesItsListings())
+            return mcp
+
+        monkeypatch.setattr(
+            server_module, "create_mcp_server", an_owner_with_a_synthetic_tool
+        )
+
+        # What the frontend marked each call with, at its preflight and as the
+        # tool request leaves, with the bound call's claim at that moment.
+        preflights: list[str] = []
+        beat = FrontendCallHeartbeatMiddleware._beat
+
+        async def noting_the_preflight(attachment: Attachment, call_id: str) -> Any:
+            preflights.append(call_id)
+            return await beat(attachment, call_id)
+
+        monkeypatch.setattr(
+            FrontendCallHeartbeatMiddleware, "_beat", staticmethod(noting_the_preflight)
+        )
+        leaving: list[tuple[str | None, str | None, bool]] = []
+        direct = daemon_owner.direct_async_http_client
+
+        async def note_a_tool_request(request: Any) -> None:
+            if request.method == "POST" and b'"tools/call"' in request.content:
+                bound = _call_being_made.get()
+                leaving.append(
+                    (
+                        request.headers.get(CALL_HEADER),
+                        None if bound is None else bound.call_id,
+                        bound is not None and bound.dispatch.sent,
+                    )
+                )
+
+        def watched_client(**kwargs: Any) -> Any:
+            client = direct(**kwargs)
+            client.event_hooks["request"].append(note_a_tool_request)
+            return client
+
+        monkeypatch.setattr(daemon_owner, "direct_async_http_client", watched_client)
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(64)
+        attachment = _attachment_for(profile, config, listener.getsockname()[1])
+        get_liveness().serving_as(attachment.descriptor.instance_id)
+        server = daemon_owner.create_owner_server(
+            config=config,
+            token=attachment.token,
+            host="127.0.0.1",
+            port=attachment.descriptor.port,
+        )
+        serving = asyncio.create_task(server.serve(sockets=[listener]))
+        calls: list[asyncio.Task[Any]] = []
+        try:
+            await daemon_owner._await_started(server, serving)
+            reset_process_role_for_testing()
+            yield SimpleNamespace(
+                frontend=build(
+                    role=ServerRole.PROXY,
+                    proxy_backend=_proxy_backend_for(attachment),
+                    tool_timeout=10.0,
+                ),
+                attachment=attachment,
+                direct=direct,
+                held=held,
+                release=release,
+                bodies=bodies,
+                listings=listings,
+                preflights=preflights,
+                leaving=leaving,
+                elections=elections,
+                calls=calls,
+                lease=get_profile_lease(),
+            )
+        finally:
+            release.set()
+            for call in calls:
+                if not call.done():
+                    call.cancel()
+            await asyncio.gather(*calls, return_exceptions=True)
+            server.should_exit = True
+            await asyncio.wait_for(serving, timeout=10)
+            listener.close()
+
+    async def test_a_forwarded_call_is_routed_admitted_and_kept_in_turn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from fastmcp import Client
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        from linkedin_mcp_server.daemon_liveness import (
+            REFUSAL_KEY,
+            UNMARKED_CALL,
+            get_liveness,
+        )
+
+        async with self._a_real_owner(tmp_path, monkeypatch) as owner:
+            async with Client(owner.frontend) as client:
+                first = asyncio.create_task(
+                    client.call_tool("hold_the_browser", {"value": "first"})
+                )
+                owner.calls.append(first)
+                await asyncio.wait_for(owner.held.wait(), timeout=10)
+                second = asyncio.create_task(
+                    client.call_tool("hold_the_browser", {"value": "second"})
+                )
+                owner.calls.append(second)
+                await _until(
+                    lambda: get_liveness().calls_in_flight() == 2 or second.done(),
+                    seconds=10,
+                )
+                # The second call was admitted while the first holds the lease,
+                # after the owner's own schema listing for it had completed, and
+                # its body waits its turn.
+                assert not second.done(), _outcome(second)
+                assert get_liveness().calls_in_flight() == 2
+                assert [body["value"] for body in owner.bodies] == ["first"]
+                assert {"method": "tools/call", "while_held": True} in (
+                    owner.listings
+                ), owner.listings
+                owner.release.set()
+                answers = await asyncio.wait_for(asyncio.gather(first, second), 10)
+
+            # A call without the marker, straight at the owner: refused with the
+            # owner's signed marker before the body could run.
+            unmarked = Client(
+                StreamableHttpTransport(
+                    owner.attachment.descriptor.url,
+                    auth=owner.attachment.token,
+                    httpx_client_factory=owner.direct,
+                ),
+                timeout=10,
+            )
+            async with unmarked:
+                refused = await unmarked.call_tool(
+                    "hold_the_browser", {"value": "unmarked"}, raise_on_error=False
+                )
+
+        assert [answer.structured_content for answer in answers] == [
+            {"value": "first"},
+            {"value": "second"},
+        ]
+        bodies = owner.bodies
+        assert [body["value"] for body in bodies] == ["first", "second"]
+        for body in bodies:
+            assert body["version"] == "2026-07-28", body
+            assert body["method"] == "tools/call", body
+            assert body["name"] == "hold_the_browser", body
+            assert body["session"] is None, body
+        # Each body ran under the call id its own preflight named, two calls
+        # two ids, and each tool request left carrying it, already claimed.
+        first_call, second_call = (body["call"] for body in bodies)
+        assert first_call != second_call
+        assert first_call == owner.preflights[0]
+        assert second_call in owner.preflights
+        assert (first_call, first_call, True) in owner.leaving, owner.leaving
+        assert (second_call, second_call, True) in owner.leaving, owner.leaving
+        assert refused.is_error is True
+        assert refused.meta is not None
+        assert refused.meta[REFUSAL_KEY]["daemon"] == UNMARKED_CALL
+        assert get_liveness().calls_in_flight() == 0
+        assert owner.elections == [], "a healthy owner was replaced"
+
+    async def test_a_queued_call_given_up_is_withdrawn_from_the_owner(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A caller that gives up while its call waits its turn takes it back.
+
+        The second call is admitted at the owner and queued behind the first,
+        which holds the lease. Its caller then cancels. The cancellation has to
+        cross the hop: the owner drops the call from admission well before the
+        heartbeat expiry could have done it, the lease stays with the first
+        call, the cancelled body never runs once the lease is free, and nothing
+        on the frontend reads the cancellation as an owner loss to recover
+        from or a call to send again.
+        """
+        from fastmcp import Client
+
+        from linkedin_mcp_server.daemon_liveness import EXPIRY_SECONDS, get_liveness
+
+        async with self._a_real_owner(tmp_path, monkeypatch) as owner:
+            async with Client(owner.frontend) as client:
+                first = asyncio.create_task(
+                    client.call_tool("hold_the_browser", {"value": "first"})
+                )
+                owner.calls.append(first)
+                await asyncio.wait_for(owner.held.wait(), timeout=10)
+                second = asyncio.create_task(
+                    client.call_tool("hold_the_browser", {"value": "second"})
+                )
+                owner.calls.append(second)
+                await _until(
+                    lambda: get_liveness().calls_in_flight() == 2 or second.done(),
+                    seconds=10,
+                )
+                assert not second.done(), _outcome(second)
+                assert get_liveness().calls_in_flight() == 2
+                assert [body["value"] for body in owner.bodies] == ["first"]
+                assert owner.lease.held
+
+                second.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(second, timeout=10)
+                # Well inside the expiry, so only a delivered cancellation can
+                # have withdrawn it: a caller's heartbeats stop when it gives
+                # up, and the owner would otherwise cut the call off later.
+                took = await _until(
+                    lambda: get_liveness().calls_in_flight() == 1,
+                    seconds=EXPIRY_SECONDS / 3,
+                )
+                assert get_liveness().calls_in_flight() == 1, (
+                    f"the queued call was still admitted after {took:.1f}s"
+                )
+                assert owner.lease.held, "the first call lost its lease"
+
+                owner.release.set()
+                answer = await asyncio.wait_for(first, timeout=10)
+                await _until(lambda: get_liveness().calls_in_flight() == 0, seconds=10)
+
+        assert answer.structured_content == {"value": "first"}
+        assert [body["value"] for body in owner.bodies] == ["first"], (
+            "the cancelled call ran once the lease was free"
+        )
+        assert get_liveness().calls_in_flight() == 0
+        assert not owner.lease.held
+        # Both tool requests left once each, claimed, and nothing was sent again.
+        sent = [call for call, _bound, _claimed in owner.leaving]
+        assert len(sent) == 2 and len(set(sent)) == 2, owner.leaving
+        assert all(claimed for _call, _bound, claimed in owner.leaving)
+        assert owner.elections == [], "a cancellation was taken for an owner loss"
+
+
 class TestRealOwner:
     """The whole thing, with a real detached process on the other end.
 
@@ -4638,7 +5494,7 @@ class TestRealOwner:
             ],
             capture_output=True,
             text=True,
-            env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
+            env=_inspect_owner_environment(),
             cwd=_REPO_ROOT,
             timeout=30,
         )
@@ -4663,6 +5519,16 @@ class TestRealOwner:
         waited: list[subprocess.Popen[str]] = []
 
         def spawn(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
+            # The patch is process-wide, and the interpreter spawns children of
+            # its own (``ctypes.util`` runs ``/sbin/ldconfig -p`` on Linux).
+            # Only a frontend is failed, tracked or wrapped; a ninth frontend
+            # still counts.
+            command = args[0] if args else kwargs.get("args")
+            if not (
+                isinstance(command, list)
+                and command[:3] == [sys.executable, "-c", _INSPECT_OWNER]
+            ):
+                return popen(*args, **kwargs)
             if failure == "spawn" and len(running) == 2:
                 raise OSError("frontend spawn failed")
             child = popen(*args, **kwargs)
@@ -4802,15 +5668,6 @@ class TestRealOwner:
             for pid in stopped:
                 stop(pid)
 
-    @pytest.mark.skipif(
-        os.name == "nt"
-        and sys.implementation.name == "cpython"
-        and sys.version_info[:2] == (3, 12),
-        reason=(
-            "CPython 3.12 intermittently access-violates under this "
-            "daemon-thread I/O stress (#838)"
-        ),
-    )
     def test_many_clients_starting_at_once_elect_exactly_one_owner(
         self, real_state_root: Path
     ):
@@ -4849,7 +5706,7 @@ class TestRealOwner:
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True,
-                        env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
+                        env=_inspect_owner_environment(),
                         cwd=_REPO_ROOT,
                     )
                 )
@@ -5005,9 +5862,11 @@ class TestRealOwner:
 
             async def unauthenticated() -> None:
                 async with Client(StreamableHttpTransport(url, auth="wrong")) as client:
-                    await client.ping()
+                    await client.list_tools()
 
-            with pytest.raises(Exception):
+            # Matched on the answer, because a bare `Exception` also passed on
+            # a ping, which the 2026-07-28 era refuses whatever the token.
+            with pytest.raises(Exception, match="Server returned an error response"):
                 asyncio.run(unauthenticated())
         finally:
             _stop(result.get("pid"))
@@ -5069,6 +5928,7 @@ class TestRealOwner:
         import asyncio
 
         from fastmcp import Client
+        from fastmcp.client.transports import StreamableHttpTransport
 
         from linkedin_mcp_server.daemon import look_up_owner
         from linkedin_mcp_server.server import ServerRole, create_mcp_server
@@ -5082,47 +5942,35 @@ class TestRealOwner:
             # returned: the descriptor and token on disk are what a proxy is
             # built from.
             lookup = look_up_owner(profile.parent, profile, _config(profile))
-            assert lookup.attachment is not None, lookup.reason
+            attachment = lookup.attachment
+            assert attachment is not None, lookup.reason
 
             proxy = create_mcp_server(
                 tool_timeout=30.0,
                 role=ServerRole.PROXY,
-                proxy_backend=_proxy_backend_for(lookup.attachment),
+                proxy_backend=_proxy_backend_for(attachment),
             )
 
-            async def served() -> set[str]:
+            async def served() -> tuple[set[str], set[str]]:
+                # Read the expectation directly from the same owner so proxy
+                # omissions cannot change both sides of the comparison.
+                transport = StreamableHttpTransport(
+                    attachment.descriptor.url,
+                    auth=attachment.token,
+                    httpx_client_factory=daemon_owner.direct_async_http_client,
+                )
+                async with Client(transport, timeout=30.0) as owner_client:
+                    owner_names = {
+                        tool.name for tool in await owner_client.list_tools()
+                    }
                 async with Client(proxy) as client:
-                    return {tool.name for tool in await client.list_tools()}
+                    names = {tool.name for tool in await client.list_tools()}
+                return owner_names, names
 
-            names = asyncio.run(served())
+            owner_names, names = asyncio.run(served())
 
-            # The owner registers the full local set, so the proxy must show it
-            # all, including `close_session`, the one defined inline rather than
-            # in a `register_*` call.
-            assert "get_person_profile" in names
-            assert "close_session" in names
-            # This fork supersedes get_inbox with the Voyager conversations
-            # walk, so the COUNT matches upstream's while the membership does
-            # not. Asserted by name in both directions, because a count alone
-            # would pass just as happily if the swap had not happened at all.
-            assert "get_conversations" in names, sorted(names)
-            assert "get_invitations" in names, sorted(names)
-            assert "get_inbox" not in names, sorted(names)
-            # A replacement keeps upstream's name, so the names below that
-            # upstream also has are served by this fork's API readers.
-            for ours in (
-                "reply_to_thread",
-                "get_mutual_connections",
-                "get_person_posts",
-                "get_profile_views",
-                "get_recruiter_views",
-                "get_conversation",
-                "search_conversations",
-                "send_message",
-                "get_person_profile",
-            ):
-                assert ours in names, sorted(names)
-            assert len(names) == 25, sorted(names)
+            assert {"get_person_profile", "close_session"} <= owner_names
+            assert names == owner_names
         finally:
             _stop(result.get("pid"))
 
@@ -5230,7 +6078,7 @@ class TestRealOwner:
             _stop(result.get("pid"))
 
     def test_a_proxy_refuses_an_owner_it_has_the_wrong_token_for(
-        self, real_state_root: Path
+        self, real_state_root: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """The credential is load-bearing, not decoration.
 
@@ -5243,9 +6091,26 @@ class TestRealOwner:
         import dataclasses
 
         from fastmcp import Client
+        from mcp import MCPError
 
+        from linkedin_mcp_server import daemon_proxy
         from linkedin_mcp_server.daemon import look_up_owner
         from linkedin_mcp_server.server import ServerRole, create_mcp_server
+
+        # What the proxy's recovery was handed, because the client no longer
+        # reads it: a failure recognised as the owner's reaches the client as a
+        # fixed sentence about a lost owner, whatever the owner answered.
+        seen: list[BaseException] = []
+        recognise = daemon_proxy.unreachable_owner_in
+
+        def recording(exc: BaseException) -> Any:
+            current: BaseException | None = exc
+            while current is not None:
+                seen.append(current)
+                current = current.__cause__
+            return recognise(exc)
+
+        monkeypatch.setattr(daemon_proxy, "unreachable_owner_in", recording)
 
         profile = real_state_root
         result = _run_frontend(profile)
@@ -5261,16 +6126,36 @@ class TestRealOwner:
             )
 
             async def served() -> None:
-                async with Client(proxy) as client:
+                async with Client(proxy, mode="legacy") as client:
                     await client.list_tools()
 
-            # Matched on the status rather than catching anything at all. A bare
-            # `Exception` passed on any failure whatsoever, including one raised
-            # before a request ever left this process, so the test would have
-            # gone green without the owner refusing anything. Measured: the real
-            # refusal is `McpError: Client error '401 Unauthorized'`.
-            with pytest.raises(Exception, match="401 Unauthorized"):
+            async def asked_directly() -> int:
+                from linkedin_mcp_server import daemon_owner
+
+                async with daemon_owner.direct_async_http_client() as http:
+                    response = await http.post(
+                        wrong.descriptor.url,
+                        headers={"Authorization": f"Bearer {wrong.token}"},
+                        json={},
+                    )
+                return response.status_code
+
+            # Matched on what came back rather than catching anything at all. A
+            # bare `Exception` passed on any failure whatsoever, including one
+            # raised before a request ever left this process, so the test would
+            # have gone green without the owner refusing anything. SDK v2 no
+            # longer names the status: an HTTP error without a JSON-RPC body
+            # becomes "Server returned an error response", which is written only
+            # once a response of 400 or more has arrived. Which status it was is
+            # asked of the owner directly, with the same token.
+            with pytest.raises(Exception, match="could not reach a new one"):
                 asyncio.run(served())
+            assert any(
+                isinstance(exc, MCPError)
+                and exc.message == "Server returned an error response"
+                for exc in seen
+            ), seen
+            assert asyncio.run(asked_directly()) == 401
         finally:
             _stop(result.get("pid"))
 
@@ -5299,10 +6184,11 @@ class TestVersionSkew:
             auth_root,
             profile,
             config,
-            deadline_seconds=0,
+            deadline_seconds=0.1,
+            settlement_seconds=0,
             # Would attach if version were not consulted, which is what makes
             # this test about the version rather than about reachability.
-            connect=lambda attachment: Reach.ANSWERED,
+            connect=lambda attachment, timeout: Reach.ANSWERED,
         )
 
         assert asked, "the stale owner was never asked to stand down"
@@ -5329,8 +6215,9 @@ class TestVersionSkew:
             auth_root,
             profile,
             config,
-            deadline_seconds=0,
-            connect=lambda attachment: Reach.ANSWERED,
+            deadline_seconds=0.1,
+            settlement_seconds=0,
+            connect=lambda attachment, timeout: Reach.ANSWERED,
         )
 
         assert not asked
@@ -5358,8 +6245,9 @@ class TestVersionSkew:
             auth_root,
             profile,
             config,
-            deadline_seconds=0,
-            connect=lambda attachment: Reach.ANSWERED,
+            deadline_seconds=0.1,
+            settlement_seconds=0,
+            connect=lambda attachment, timeout: Reach.ANSWERED,
         )
 
         assert not asked
@@ -5376,7 +6264,7 @@ class TestVersionSkew:
         import asyncio
         import socket
 
-        import httpx
+        import httpx2
         import uvicorn
 
         from linkedin_mcp_server import config as config_module
@@ -5413,7 +6301,7 @@ class TestVersionSkew:
                 # never ends when startup fails, which is how this test hung
                 # before it was written this way.
                 await daemon_owner._await_started(server, serving)
-                async with httpx.AsyncClient() as client:
+                async with httpx2.AsyncClient() as client:
                     without = await client.post(url)
                     wrong = await client.post(
                         url, headers={"Authorization": "Bearer nope"}
@@ -5441,7 +6329,7 @@ class TestVersionSkew:
     ):
         # Every request the daemon makes carries the bearer token for a server
         # driving a logged-in LinkedIn session, and every one is addressed to
-        # loopback. httpx honours HTTP_PROXY by default and does so even for
+        # loopback. httpx2 honours HTTP_PROXY by default and does so even for
         # 127.0.0.1 unless NO_PROXY happens to say otherwise. This was reproduced
         # against a capture proxy, which received the absolute loopback URL and
         # `Authorization: Bearer <token>` in full.
@@ -6097,18 +6985,17 @@ class TestNotHoldingTheLockForever:
 
 
 class _ProcessEnded(BaseException):
-    """The process ending inside ``hard_exit_process_tree``.
+    """The process ending inside ``os._exit``.
 
     Not an ``Exception``: ``_stop_within`` catches those around its own wait.
     """
 
 
 class TestTheHardExitFreesTheElectionFirst:
-    """The drain is unbounded on both platforms and holds the profile until the
-    browser is provably gone. Spending the election on that wait too leaves a
-    profile no later election can replace."""
+    """The election is released before the process ends, so nothing that
+    delays the exit holds the election with it."""
 
-    def test_the_drain_begins_with_the_election_already_free(
+    def test_the_exit_begins_with_the_election_already_free(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         # Driven through the whole owner rather than through ``_exit_hard``, so
@@ -6125,10 +7012,10 @@ class TestTheHardExitFreesTheElectionFirst:
         auth_root = profile.parent
         lock = DaemonLock(auth_root)
         assert lock.try_acquire(), "the test could not take the lock it means to free"
-        held_at_the_drain: list[bool] = []
+        held_at_the_exit: list[bool] = []
 
-        def drain(status: int) -> None:
-            held_at_the_drain.append(lock.held)
+        def exit_now(status: int) -> None:
+            held_at_the_exit.append(lock.held)
             raise _ProcessEnded
 
         async def probe(url: str, token: str) -> None:
@@ -6162,7 +7049,7 @@ class TestTheHardExitFreesTheElectionFirst:
             def readline(self) -> str:
                 return f"owner {nonce} commit\n"
 
-        monkeypatch.setattr(daemon_owner, "hard_exit_process_tree", drain)
+        monkeypatch.setattr(daemon_owner.os, "_exit", exit_now)
         monkeypatch.setattr(daemon_owner, "hard_exit_required", lambda: True)
         monkeypatch.setattr(daemon_owner, "_probe", probe)
         monkeypatch.setattr(
@@ -6207,65 +7094,9 @@ class TestTheHardExitFreesTheElectionFirst:
             )
 
         assert served == [], "the hard exit returned to its caller"
-        assert held_at_the_drain == [False], (
-            "the drain began while the election lock was still held"
+        assert held_at_the_exit == [False], (
+            "the exit began while the election lock was still held"
         )
-
-    @_POSIX_ONLY
-    def test_another_process_elects_while_the_drain_still_runs(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        # The kernel half, which no in-process check can see: ``lock.held`` is
-        # bookkeeping, and only a different process asking proves the release.
-        home = tmp_path / "drain-home"
-        home.mkdir()
-        auth_root = tmp_path / "drain-auth"
-        auth_root.mkdir()
-        draining = tmp_path / "drain-began"
-
-        script = tmp_path / "draining_owner.py"
-        script.write_text(
-            "import sys, time\n"
-            "from pathlib import Path\n"
-            "import linkedin_mcp_server.daemon_descriptor as descriptor\n"
-            "descriptor._account_home = lambda: Path(sys.argv[1])\n"
-            "from linkedin_mcp_server import daemon_owner, process_tree\n"
-            "from linkedin_mcp_server.daemon_lock import DaemonLock\n"
-            "lock = DaemonLock(Path(sys.argv[2]))\n"
-            "assert lock.try_acquire()\n"
-            "def never_drains(groups, *, markers=None, deadline=None):\n"
-            "    Path(sys.argv[3]).touch()\n"
-            "    while True:\n"
-            "        time.sleep(0.05)\n"
-            "process_tree._wait_for_process_groups = never_drains\n"
-            "daemon_owner._exit_hard(lock)\n"
-        )
-        process = subprocess.Popen(
-            [sys.executable, str(script), str(home), str(auth_root), str(draining)],
-            cwd=_REPO_ROOT,
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        try:
-            for _ in range(500):
-                if draining.exists() or process.poll() is not None:
-                    break
-                time.sleep(0.01)
-            assert draining.exists(), "the owner never reached its drain"
-            assert process.poll() is None, "the owner exited before its drain"
-
-            monkeypatch.setattr(daemon_descriptor_module, "_account_home", lambda: home)
-            probe = DaemonLock(auth_root)
-            assert probe.try_acquire(), (
-                "the election stayed occupied for the whole browser drain"
-            )
-            probe.release()
-        finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=30)
 
 
 #: The Job Object handoff every generic ``_run_serve`` case carries. On
@@ -7135,8 +7966,9 @@ class TestPublishingLast:
         assert turnover_sent.is_set(), "the endpoint could not request turnover"
         # Driven through the real `_serve`, so what `_exit_hard` receives here is
         # the owner's own lock and not a value this case handed to the helper.
-        # A reconciliation exit that skipped it would leave the election held for
-        # an unbounded browser drain.
+        # The lock must reach the terminal helper so it can release this owner's
+        # election reference before process exit; the removed owner-side drain is
+        # not part of this path.
         assert exited and all(
             isinstance(candidate, DaemonLock) for candidate in exited
         ), "the uncertain-publication exit did not free the election first"
@@ -7555,7 +8387,14 @@ class TestPublishingLast:
         commits: list[str] = []
 
         async def exercise() -> None:
-            serving = asyncio.create_task(asyncio.sleep(3600))
+            # Stops once asked to, as uvicorn does. Turnover now stops the
+            # endpoint gracefully before the hard exit, and an endpoint that
+            # ignored `should_exit` would hold that stop for its whole bound.
+            async def serves() -> None:
+                while not server.should_exit:
+                    await asyncio.sleep(0.001)
+
+            serving = asyncio.create_task(serves())
             canonical_read = asyncio.get_running_loop().create_future()
             monkeypatch.setattr(daemon_owner, "_STAND_DOWN_POLL_SECONDS", 0.001)
             monkeypatch.setattr(daemon_owner, "_COMMIT_AUTH_SECONDS", 1.0)
@@ -7611,6 +8450,150 @@ class TestPublishingLast:
         )
         assert server.should_exit
         assert commits == []
+
+    @pytest.mark.parametrize(
+        "outlives_the_drain",
+        [False, True],
+        ids=["finishes within the drain", "outlives the drain"],
+    )
+    def test_turnover_while_reconciling_drains_the_admitted_call(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        outlives_the_drain: bool,
+    ):
+        """Turnover during uncertain publication owes admitted calls the drain.
+
+        The endpoint is serving while its publication is still being
+        reconciled, so a frontend that already read the descriptor can have a
+        call admitted. Then the real stand-down callback that `_serve` hands the
+        server fires. The call is kept if it finishes inside the drain, and
+        answered as an unknown outcome if it does not; either way no further
+        publication is attempted and the owner still exits hard at the end.
+        The canonical read is doubled and never shows this generation, which is
+        reconciliation not yet succeeding.
+        """
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from linkedin_mcp_server.daemon_liveness import (
+            CALL_HEADER,
+            OwnerCallLivenessMiddleware,
+            new_call_id,
+        )
+        from linkedin_mcp_server.profile_lease import get_profile_lease
+        from linkedin_mcp_server.sequential_tool_middleware import (
+            SequentialToolExecutionMiddleware,
+        )
+
+        order: list[str] = []
+        observed: dict[str, object] = {}
+        monkeypatch.setattr(daemon_owner, "_STAND_DOWN_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(daemon_owner, "_UNCERTAIN_PUBLICATION_RETRY_SECONDS", 0.02)
+        monkeypatch.setattr(
+            daemon_owner, "_TURNOVER_DRAIN_SECONDS", 0.3 if outlives_the_drain else 10.0
+        )
+        monkeypatch.setattr(daemon_owner, "stand_down_reason", lambda: None)
+        monkeypatch.setattr(
+            daemon_owner,
+            "_exit_hard",
+            lambda _lock: observed.setdefault("exited_with_call_done", call_done()),
+        )
+        marker = new_call_id()
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_http_headers",
+            lambda **_kw: {CALL_HEADER: marker},
+        )
+        lease = get_profile_lease(tmp_path / "held-profile")
+        monkeypatch.setattr(
+            "linkedin_mcp_server.sequential_tool_middleware.get_profile_lease",
+            lambda: lease,
+        )
+        calls: list[asyncio.Task[Any]] = []
+
+        def call_done() -> bool:
+            return bool(calls) and calls[0].done()
+
+        class _Server:
+            started = True
+            should_exit = False
+
+            def __init__(self, stand_down: Callable[[], None]) -> None:
+                self.stand_down = stand_down
+
+            async def serve(self, sockets: object = None) -> None:
+                # A second commit attempt means reconciliation is under way.
+                while order.count("commit") < 2:
+                    await asyncio.sleep(0.005)
+                release = asyncio.Event()
+
+                async def work(_context: Any) -> str:
+                    observed["ran"] = True
+                    if outlives_the_drain:
+                        await asyncio.sleep(3600)
+                    await release.wait()
+                    return "the result"
+
+                # Through the real serializing middleware, so the call's body
+                # visibly begins and a cut reports an unknown outcome.
+                sequential = SequentialToolExecutionMiddleware()
+
+                async def through_the_lock(context: Any) -> Any:
+                    return await sequential.on_call_tool(context, work)  # ty: ignore
+
+                context = MagicMock()
+                context.message.name = "send_message"
+                context.fastmcp_context = None
+                calls.append(
+                    asyncio.create_task(
+                        OwnerCallLivenessMiddleware().on_call_tool(
+                            context,
+                            through_the_lock,
+                        )
+                    )
+                )
+                while "ran" not in observed:
+                    await asyncio.sleep(0.001)
+                self.stand_down()
+                commits_at_turnover = order.count("commit")
+                if not outlives_the_drain:
+                    await asyncio.sleep(0.1)
+                    observed["stopped_while_running"] = self.should_exit
+                    release.set()
+                while not self.should_exit:
+                    await asyncio.sleep(0.005)
+                observed["done_when_stopped"] = calls[0].done()
+                observed["result"] = await asyncio.wait_for(calls[0], 5)
+                observed["commits_after_turnover"] = (
+                    order.count("commit") - commits_at_turnover
+                )
+
+        with pytest.raises(RuntimeError, match="hard exit returned"):
+            self._run_serve(
+                tmp_path,
+                monkeypatch,
+                order,
+                commit_error=OSError("rename reply was lost"),
+                canonical_after_reads=10**9,
+                server_factory=_Server,
+            )
+
+        assert observed["commits_after_turnover"] == 0
+        # Answered before the process went, on both paths.
+        assert observed["exited_with_call_done"] is True
+        result = observed["result"]
+        if outlives_the_drain:
+            # Cut at the end of the drain. The stop may be requested before the
+            # cancelled call has unwound, which is what uvicorn's connection
+            # grace is for, so only the answer and its timing are asserted.
+            assert getattr(result, "is_error", None) is True
+            assert getattr(result, "structured_content", {})["status"] == (
+                "outcome_unknown"
+            )
+        else:
+            assert observed["stopped_while_running"] is False
+            assert observed["done_when_stopped"] is True
+            assert result == "the result"
 
     def test_persistent_ambiguity_holds_the_lock_until_cancelled_hard_exit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -7953,6 +8936,674 @@ class TestPublishingLast:
         ]
 
 
+class TestElectionSettlement:
+    @pytest.mark.parametrize("failure", [_Attempt.ABORTED, OSError("spawn failed")])
+    def test_terminal_local_result_observes_a_concurrent_winner(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: _Attempt | OSError,
+    ):
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        published: list[str] = []
+        probed: list[str] = []
+        clock = [0.0]
+
+        class Inspector:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                return None
+
+            def require_fresh_inspection(self) -> None:
+                return None
+
+            def inspect_until(self, *, timeout: float) -> OwnerLookup:
+                return daemon_module._inspect(profile.parent, profile, config)
+
+        def finish(*args: object, **kwargs: object) -> _Attempt:
+            published.append(_publish_stale_owner(profile.parent, profile, config))
+            if isinstance(failure, OSError):
+                raise failure
+            return failure
+
+        def answer(attachment: Attachment, timeout: float) -> Reach:
+            probed.append(attachment.descriptor.instance_id)
+            return Reach.ANSWERED
+
+        def monotonic() -> float:
+            now = clock[0]
+            clock[0] += 0.001
+            return now
+
+        monkeypatch.setattr(election_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(election_module, "_DescriptorInspector", Inspector)
+        monkeypatch.setattr(election_module, "_start_owner", finish)
+        monkeypatch.setattr(election_module.time, "monotonic", monotonic)
+        outcome = obtain_owner(
+            profile.parent,
+            profile,
+            config,
+            deadline_seconds=0.2,
+            settlement_seconds=0.2,
+            connect=answer,
+        )
+
+        assert outcome.worth_connecting
+        assert probed == published
+
+    @pytest.mark.parametrize("failure", [_Attempt.ABORTED, OSError("spawn failed")])
+    def test_early_terminal_local_result_gets_only_one_settlement_budget(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: _Attempt | OSError,
+    ):
+        profile = _profile(tmp_path)
+        clock = [0.0]
+
+        class Inspector:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                return None
+
+            def require_fresh_inspection(self) -> None:
+                return None
+
+            def inspect_until(self, *, timeout: float) -> OwnerLookup:
+                return OwnerLookup(state=OwnerState.ABSENT)
+
+        def finish(*args: object, **kwargs: object) -> _Attempt:
+            if isinstance(failure, OSError):
+                raise failure
+            return failure
+
+        monkeypatch.setattr(election_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(election_module, "_DescriptorInspector", Inspector)
+        monkeypatch.setattr(election_module, "_start_owner", finish)
+        monkeypatch.setattr(election_module.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(
+            election_module.time,
+            "sleep",
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+
+        outcome = obtain_owner(
+            profile.parent,
+            profile,
+            _config(profile),
+            deadline_seconds=90,
+            settlement_seconds=2,
+            connect=lambda attachment, timeout: pytest.fail("absent owner was probed"),
+        )
+
+        assert not outcome.worth_connecting
+        assert 1.9 <= clock[0] <= 2.01, clock[0]
+
+    @pytest.mark.parametrize("failure", [_Attempt.ABORTED, OSError("spawn failed")])
+    def test_early_terminal_local_result_observes_winner_within_short_window(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: _Attempt | OSError,
+    ):
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        _publish_stale_owner(profile.parent, profile, config)
+        winner = daemon_module._inspect(profile.parent, profile, config)
+        clock = [0.0]
+
+        class Inspector:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                return None
+
+            def require_fresh_inspection(self) -> None:
+                return None
+
+            def inspect_until(self, *, timeout: float) -> OwnerLookup:
+                if clock[0] >= 1.0:
+                    return winner
+                return OwnerLookup(state=OwnerState.ABSENT)
+
+        def finish(*args: object, **kwargs: object) -> _Attempt:
+            if isinstance(failure, OSError):
+                raise failure
+            return failure
+
+        monkeypatch.setattr(election_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(election_module, "_DescriptorInspector", Inspector)
+        monkeypatch.setattr(election_module, "_start_owner", finish)
+        monkeypatch.setattr(election_module.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(
+            election_module.time,
+            "sleep",
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+
+        outcome = obtain_owner(
+            profile.parent,
+            profile,
+            config,
+            deadline_seconds=90,
+            settlement_seconds=2,
+            connect=lambda attachment, timeout: Reach.ANSWERED,
+        )
+
+        assert outcome.worth_connecting
+        assert 1.0 <= clock[0] < 2.0
+
+    def test_active_deadline_exit_keeps_the_global_settlement_deadline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        _publish_stale_owner(profile.parent, profile, config)
+        winner = daemon_module._inspect(profile.parent, profile, config)
+        clock = [0.0]
+
+        class Inspector:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                return None
+
+            def require_fresh_inspection(self) -> None:
+                return None
+
+            def inspect_until(self, *, timeout: float) -> OwnerLookup:
+                if clock[0] >= 100.0:
+                    return winner
+                return OwnerLookup(state=OwnerState.ABSENT)
+
+        def exhaust_active_budget(*args: object, **kwargs: object) -> _Attempt:
+            clock[0] = 90.0
+            return _Attempt.CONTENDED
+
+        monkeypatch.setattr(election_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(election_module, "_DescriptorInspector", Inspector)
+        monkeypatch.setattr(election_module, "_start_owner", exhaust_active_budget)
+        monkeypatch.setattr(election_module.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(
+            election_module.time,
+            "sleep",
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+
+        outcome = obtain_owner(
+            profile.parent,
+            profile,
+            config,
+            deadline_seconds=90,
+            settlement_seconds=15,
+            connect=lambda attachment, timeout: Reach.ANSWERED,
+        )
+
+        assert outcome.worth_connecting
+        assert 100.0 <= clock[0] < 105.0
+
+    def test_settlement_neither_starts_nor_turns_over(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        _publish_stale_owner(profile.parent, profile, config, package_version="1.0.0")
+        monkeypatch.setattr(
+            election_module,
+            "_start_owner",
+            lambda *a, **k: pytest.fail("settlement started an owner"),
+        )
+        monkeypatch.setattr(
+            election_module,
+            "_ask_to_stand_down",
+            lambda attachment: pytest.fail("settlement requested turnover"),
+        )
+        probes: list[float] = []
+
+        outcome = obtain_owner(
+            profile.parent,
+            profile,
+            config,
+            deadline_seconds=0,
+            settlement_seconds=0.05,
+            connect=lambda attachment, timeout: (
+                probes.append(timeout) or Reach.ANSWERED
+            ),
+        )
+
+        assert not outcome.worth_connecting
+        assert not probes, "a stale owner was accepted during settlement"
+
+    def test_descriptor_and_probe_share_the_absolute_deadline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        _publish_stale_owner(profile.parent, profile, config)
+        probe_budgets: list[float] = []
+
+        def answer(_attachment: Attachment, timeout: float) -> Reach:
+            probe_budgets.append(timeout)
+            return Reach.ANSWERED
+
+        outcome = obtain_owner(
+            profile.parent,
+            profile,
+            config,
+            deadline_seconds=0,
+            settlement_seconds=0.05,
+            connect=answer,
+        )
+
+        assert outcome.worth_connecting
+        assert len(probe_budgets) == 1
+        assert 0 < probe_budgets[0] <= 0.05 + 1e-12
+
+    def test_zero_total_budget_starts_no_operation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        profile = _profile(tmp_path)
+        monkeypatch.setattr(
+            daemon_module,
+            "_inspect",
+            lambda *a: pytest.fail("zero budget started a descriptor read"),
+        )
+        began = time.monotonic()
+
+        outcome = obtain_owner(
+            profile.parent,
+            profile,
+            _config(profile),
+            deadline_seconds=0,
+            settlement_seconds=0,
+            connect=lambda attachment, timeout: pytest.fail("zero budget probed"),
+        )
+
+        assert not outcome.worth_connecting
+        assert time.monotonic() - began < 0.1
+
+    def test_one_inspector_spans_active_election_and_settlement(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        profile = _profile(tmp_path)
+        real_inspector = daemon_module._DescriptorInspector
+        inspectors: list[object] = []
+
+        def build_inspector(*args: object, **kwargs: object):
+            inspector = real_inspector(*cast(Any, args), **cast(Any, kwargs))
+            inspectors.append(inspector)
+            return inspector
+
+        monkeypatch.setattr(election_module, "_DescriptorInspector", build_inspector)
+        monkeypatch.setattr(
+            election_module, "_start_owner", lambda *a, **k: _Attempt.CONTENDED
+        )
+        obtain_owner(
+            profile.parent,
+            profile,
+            _config(profile),
+            deadline_seconds=0.02,
+            settlement_seconds=0.02,
+            connect=lambda attachment, timeout: Reach.REFUSED,
+        )
+
+        assert len(inspectors) == 1
+
+    def test_read_timeout_does_not_replace_last_concrete_lookup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        profile = _profile(tmp_path)
+        release = threading.Event()
+        reads = 0
+
+        def inspect(*args: object) -> OwnerLookup:
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                return OwnerLookup(state=OwnerState.ABSENT, reason="observed absent")
+            release.wait()
+            return OwnerLookup(state=OwnerState.UNTRUSTED, reason="late")
+
+        monkeypatch.setattr(daemon_module, "_inspect", inspect)
+        monkeypatch.setattr(daemon_module, "_DESCRIPTOR_READ_SECONDS", 0.005)
+        monkeypatch.setattr(
+            election_module, "_start_owner", lambda *a, **k: _Attempt.CONTENDED
+        )
+        try:
+            outcome = obtain_owner(
+                profile.parent,
+                profile,
+                _config(profile),
+                deadline_seconds=0.01,
+                settlement_seconds=0.02,
+                connect=lambda attachment, timeout: Reach.REFUSED,
+            )
+        finally:
+            release.set()
+
+        assert outcome.attachment_lookup.state is OwnerState.ABSENT
+        assert outcome.attachment_lookup.reason == "observed absent"
+
+    def test_descriptor_error_is_paced_and_preserved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        profile = _profile(tmp_path)
+        clock = [0.0]
+        reads = 0
+
+        class Inspector:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                return None
+
+            def require_fresh_inspection(self) -> None:
+                return None
+
+            def inspect_until(self, *, timeout: float) -> OwnerLookup:
+                nonlocal reads
+                reads += 1
+                raise daemon_descriptor_module.DescriptorError("broken descriptor")
+
+        def monotonic() -> float:
+            now = clock[0]
+            clock[0] += 0.001
+            return now
+
+        monkeypatch.setattr(election_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(election_module, "_DescriptorInspector", Inspector)
+        monkeypatch.setattr(election_module.time, "monotonic", monotonic)
+        monkeypatch.setattr(
+            election_module.time,
+            "sleep",
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+
+        outcome = obtain_owner(
+            profile.parent,
+            profile,
+            _config(profile),
+            deadline_seconds=0,
+            settlement_seconds=0.5,
+            connect=lambda attachment, timeout: pytest.fail(
+                "an untrusted descriptor was probed"
+            ),
+        )
+
+        assert reads < 20, f"descriptor error started {reads} reads"
+        assert outcome.attachment_lookup.state is OwnerState.UNTRUSTED
+        assert outcome.attachment_lookup.reason == "broken descriptor"
+
+    def test_stale_settlement_owner_is_buried_and_paced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        _publish_stale_owner(profile.parent, profile, config, package_version="1.0.0")
+        lookup = daemon_module._inspect(profile.parent, profile, config)
+        clock = [0.0]
+        reads = 0
+
+        class Inspector:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                return None
+
+            def require_fresh_inspection(self) -> None:
+                return None
+
+            def inspect_until(self, *, timeout: float) -> OwnerLookup:
+                nonlocal reads
+                reads += 1
+                return lookup
+
+        def monotonic() -> float:
+            now = clock[0]
+            clock[0] += 0.001
+            return now
+
+        monkeypatch.setattr(election_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(election_module, "_DescriptorInspector", Inspector)
+        monkeypatch.setattr(election_module.time, "monotonic", monotonic)
+        monkeypatch.setattr(
+            election_module.time,
+            "sleep",
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+        monkeypatch.setattr(
+            election_module,
+            "_ask_to_stand_down",
+            lambda attachment: pytest.fail("settlement requested turnover"),
+        )
+
+        outcome = obtain_owner(
+            profile.parent,
+            profile,
+            config,
+            deadline_seconds=0,
+            settlement_seconds=0.5,
+            connect=lambda attachment, timeout: pytest.fail(
+                "settlement probed a stale owner"
+            ),
+        )
+
+        assert 2 <= reads < 20, f"stale owner started {reads} reads"
+        assert not outcome.worth_connecting
+
+    @pytest.mark.parametrize("stage", ["loop", "lookup", "start", "paced"])
+    def test_each_active_deadline_exit_settles_once(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        stage: str,
+    ):
+        profile = _profile(tmp_path)
+        clock = [1.0 if stage == "loop" else 0.0]
+        reads = 0
+        settlements = 0
+
+        class Inspector:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                return None
+
+            def require_fresh_inspection(self) -> None:
+                return None
+
+            def inspect_until(self, *, timeout: float) -> OwnerLookup:
+                nonlocal reads
+                reads += 1
+                if stage == "lookup" and reads == 1:
+                    clock[0] = 1.0
+                if stage == "paced" and reads == 2:
+                    clock[0] = 1.0
+                return OwnerLookup(state=OwnerState.ABSENT)
+
+        def start(*args: object, **kwargs: object) -> _Attempt:
+            if stage == "start":
+                clock[0] = 1.0
+            return _Attempt.CONTENDED
+
+        def settle(*args: object, **kwargs: object) -> ElectionOutcome:
+            nonlocal settlements
+            settlements += 1
+            return ElectionOutcome(cast(OwnerLookup, kwargs["last_lookup"]))
+
+        monkeypatch.setattr(election_module.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(
+            election_module.time,
+            "sleep",
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+        monkeypatch.setattr(election_module, "_IS_WINDOWS", False)
+        monkeypatch.setattr(election_module, "_DescriptorInspector", Inspector)
+        monkeypatch.setattr(election_module, "_start_owner", start)
+        monkeypatch.setattr(election_module, "_settle_owner", settle)
+
+        obtain_owner(
+            profile.parent,
+            profile,
+            _config(profile),
+            deadline_seconds=1.0,
+            settlement_seconds=1.0,
+            connect=lambda attachment, timeout: Reach.REFUSED,
+        )
+
+        assert settlements == 1
+
+
+class TestOwnerBootstrapOrdering:
+    def _prepare(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[list[str], Path]:
+        profile = _profile(tmp_path)
+        events: list[str] = []
+
+        class Bootstrap:
+            def __init__(self, stream: object) -> None:
+                return None
+
+            def report(self, code: str) -> None:
+                events.append(f"bootstrap:{code}")
+
+            def attached(self, log_path: Path, nonce: str) -> None:
+                events.append("bootstrap:attached")
+
+            def close(self) -> None:
+                events.append("bootstrap:closed")
+
+        class Handshake:
+            def __init__(self, stream: object, nonce: str) -> None:
+                return None
+
+            def retry(self) -> None:
+                events.append("retry")
+
+            def abort(self) -> None:
+                events.append("abort")
+
+            def fail(self) -> None:
+                events.append("fail")
+
+            def close(self) -> None:
+                events.append("handshake:closed")
+
+        handover = daemon_config.OwnerHandover(
+            _config(profile), _HANDSHAKE_NONCE, control=None
+        )
+        monkeypatch.setattr(
+            daemon_owner.WindowsJob, "verify_current_process", lambda name: None
+        )
+        monkeypatch.setattr(daemon_owner, "_BootstrapDiagnostics", Bootstrap)
+        monkeypatch.setattr(daemon_owner, "_Handshake", Handshake)
+        monkeypatch.setattr(daemon_owner, "_claim_bootstrap_stream", lambda: None)
+        monkeypatch.setattr(daemon_owner, "_claim_handshake_stream", lambda: None)
+        monkeypatch.setattr(daemon_owner, "_read_handover", lambda: handover)
+        monkeypatch.setattr(daemon_owner, "set_config", lambda config: None)
+        monkeypatch.setattr(daemon_owner, "set_headless", lambda headless: None)
+        monkeypatch.setattr(daemon_owner, "set_process_role", lambda role: None)
+        monkeypatch.setattr(
+            daemon_owner, "auth_root_dir", lambda selected: profile.parent
+        )
+        return events, profile.parent
+
+    def test_lock_loser_never_touches_the_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        events, _auth_root = self._prepare(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            daemon_owner,
+            "_take_lock",
+            lambda *a, **k: events.append("lock") or None,
+        )
+        monkeypatch.setattr(
+            daemon_owner,
+            "_attach_daemon_log",
+            lambda root: pytest.fail("lock loser attached the daemon log"),
+        )
+        monkeypatch.setattr(
+            daemon_owner,
+            "configure_logging",
+            lambda **kwargs: pytest.fail("lock loser configured logging"),
+        )
+
+        assert daemon_owner.main(["--job-name", "test-owner-job"]) == 0
+        assert events[:2] == ["lock", "retry"]
+
+    def test_winner_takes_lock_before_log_and_logging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        events, auth_root = self._prepare(tmp_path, monkeypatch)
+
+        class Lock:
+            def release(self) -> None:
+                events.append("released")
+
+        async def serve(**kwargs: object) -> int:
+            events.append("serve")
+            return 0
+
+        monkeypatch.setattr(
+            daemon_owner,
+            "_take_lock",
+            lambda *a, **k: events.append("lock") or Lock(),
+        )
+        monkeypatch.setattr(
+            daemon_owner,
+            "_attach_daemon_log",
+            lambda root: events.append("log") or auth_root / "daemon.log",
+        )
+        monkeypatch.setattr(
+            daemon_owner,
+            "configure_logging",
+            lambda **kwargs: events.append("logging"),
+        )
+        monkeypatch.setattr(daemon_owner, "_serve", serve)
+
+        assert daemon_owner.main(["--job-name", "test-owner-job"]) == 0
+        assert events.index("lock") < events.index("log")
+        assert events.index("log") < events.index("bootstrap:attached")
+        assert events.index("bootstrap:attached") < events.index("logging")
+        assert events.index("logging") < events.index("serve")
+        assert events.count("released") == 1
+
+    def test_log_failure_after_lock_releases_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        events, _auth_root = self._prepare(tmp_path, monkeypatch)
+
+        class Lock:
+            def release(self) -> None:
+                events.append("released")
+
+        monkeypatch.setattr(daemon_owner, "_take_lock", lambda *a, **k: Lock())
+        monkeypatch.setattr(
+            daemon_owner,
+            "_attach_daemon_log",
+            lambda root: (_ for _ in ()).throw(OSError("log unavailable")),
+        )
+
+        assert daemon_owner.main(["--job-name", "test-owner-job"]) == 1
+        assert f"bootstrap:{daemon_owner.BOOTSTRAP_LOG}" in events
+        assert "abort" in events
+        assert events.count("released") == 1
+
+    def test_lock_failure_uses_bootstrap_diagnostic_before_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        events, _auth_root = self._prepare(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            daemon_owner,
+            "_take_lock",
+            lambda *a, **k: (_ for _ in ()).throw(DaemonLockError("unusable")),
+        )
+        monkeypatch.setattr(
+            daemon_owner,
+            "_attach_daemon_log",
+            lambda root: pytest.fail("lock failure attached the log"),
+        )
+        monkeypatch.setattr(
+            daemon_owner.logger,
+            "exception",
+            lambda *a, **k: pytest.fail("lock failure logged before configuration"),
+        )
+
+        assert daemon_owner.main(["--job-name", "test-owner-job"]) == 1
+        assert events[0] == f"bootstrap:{daemon_owner.BOOTSTRAP_LOCK}"
+        assert "abort" in events
+
+
 class _FakeSocket:
     """Stands in for the bound listening socket, which nothing here serves."""
 
@@ -8046,3 +9697,231 @@ class TestTheHandshakeFrameIsNotPlatformTranslated:
             election_module._reported_owner_verdict(f"{frame}\r\n".encode(), nonce)
             is None
         ), "the carriage return stays part of the payload and matches no verdict"
+
+
+def _with_published_fields(auth_root: Path, **fields: object) -> None:
+    """Rewrite the published descriptor as another build would have written it."""
+    path = daemon_descriptor_module.descriptor_path(auth_root)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw.update(fields)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+class TestAnOwnerThisBuildMayOnlyControl:
+    """Protocol and configuration mismatches, and the one route that survives them.
+
+    Each election runs with starting an owner stood in for, recorded rather than
+    spawned, so what is observed is whether the election contends for the lock,
+    and never a real child.
+    """
+
+    @staticmethod
+    def _elect(
+        auth_root: Path,
+        profile: Path,
+        config: AppConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        reach: Reach = Reach.ANSWERED,
+        buried: frozenset[str] = frozenset(),
+        deadline: float = 0.3,
+    ) -> tuple[ElectionOutcome, list[str], list[str], list[str]]:
+        asked: list[str] = []
+        probed: list[str] = []
+        contended: list[str] = []
+        monkeypatch.setattr(
+            election_module,
+            "_ask_to_stand_down",
+            lambda attachment: asked.append(attachment.descriptor.instance_id),
+        )
+
+        def start(*_args: object, **_kwargs: object) -> _Attempt:
+            contended.append("the lock")
+            return _Attempt.CONTENDED
+
+        monkeypatch.setattr(election_module, "_start_owner", start)
+
+        def connect(attachment: Attachment, _timeout: float) -> Reach:
+            probed.append(attachment.descriptor.instance_id)
+            return reach
+
+        outcome = obtain_owner(
+            auth_root,
+            profile,
+            config,
+            deadline_seconds=deadline,
+            settlement_seconds=0,
+            connect=connect,
+            buried=buried,
+        )
+        return outcome, asked, probed, contended
+
+    def test_an_older_protocol_owner_is_turned_over_and_never_attached(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        auth_root = profile.parent
+        instance = _publish_stale_owner(
+            auth_root, profile, config, package_version="1.0.0"
+        )
+        _with_published_fields(
+            auth_root, protocol_version=daemon_descriptor_module.PROTOCOL_VERSION - 1
+        )
+
+        outcome, asked, probed, contended = self._elect(
+            auth_root, profile, config, monkeypatch
+        )
+
+        assert asked == [instance], "the older owner was not asked to stand down"
+        assert probed == [], "an owner of another protocol was probed for tools"
+        assert not outcome.worth_connecting
+        assert outcome.attachment_lookup.attachment is None
+        assert contended, "the election did not go on to the lock"
+
+    @pytest.mark.parametrize("package_version", [__version__, "99.0.0"])
+    def test_a_same_or_newer_protocol_mismatch_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, package_version: str
+    ):
+        # Written off and not asked: the election contends for a lock that owner
+        # holds, and while it lives that ends in this client's own browser.
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        auth_root = profile.parent
+        _publish_stale_owner(
+            auth_root, profile, config, package_version=package_version
+        )
+        _with_published_fields(
+            auth_root, protocol_version=daemon_descriptor_module.PROTOCOL_VERSION + 1
+        )
+
+        outcome, asked, probed, contended = self._elect(
+            auth_root, profile, config, monkeypatch
+        )
+
+        assert asked == []
+        assert probed == []
+        assert not outcome.worth_connecting
+        assert outcome.attachment_lookup.attachment is None
+        assert outcome.attachment_lookup.fallback is None
+        assert contended, "the election did not go on to the lock"
+
+    def test_a_live_owner_of_this_build_with_another_configuration_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # The contract's immediate fallback: probed once, found alive, and the
+        # election returns at once without contending for the lock it holds.
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        theirs = _config(profile)
+        theirs.browser.headless = not config.browser.headless
+        auth_root = profile.parent
+        instance = _publish_stale_owner(auth_root, profile, theirs)
+
+        outcome, asked, probed, contended = self._elect(
+            auth_root, profile, config, monkeypatch
+        )
+
+        assert probed == [instance]
+        assert asked == [], "a same-build owner was asked to stand down"
+        assert (
+            outcome.attachment_lookup.fallback
+            is daemon_module.DirectFallback.LIVE_RIVAL
+        )
+        assert not outcome.worth_connecting
+        assert contended == [], "the election contended for a live rival's lock"
+
+    def test_a_silent_owner_of_this_build_with_another_configuration_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Silence proves nothing about the owner's life, so it authorizes no
+        # turnover; it does not make the owner usable either. One probe, then
+        # this client's own browser, well inside a budget the old loop would
+        # have spent probing the same silent owner again and again.
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        theirs = _config(profile)
+        theirs.browser.headless = not config.browser.headless
+        auth_root = profile.parent
+        instance = _publish_stale_owner(auth_root, profile, theirs)
+
+        began = time.monotonic()
+        outcome, asked, probed, contended = self._elect(
+            auth_root, profile, config, monkeypatch, reach=Reach.SILENT, deadline=5.0
+        )
+        elapsed = time.monotonic() - began
+
+        assert probed == [instance], "a silent rival was probed more than once"
+        assert asked == [], "a silent owner was asked to stand down"
+        assert contended == [], "the election contended for a silent rival's lock"
+        assert (
+            outcome.attachment_lookup.fallback
+            is daemon_module.DirectFallback.SILENT_RIVAL
+        )
+        assert "live" not in outcome.attachment_lookup.reason
+        assert not outcome.worth_connecting
+        assert elapsed < 2.0, f"the election ran on for {elapsed:.2f}s"
+
+    def test_a_dead_owner_of_another_configuration_is_leftovers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # An owner that went idle leaves its descriptor behind on purpose. Read
+        # as a live rival, every later client with another configuration would
+        # drive its own browser for good.
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        theirs = _config(profile)
+        theirs.browser.headless = not config.browser.headless
+        auth_root = profile.parent
+        instance = _publish_stale_owner(auth_root, profile, theirs)
+
+        outcome, _asked, probed, contended = self._elect(
+            auth_root, profile, config, monkeypatch, reach=Reach.REFUSED
+        )
+
+        assert probed == [instance], "a buried leftover was probed more than once"
+        assert outcome.attachment_lookup.fallback is None
+        assert contended, "the election did not take the lock from a corpse"
+
+    def test_another_builds_configuration_is_not_probed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Only the same build is a rival to leave alone. Anything else keeps the
+        # behaviour it had: wait on the lock.
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        theirs = _config(profile)
+        theirs.browser.headless = not config.browser.headless
+        auth_root = profile.parent
+        _publish_stale_owner(auth_root, profile, theirs, package_version="1.0.0")
+
+        outcome, asked, probed, contended = self._elect(
+            auth_root, profile, config, monkeypatch
+        )
+
+        assert (asked, probed) == ([], [])
+        assert outcome.attachment_lookup.fallback is None
+        assert contended
+
+    def test_a_buried_owner_is_not_returned_even_though_it_answers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # A retiring owner answers the ping this election probes with. The
+        # proxy that found it retiring passes it as buried, and it is neither
+        # probed nor returned; the control is the same owner not buried.
+        profile = _profile(tmp_path)
+        config = _config(profile)
+        auth_root = profile.parent
+        instance = _publish_stale_owner(auth_root, profile, config)
+
+        outcome, _asked, probed, contended = self._elect(
+            auth_root, profile, config, monkeypatch, buried=frozenset({instance})
+        )
+        control, *_ = self._elect(auth_root, profile, config, monkeypatch)
+
+        assert probed == []
+        assert not outcome.worth_connecting
+        assert contended
+        assert control.worth_connecting
+        assert control.attachment_lookup.attachment is not None
+        assert control.attachment_lookup.attachment.descriptor.instance_id == instance

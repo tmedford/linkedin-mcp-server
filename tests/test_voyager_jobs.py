@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
+from linkedin_mcp_server.core.exceptions import LinkedInOperationError
 from linkedin_mcp_server.voyager.jobs import (
     VoyagerJobs,
     parse_job_cards,
@@ -122,7 +122,7 @@ def test_filters_are_sent_as_linkedins_codes(arguments, expected):
     ],
 )
 def test_a_value_linkedin_would_ignore_is_refused(arguments, message):
-    with pytest.raises(LinkedInScraperException, match=message):
+    with pytest.raises(LinkedInOperationError, match=message):
         selected_filters(**arguments)
 
 
@@ -249,7 +249,7 @@ async def test_get_job_reads_the_rest_posting():
 async def test_a_job_id_that_is_not_a_number_is_refused_before_any_request(bad):
     jobs, page = _jobs()
 
-    with pytest.raises(LinkedInScraperException, match="numeric id"):
+    with pytest.raises(LinkedInOperationError, match="numeric id"):
         await jobs.get_job(bad)
 
     assert page.requests == []
@@ -257,7 +257,7 @@ async def test_a_job_id_that_is_not_a_number_is_refused_before_any_request(bad):
 
 def test_a_company_filter_takes_numeric_ids_only():
     assert selected_filters(company_id="17988315,1441") == "company:List(17988315,1441)"
-    with pytest.raises(LinkedInScraperException, match="numeric company id"):
+    with pytest.raises(LinkedInOperationError, match="numeric company id"):
         selected_filters(company_id="Rippling")
 
 

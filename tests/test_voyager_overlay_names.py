@@ -8,7 +8,7 @@ break whoever was already calling it.
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -35,6 +35,15 @@ REPLACED_IN_PLACE = (
     "get_feed",
     "get_sidebar_profiles",
 )
+
+
+async def _run(tool, *args, extractor, **kwargs):
+    """Call a served tool with ``extractor`` answering its readiness call."""
+    with patch(
+        "linkedin_mcp_server.voyager.overlay.get_ready_extractor",
+        AsyncMock(return_value=extractor),
+    ):
+        return await tool.fn(*args, **kwargs)
 
 
 async def _tool(name: str) -> Any:
@@ -124,8 +133,12 @@ async def test_get_conversation_by_username_and_index_reaches_the_reader(mock_co
     extractor.get_thread = AsyncMock(return_value={"sections": {}})
     tool = await _tool("get_conversation")
 
-    await tool.fn(
-        mock_context, linkedin_username="ada-lovelace", index=1, extractor=extractor
+    await _run(
+        tool,
+        mock_context,
+        linkedin_username="ada-lovelace",
+        index=1,
+        extractor=extractor,
     )
 
     extractor.get_thread.assert_awaited_once_with(
@@ -137,7 +150,7 @@ async def test_get_conversation_with_neither_argument_says_what_to_pass(mock_con
     tool = await _tool("get_conversation")
 
     with pytest.raises(ToolError, match="linkedin_username or thread_id"):
-        await tool.fn(mock_context, extractor=MagicMock())
+        await _run(tool, mock_context, extractor=MagicMock())
 
 
 async def test_search_conversations_accepts_limit_without_cutting_the_page(
@@ -147,7 +160,7 @@ async def test_search_conversations_accepts_limit_without_cutting_the_page(
     extractor.search_messages = AsyncMock(return_value={"count": 20})
     tool = await _tool("search_conversations")
 
-    result = await tool.fn("engine", mock_context, limit=5, extractor=extractor)
+    result = await _run(tool, "engine", mock_context, limit=5, extractor=extractor)
 
     # Not applied: a page cut short while the cursor moves on skips the rest.
     assert result == {"count": 20}
@@ -159,7 +172,8 @@ async def test_send_message_forwards_the_profile_urn(mock_context):
     extractor.message_person = AsyncMock(return_value={"status": "sent"})
     tool = await _tool("send_message")
 
-    await tool.fn(
+    await _run(
+        tool,
         "ada-lovelace",
         "hello",
         True,
@@ -191,15 +205,20 @@ async def test_get_person_profile_reads_posts_only_when_asked(mock_context):
     tool = await _tool("get_person_profile")
 
     plain = extractor()
-    result = await tool.fn(
-        "ada-lovelace", mock_context, sections="experience,education", extractor=plain
+    result = await _run(
+        tool,
+        "ada-lovelace",
+        mock_context,
+        sections="experience,education",
+        extractor=plain,
     )
     assert set(result["sections"]) == {"main_profile"}
     assert "unknown_sections" not in result
     plain.get_person_posts.assert_not_awaited()
 
     with_posts = extractor()
-    result = await tool.fn(
+    result = await _run(
+        tool,
         "ada-lovelace",
         mock_context,
         sections="posts, Bogus",
@@ -218,10 +237,11 @@ async def test_connect_sends_through_the_api_with_or_without_a_note(mock_context
     extractor.connect_with_person = AsyncMock()
     tool = await _tool("connect_with_person")
 
-    await tool.fn(
-        linkedin_username="ada-lovelace", ctx=mock_context, extractor=extractor
+    await _run(
+        tool, linkedin_username="ada-lovelace", ctx=mock_context, extractor=extractor
     )
-    await tool.fn(
+    await _run(
+        tool,
         linkedin_username="ada-lovelace",
         ctx=mock_context,
         note="Hi Ada",
@@ -250,7 +270,8 @@ async def test_connect_never_reaches_upstreams_full_flow(mock_context):
     tool = await _tool("connect_with_person")
 
     for dry_run in (False, True):
-        await tool.fn(
+        await _run(
+            tool,
             linkedin_username="ada-lovelace",
             ctx=mock_context,
             dry_run=dry_run,
@@ -275,7 +296,7 @@ async def test_my_posts_are_read_by_id_when_the_profile_has_no_public_identifier
     )
     tool = await _tool("get_my_profile")
 
-    result = await tool.fn(mock_context, sections="posts", extractor=fake)
+    result = await _run(tool, mock_context, sections="posts", extractor=fake)
 
     assert result["sections"]["posts"] == "p"
     fake.get_person_posts.assert_awaited_once_with("ACoAA-me", count=10)

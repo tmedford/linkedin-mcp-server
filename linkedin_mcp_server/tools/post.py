@@ -19,7 +19,7 @@ from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
 from linkedin_mcp_server.core.exceptions import AuthenticationError
 from linkedin_mcp_server.dependencies import get_ready_extractor, handle_auth_error
 from linkedin_mcp_server.error_handler import raise_tool_error
-from linkedin_mcp_server.scraping.contracts import FilterValidationError
+from linkedin_mcp_server.linkedin.contracts import FilterValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +34,12 @@ def register_post_tools(
         title="Search Posts",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"post", "search"},
-        exclude_args=["extractor"],
     )
     async def search_posts(
         keywords: str,
         ctx: Context,
         date_posted: str | None = None,
         max_pages: Annotated[int, Field(ge=1, le=10)] = 3,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Search LinkedIn posts/content globally by keyword (the "Posts" tab).
@@ -66,16 +64,17 @@ def register_post_tools(
 
         Returns:
             Dict with url, sections (search_results -> raw text), and optional
-            references (post authors, companies, linked jobs) and
-            section_errors. The results page carries no per-post permalinks,
-            so reach a post through its author. The LLM should parse the raw
-            text to extract each post's author, headline/role, company, body,
-            posted date, and reaction/comment counts.
+            references (post authors, companies, linked jobs, and kind
+            "feed_post" permalinks read from the page's payload responses —
+            /feed/update/<urn>/ or /posts/<slug>, both valid permalinks) and
+            section_errors. The DOM carries no per-post permalink anchors;
+            captured permalinks are not aligned to result order. The LLM
+            should parse the raw text to extract each post's author,
+            headline/role, company, body, posted date, and reaction/comment
+            counts.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="search_posts"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="search_posts")
             logger.info(
                 "Searching posts: keywords='%s', date_posted='%s', max_pages=%d",
                 keywords,

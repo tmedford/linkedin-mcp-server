@@ -15,7 +15,7 @@ import pytest
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
     InvalidReferenceError,
-    LinkedInScraperException,
+    LinkedInOperationError,
 )
 from linkedin_mcp_server.voyager import thread as thread_module
 from linkedin_mcp_server.voyager.thread import PINNED_QUERY_ID, VoyagerThreadReader
@@ -152,7 +152,7 @@ async def test_an_empty_thread_is_a_real_zero():
 async def test_a_moved_container_is_refused_rather_than_read_as_empty():
     reader, _, _ = _reader(ME_ANSWER, _thread(container=False))
 
-    with pytest.raises(LinkedInScraperException, match="changed shape"):
+    with pytest.raises(LinkedInOperationError, match="changed shape"):
         await reader.get_thread(THREAD_ID)
 
 
@@ -197,7 +197,7 @@ async def test_a_renewed_query_id_is_reused_without_opening_another_thread():
 async def test_a_query_id_that_cannot_be_renewed_raises_rather_than_reading_zero():
     reader, _, _ = _reader(ME_ANSWER, {"error": "HTTP 400", "status": 400})
 
-    with pytest.raises(LinkedInScraperException, match="could not be renewed"):
+    with pytest.raises(LinkedInOperationError, match="could not be renewed"):
         await reader.get_thread(THREAD_ID)
 
 
@@ -215,7 +215,7 @@ async def test_anything_but_a_thread_id_is_refused_before_any_request():
 
     with pytest.raises(InvalidReferenceError):
         await reader.get_thread("../../feed")
-    with pytest.raises(LinkedInScraperException, match="not a messaging thread id"):
+    with pytest.raises(LinkedInOperationError, match="not a messaging thread id"):
         await reader.get_thread(f"urn:li:msg_conversation:({ME},{THREAD_ID})")
 
     assert page.requests == []
@@ -295,7 +295,7 @@ async def test_index_selects_among_a_persons_threads_and_past_the_end_says_so():
     assert second["thread_id"] == "2-group"
 
     past, _, _ = _reader(*answers)
-    with pytest.raises(LinkedInScraperException, match="found 2 conversation"):
+    with pytest.raises(LinkedInOperationError, match="found 2 conversation"):
         await past.get_thread(linkedin_username="ada-lovelace", index=2)
 
 
@@ -311,7 +311,7 @@ async def test_a_thread_id_wins_over_a_username_and_no_lookup_is_made():
 async def test_neither_a_thread_nor_a_person_is_refused_before_any_request():
     reader, page, _ = _reader()
 
-    with pytest.raises(LinkedInScraperException, match="at least one of"):
+    with pytest.raises(LinkedInOperationError, match="at least one of"):
         await reader.get_thread()
 
     assert page.requests == []
