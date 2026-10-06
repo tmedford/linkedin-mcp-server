@@ -97,7 +97,7 @@ jobs:
         if: env.behind != '0'
         run: |
           grep -q "async def get_conversations" linkedin_mcp_server/scraping/extractor.py
-          grep -q "async def get_conversations" linkedin_mcp_server/scraping/voyager_messaging.py
+          grep -q "async def get_conversations" linkedin_mcp_server/voyager/messaging.py
           echo "get_conversations still present on both the reader and the facade."
 
       - name: Push
