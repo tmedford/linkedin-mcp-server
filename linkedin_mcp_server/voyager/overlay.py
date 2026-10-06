@@ -23,6 +23,7 @@ tool and what to do about it, rather than at some later call.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
@@ -42,6 +43,26 @@ from linkedin_mcp_server.voyager.person_message import refuse_an_invalid_person_
 from linkedin_mcp_server.voyager.thread_reply import refuse_an_invalid_reply
 
 logger = logging.getLogger(__name__)
+
+
+#: Either set to "1" serves upstream's own tools and leaves the overlay out.
+#:
+#: Upstream's differential rows (``tests/differential``) run the real server
+#: against a synthetic LinkedIn origin and call ``get_feed`` or
+#: ``get_person_profile`` as a probe of the daemon, the browser and the
+#: session. That origin serves the pages upstream's tools read and none of the
+#: API endpoints ours call, so with the overlay on every row fails on an HTTP
+#: 404 that says nothing about what the row measures. The rows are about the
+#: layer beneath the tools, which this fork does not change, so they run with
+#: upstream's tools.
+#:
+#: The second name is the gate upstream's own CI steps set to run those rows.
+#: Reading it here, rather than adding our name to their workflow, is
+#: deliberate: upstream moves those steps between workflow files, and an edit
+#: there is one more thing for the nightly merge to conflict on. Nothing sets
+#: either in production.
+UPSTREAM_TOOLS_ENV = "LINKEDIN_MCP_UPSTREAM_TOOLS"
+_DIFFERENTIAL_CI_ENV = "LINKEDIN_MCP_DIFFERENTIAL_CI"
 
 
 class OverlayError(RuntimeError):
@@ -163,6 +184,13 @@ def install_voyager_overlay(
     mcp: FastMCP, *, tool_timeout: float = DEFAULT_TOOL_TIMEOUT_SECONDS
 ) -> None:
     """Remove the tools we supersede, then register ours in their place."""
+    for name in (UPSTREAM_TOOLS_ENV, _DIFFERENTIAL_CI_ENV):
+        if os.environ.get(name) == "1":
+            logger.warning(
+                "%s=1: serving upstream's page-reading tools; the API overlay is off",
+                name,
+            )
+            return
     _remove_superseded(mcp)
 
     @mcp.tool(

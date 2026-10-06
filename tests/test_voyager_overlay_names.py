@@ -300,3 +300,23 @@ async def test_my_posts_are_read_by_id_when_the_profile_has_no_public_identifier
 
     assert result["sections"]["posts"] == "p"
     fake.get_person_posts.assert_awaited_once_with("ACoAA-me", count=10)
+
+
+@pytest.mark.parametrize(
+    "name", [overlay.UPSTREAM_TOOLS_ENV, "LINKEDIN_MCP_DIFFERENTIAL_CI"]
+)
+async def test_the_upstream_tools_switch_leaves_the_overlay_out(monkeypatch, name):
+    """Upstream's differential rows need upstream's tools, exactly as written."""
+    monkeypatch.setenv(name, "1")
+    names = {tool.name for tool in await create_mcp_server().list_tools()}
+
+    assert "get_inbox" in names
+    assert not {"get_conversations", "get_invitations", "reply_to_thread"} & names
+
+
+async def test_only_the_value_one_turns_the_overlay_off(monkeypatch):
+    monkeypatch.setenv(overlay.UPSTREAM_TOOLS_ENV, "0")
+    names = {tool.name for tool in await create_mcp_server().list_tools()}
+
+    assert "get_inbox" not in names
+    assert "get_conversations" in names
