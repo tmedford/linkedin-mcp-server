@@ -506,10 +506,11 @@ class LinkedInExtractor:
         keywords: str | None = None,
         start: int = 0,
         count: int = 12,
+        schools: list[str] | None = None,
     ) -> dict[str, Any]:
         """Read a company's people and demographics through LinkedIn's API."""
         return await self._voyager_company.get_company_people(
-            company_name, keywords=keywords, start=start, count=count
+            company_name, keywords=keywords, start=start, count=count, schools=schools
         )
 
     async def find_companies(

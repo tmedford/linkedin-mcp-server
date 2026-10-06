@@ -1787,6 +1787,7 @@ def install_voyager_overlay(
         keywords: str | None = None,
         start: int = 0,
         count: int = 12,
+        schools: list[str] | None = None,
         extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
@@ -1803,6 +1804,12 @@ def install_voyager_overlay(
             keywords: Optional filter by name, title or skill.
             start: 0-based offset. Paging is the caller's loop.
             count: how many people to ask for, 1 to 50. Defaults to 12.
+            schools: Optional LinkedIn school ids. Keeps only people who
+                studied at any of them, whatever their degree to you: the
+                alumni of your schools at this company. An id comes from
+                demographics.schools here or the people tab's facetSchool,
+                not from a profile's education, which numbers schools
+                differently.
 
         Returns:
             Dict with url, sections (employees -> text) and references (the
@@ -1824,7 +1831,11 @@ def install_voyager_overlay(
             await ctx.report_progress(progress=0, total=100, message="Reading")
 
             result = await extractor.company_people(
-                company_name, keywords=keywords, start=start, count=count
+                company_name,
+                keywords=keywords,
+                start=start,
+                count=count,
+                schools=schools,
             )
 
             await ctx.report_progress(progress=100, total=100, message="Complete")

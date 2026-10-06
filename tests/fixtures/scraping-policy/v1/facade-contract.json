@@ -18,7 +18,7 @@
       },
       "company_people": {
         "coroutine": true,
-        "signature": "(self, company_name: 'str', keywords: 'str | None' = None, start: 'int' = 0, count: 'int' = 12) -> 'dict[str, Any]'"
+        "signature": "(self, company_name: 'str', keywords: 'str | None' = None, start: 'int' = 0, count: 'int' = 12, schools: 'list[str] | None' = None) -> 'dict[str, Any]'"
       },
       "company_posts": {
         "coroutine": true,
@@ -305,6 +305,21 @@
               ],
               "default": null,
               "description": "Optional filter by name, title or skill."
+            },
+            "schools": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional LinkedIn school ids. Keeps only people who\nstudied at any of them, whatever their degree to you: the\nalumni of your schools at this company. An id comes from\ndemographics.schools here or the people tab's facetSchool,\nnot from a profile's education, which numbers schools\ndifferently."
             },
             "start": {
               "default": 0,
