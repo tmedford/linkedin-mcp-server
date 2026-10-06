@@ -168,6 +168,16 @@ async def test_a_school_name_is_refused_before_any_request():
     assert page.requests == []
 
 
+@pytest.mark.parametrize("school", ["٣٥٥٨", "３５５８", "²"])
+async def test_a_school_id_in_non_ascii_digits_is_refused(school):
+    reader, page = _reader(_company(), _people(["ada"]))
+
+    with pytest.raises(LinkedInScraperException, match="school ids"):
+        await reader.get_company_people("acme", schools=[school])
+
+    assert page.requests == []
+
+
 async def test_an_unknown_company_is_refused_by_name():
     reader, _ = _reader({"data": {"*elements": []}, "included": []})
 

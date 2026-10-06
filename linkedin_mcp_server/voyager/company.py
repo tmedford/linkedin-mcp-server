@@ -362,7 +362,9 @@ class VoyagerCompany(VoyagerPeopleSearch):
                 f"start={start}, count={count}."
             )
         school_ids = [str(school).strip() for school in schools or []]
-        if any(not school.isdigit() for school in school_ids):
+        # ASCII digits only: str.isdigit() also passes "٣" and "²", which
+        # would reach the query as a value LinkedIn does not know.
+        if any(not re.fullmatch(r"[0-9]+", school) for school in school_ids):
             # A name here would be sent as a filter value LinkedIn ignores,
             # and the answer would be the whole company read as its alumni.
             raise LinkedInScraperException(
