@@ -2,7 +2,7 @@
 """Browser-DOM tests for the locale independence of the action-area reads.
 
 The unit suite mocks ``page.evaluate``, so the programs in
-``scraping/connection_actions.py`` never execute there. These tests run the
+``linkedin/connection_actions.py`` never execute there. These tests run the
 real ones against synthetic HTML in headless chromium.
 
 Every fixture is built from one set of templates, three sets of words and
@@ -11,7 +11,7 @@ no verb, and present-but-empty attributes. The structure is identical across
 all four, and each case
 asserts the *same* answer for all of them in one assertion that names the
 locales. A decision that differs between two of them is a decision that read
-a word, which the AGENTS.md Scraping Rules forbid; the opaque set is the
+a word, which the AGENTS.md LinkedIn Page Rules forbid; the opaque set is the
 control, because a label with no verb in it cannot be matched by one.
 
 Skipped automatically when chromium is not installed; run locally after
@@ -39,18 +39,19 @@ from typing import Any, cast
 import pytest
 from patchright.async_api import Page, async_playwright
 
-from linkedin_mcp_server.scraping.connection import (
+from linkedin_mcp_server.core.exceptions import OffLinkedInLandingError
+from linkedin_mcp_server.linkedin.connection import (
     ConnectionState,
     detect_connection_state,
 )
-from linkedin_mcp_server.scraping.connection_actions import (
+from linkedin_mcp_server.linkedin.connection_actions import (
     ACTION_SIGNALS_JS,
     CLICK_INCOMING_ACCEPT_JS,
     OPEN_MORE_BUTTON_JS,
     ConnectionActions,
 )
-from linkedin_mcp_server.scraping.navigation import PageNavigator
-from linkedin_mcp_server.scraping.session import ScrapingSession
+from linkedin_mcp_server.linkedin.navigation import PageNavigator
+from linkedin_mcp_server.linkedin.session import PageSession
 
 #: CI uses ``--dist loadgroup``. Keep every test that launches Chromium on one
 #: worker so browser startups cannot compete with the DOM cases' wall-clock
@@ -414,6 +415,13 @@ async def dom_page():
         except Exception as exc:  # browser binary missing
             pytest.skip(f"chromium unavailable: {exc}")
         try:
+            # On a LinkedIn address, because the reads refuse any other
+            # page, and `set_content` keeps the address it replaces.
+            await page.route(
+                "https://www.linkedin.com/**",
+                lambda route: route.fulfill(content_type="text/html", body=""),
+            )
+            await page.goto("https://www.linkedin.com/in/testuser/")
             yield page
         finally:
             await browser.close()
@@ -429,7 +437,7 @@ def _actions(page) -> ConnectionActions:
     async def unreachable(_username: str) -> dict[str, Any]:
         raise AssertionError("the DOM cases never read a profile")
 
-    session = ScrapingSession(cast(Page, page))
+    session = PageSession(cast(Page, page))
     return ConnectionActions(session, PageNavigator(session), unreachable)
 
 
@@ -591,4 +599,58 @@ class TestActionChoiceIsStructural:
             self_top_card,
             (False, None),
             lambda page, html: _click(page, html, OPEN_MORE_BUTTON_JS),
+        )
+
+
+PORTAL_URL = "https://portal.invalid/interstitial"
+
+
+async def _move_to_a_portal(page, html: str) -> None:
+    """Replace the profile with a portal page carrying the same controls.
+
+    What a forced navigation between the signal read and the click leaves:
+    the controls the read found, on another site's page.
+    """
+    await page.route(
+        "https://portal.invalid/**",
+        lambda route: route.fulfill(content_type="text/html", body=html),
+    )
+    await page.goto(PORTAL_URL)
+
+
+class TestAClickOnlyLandsOnLinkedIn:
+    """The read found the control on LinkedIn; the click must not follow a redirect."""
+
+    async def test_accept_is_not_clicked_on_a_portal(self, dom_page):
+        html = _page_html(incoming_top_card(ENGLISH))
+        actions = _actions(dom_page)
+        state = await _state(dom_page, incoming_top_card(ENGLISH))
+        assert state == "incoming_request"
+
+        await _move_to_a_portal(dom_page, html)
+
+        with pytest.raises(OffLinkedInLandingError, match="https://portal.invalid"):
+            await actions._click_incoming_accept()
+        assert (
+            await dom_page.evaluate("document.body.getAttribute('data-clicked')")
+            is None
+        )
+
+    async def test_the_more_menu_is_not_opened_on_a_portal(self, dom_page):
+        await _move_to_a_portal(dom_page, _page_html(follow_only_top_card(ENGLISH)))
+
+        with pytest.raises(OffLinkedInLandingError, match="https://portal.invalid"):
+            await _actions(dom_page)._open_more_menu()
+        assert (
+            await dom_page.evaluate("document.body.getAttribute('data-clicked')")
+            is None
+        )
+
+    async def test_accept_is_clicked_on_linkedin(self, dom_page):
+        await dom_page.set_content(_page_html(incoming_top_card(ENGLISH)))
+
+        assert await _actions(dom_page)._click_incoming_accept() is True
+        assert (
+            await dom_page.evaluate("document.body.getAttribute('data-clicked')")
+            == "first-labeled"
         )

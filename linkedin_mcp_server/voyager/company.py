@@ -36,7 +36,7 @@ import re
 from typing import Any
 from urllib.parse import quote
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
+from linkedin_mcp_server.core.exceptions import LinkedInOperationError
 from linkedin_mcp_server.voyager.client import company_id
 from linkedin_mcp_server.voyager.people_search import (
     VoyagerPeopleSearch,
@@ -276,7 +276,7 @@ class VoyagerCompany(VoyagerPeopleSearch):
     surface = "company"
 
     async def _company(self, company_name: str) -> dict[str, Any]:
-        from linkedin_mcp_server.scraping.identifiers import (
+        from linkedin_mcp_server.linkedin.identifiers import (
             normalize_company_identifier,
         )
 
@@ -284,7 +284,7 @@ class VoyagerCompany(VoyagerPeopleSearch):
         payload = await self._fetch(f"{_COMPANY}{quote(slug, safe='')}")
         company = parse_company(payload)
         if company is None:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} found no company named {slug!r}. Pass "
                 "the name from its LinkedIn URL (/company/<name>/); "
                 "search_companies finds it."
@@ -305,13 +305,13 @@ class VoyagerCompany(VoyagerPeopleSearch):
         self, company_name: str, count: int = 10, start: int = 0
     ) -> dict[str, Any]:
         """One page of a company's posts."""
-        from linkedin_mcp_server.scraping.identifiers import (
+        from linkedin_mcp_server.linkedin.identifiers import (
             normalize_company_identifier,
         )
         from linkedin_mcp_server.voyager.person import parse_posts, render_posts
 
         if start < 0 or not 1 <= count <= 50:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"start must be >= 0 and count between 1 and 50, got "
                 f"start={start}, count={count}."
             )
@@ -357,7 +357,7 @@ class VoyagerCompany(VoyagerPeopleSearch):
         which the page writes as ``facetSchool=<id>,<id>`` in its address.
         """
         if start < 0 or not 1 <= count <= 50:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"start must be >= 0 and count between 1 and 50, got "
                 f"start={start}, count={count}."
             )
@@ -367,7 +367,7 @@ class VoyagerCompany(VoyagerPeopleSearch):
         if any(not re.fullmatch(r"[0-9]+", school) for school in school_ids):
             # A name here would be sent as a filter value LinkedIn ignores,
             # and the answer would be the whole company read as its alumni.
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"schools takes LinkedIn school ids (digits), got {schools!r}. "
                 "The id is in demographics.schools of this tool's answer and in "
                 "the people tab's facetSchool. It is not the school id a "
@@ -376,7 +376,7 @@ class VoyagerCompany(VoyagerPeopleSearch):
         company = await self._company(company_name)
         identifier = company.get("company_id")
         if not identifier:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} answered for {company_name!r} with no "
                 "company id, which the people search is keyed on."
             )
@@ -432,16 +432,16 @@ class VoyagerCompany(VoyagerPeopleSearch):
         self, keywords: str, start: int = 0, count: int = 10
     ) -> dict[str, Any]:
         """One page of companies matching a search."""
-        from linkedin_mcp_server.scraping.search_urls import (
+        from linkedin_mcp_server.linkedin.search_urls import (
             build_company_search_url,
         )
 
         if not keywords.strip():
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "keywords was blank. Pass the words to search for."
             )
         if start < 0 or not 1 <= count <= 50:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"start must be >= 0 and count between 1 and 50, got "
                 f"start={start}, count={count}."
             )

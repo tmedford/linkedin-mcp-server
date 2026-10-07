@@ -26,7 +26,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any, NoReturn, TypeVar
+from typing import Any, NoReturn, TextIO, TypeVar
 from urllib.parse import urlsplit
 
 from fastmcp import Context
@@ -309,9 +309,9 @@ _MARKER_HELD = "\x00"
 #: and hit Python's 4300-digit integer limit on a long percentage. Bounded here,
 #: neither can be constructed.
 _PATCHRIGHT_PERCENT = re.compile(r"\|\s*(\d{1,3})%\s+of\s+([\d.]{1,15})\s*([KMG]i?B)")
-#: ``Downloading Chrome for Testing 149.0.7827.55 (…) from https://…``
+#: ``Downloading Chrome for Testing 153.0.8010.12 (…) from https://…``
 _PATCHRIGHT_DOWNLOAD = re.compile(r"^Downloading (.+?) from ")
-#: ``Chrome for Testing 149.0.7827.55 (…) downloaded to /…/chromium-1228``. The
+#: ``Chrome for Testing 153.0.8010.12 (…) downloaded to /…/chromium-1243``. The
 #: only completion signal there is when no percentage was ever reported.
 _PATCHRIGHT_DONE = re.compile(r" downloaded to ")
 _BINARY_UNITS = {"KiB": 1024, "MiB": 1024**2, "GiB": 1024**3}
@@ -374,6 +374,10 @@ class BootstrapState:
     #: and stubbed in as many tests, and threading an argument through all of
     #: them would change far more than the one thing that matters.
     login_supersedes: str | None | object = UNGUARDED
+    #: A login or import in this process ended on LinkedIn's restriction page.
+    #: No login can lift that, so none is started until a session reappears on
+    #: disk or a stale one is retired for a fresh login.
+    account_restricted: bool = False
 
 
 _state = BootstrapState()
@@ -761,7 +765,9 @@ async def _run_in_daemon_thread(
 
             complete = succeed
         try:
-            loop.call_soon_threadsafe(complete)
+            # A lambda, because ty cannot solve call_soon_threadsafe's *args
+            # against a union of callbacks whose parameters have defaults.
+            loop.call_soon_threadsafe(lambda: complete())
         except RuntimeError:
             if "value" in locals():
                 discard_safely(value)
@@ -963,8 +969,9 @@ def _metadata_shape_ok() -> Path | None:
         return None
     if payload.get("browsers_path") != str(configured_browsers_path):
         return None
-    if payload.get("patchright_version") != _patchright_pkg_version():
-        return None
+    # A peer on another Patchright version can write this shared metadata.
+    # Readiness depends on this process's revision and completion marker,
+    # checked by browser_ready(), not on which package last ran the installer.
     return configured_browsers_path
 
 
@@ -1996,6 +2003,15 @@ class _InstallerTemporaryRoot:
     pin: Any | None
 
 
+def _configured_installer_temp_dir() -> str | None:
+    configured_parent: str | None = None
+    with contextlib.suppress(Exception):
+        configured_parent = get_config().browser.installer_temp_dir
+    if configured_parent is None:
+        configured_parent = os.environ.get("INSTALLER_TEMP_DIR")
+    return configured_parent
+
+
 def _installer_temporary_parent() -> Path:
     """Return a temp parent whose pathname other local accounts cannot replace.
 
@@ -2005,11 +2021,7 @@ def _installer_temporary_parent() -> Path:
     is pinned, and the pins have to be held across the creation that happens
     after this function has already returned.
     """
-    configured_parent: str | None = None
-    with contextlib.suppress(Exception):
-        configured_parent = get_config().browser.installer_temp_dir
-    if configured_parent is None:
-        configured_parent = os.environ.get("INSTALLER_TEMP_DIR")
+    configured_parent = _configured_installer_temp_dir()
 
     if configured_parent:
         parent = Path(configured_parent).resolve(strict=True)
@@ -2062,7 +2074,6 @@ def _installer_temporary_parent() -> Path:
 
 
 def _create_installer_temporary_root() -> _InstallerTemporaryRoot:
-    parent = _installer_temporary_parent()
     pin: Any | None = None
     if os.name == "nt":
         # Not ``tempfile.mkdtemp``, which is why no Python version floor applies
@@ -2072,10 +2083,40 @@ def _create_installer_temporary_root() -> _InstallerTemporaryRoot:
         # 3.12.4 change to ``mkdtemp`` decides nothing on this path.
         from linkedin_mcp_server.windows_acl import create_owner_only_directory
 
-        path, pin = create_owner_only_directory(
-            parent, prefix="linkedin-mcp-installer-"
-        )
+        try:
+            parent = _installer_temporary_parent()
+            path, pin = create_owner_only_directory(
+                parent, prefix="linkedin-mcp-installer-"
+            )
+        except (OSError, PrivateStateError) as default_error:
+            remedy = (
+                "Set INSTALLER_TEMP_DIR or --installer-temp-dir to an existing "
+                "directory whose ancestry is controlled only by your account "
+                "or Windows system accounts. Keep existing AppContainer and "
+                "shared-folder permissions intact."
+            )
+            if _configured_installer_temp_dir():
+                raise PrivateStateError(f"{default_error}. {remedy}") from default_error
+            # AppData can carry sandbox grants even when the home itself is
+            # private. The fallback must pass the same pinned ancestry checks.
+            try:
+                fallback = Path.home().resolve(strict=True)
+                path, pin = create_owner_only_directory(
+                    fallback, prefix="linkedin-mcp-installer-"
+                )
+            except (OSError, RuntimeError) as fallback_error:
+                raise PrivateStateError(
+                    f"Browser installer temporary directory was refused: "
+                    f"{default_error}. Home fallback failed: {fallback_error}. {remedy}"
+                ) from fallback_error
+            logger.info(
+                "Using a private browser installer directory under %s because "
+                "the system temporary directory was refused: %s",
+                fallback,
+                default_error,
+            )
     else:
+        parent = _installer_temporary_parent()
         path = Path(tempfile.mkdtemp(prefix="linkedin-mcp-installer-", dir=parent))
     try:
         if os.name == "nt":
@@ -2500,7 +2541,7 @@ async def _install_under_supervision(
         # message, which says what went wrong, and it is read before the scan
         # below so an unreadable tree cannot answer in its place. A breach then
         # beats success, because accepting returncode 0 is what records an
-        # oversized tree as ready.
+        # oversized tree as ready: one the scan finds, and one the watcher saw.
         if returncode != 0:
             raise BrowserSetupFailedError(
                 "\n".join(lines) or "Patchright Chromium browser setup failed."
@@ -2519,6 +2560,15 @@ async def _install_under_supervision(
             # breach into the cleanup below is not a missed one to warn about.
             bound_raised = True
             raise
+        # After the scan, so a breach the watcher reported while it ran counts
+        # too. The loop above stops reading the watcher once the process task
+        # is done, and the installer deleting its archive on the way out is
+        # exactly what makes the final tree fit again. A breach the watcher
+        # observed is not undone by that, and whether it landed a turn before
+        # the exit or in the same one must not decide the install.
+        if _installer_bound_breached(activity):
+            bound_raised = True
+            await activity
     finally:
         try:
             if activity is not None:
@@ -2719,14 +2769,24 @@ def _log_handlers_follow_the_live_region(
                 handler.setStream(stream)
 
 
-def _print_whatever_the_stream_takes(line: str) -> None:
-    """Print a line, replacing anything the stream cannot encode."""
-    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+def _print_whatever_the_stream_takes(
+    line: str, *, stream: TextIO | None = None
+) -> None:
+    """Print a line, replacing anything the stream cannot encode.
+
+    *stream* defaults to stdout as it is when called, not as it was at import.
+    """
+    target = sys.stdout if stream is None else stream
+    encoding = getattr(target, "encoding", None) or "utf-8"
     try:
         try:
-            print(line, flush=True)
+            print(line, file=target, flush=True)
         except UnicodeEncodeError:
-            print(line.encode(encoding, "replace").decode(encoding), flush=True)
+            print(
+                line.encode(encoding, "replace").decode(encoding),
+                file=target,
+                flush=True,
+            )
     except (OSError, ValueError):
         # A closed or broken stdout is not a reason to fail an install, and the
         # replacement attempt can meet the same closed pipe as the first.
@@ -3664,9 +3724,9 @@ async def _run_browser_setup(
 
     Those three figures are one revision's *and one platform's*, not a
     constant. The bundled browser moves with the lockfile and is past 148 now,
-    and the sizes differ by platform as well: the arm64 container does not get
-    Chrome for Testing at all, it gets Playwright's own Chromium build. What
-    the argument needs is only that the full browser is substantially larger
+    and the sizes differ by platform as well: through patchright 1.61.2 the
+    arm64 container did not get Chrome for Testing at all, it got Playwright's
+    own Chromium build. What the argument needs is only that the full browser is substantially larger
     than the shell everywhere, which holds; quoting these particular numbers
     anywhere user-facing means re-measuring them for the platform in question.
     """
@@ -3711,6 +3771,33 @@ async def _ensure_browser_installed(
     await _run_browser_setup(line_callback=line_callback)
 
 
+def _suspend_notice_stream() -> TextIO | None:
+    """Where to tell a terminal user that Ctrl+Z will not pause setup, if anywhere.
+
+    The installer runs outside the terminal's process group, so it survives
+    this process long enough to clean up after itself (#789). The same
+    detachment keeps the terminal's stop signal from reaching it: Ctrl+Z stops
+    the command and the download carries on. Forwarding the signal would have
+    to keep that containment intact, so the user is told instead (#792).
+
+    Only POSIX has job control, and only the foreground job of a terminal
+    receives Ctrl+Z, whichever standard descriptor names it: ``--status
+    </dev/null`` still stops on Ctrl+Z, measured on macOS. The notice goes to
+    an output that is that terminal, so ``--status > status.log`` says it on
+    stderr rather than into the file. With neither output on it, nobody would
+    read the line.
+    """
+    if os.name == "nt":
+        return None
+    for descriptor, stream in ((1, sys.stdout), (2, sys.stderr)):
+        try:
+            if os.isatty(descriptor) and os.tcgetpgrp(descriptor) == os.getpgrp():
+                return stream
+        except OSError:
+            continue
+    return None
+
+
 def ensure_browser_installed() -> None:
     """Install the Patchright Chromium browser for a CLI mode, if absent.
 
@@ -3740,6 +3827,11 @@ def ensure_browser_installed() -> None:
     # carries the encoding fallback, which the cross mark below needs on an
     # ascii terminal for the same reason.
     _print_whatever_the_stream_takes("   Installing Patchright Chromium browser...")
+    if (terminal := _suspend_notice_stream()) is not None:
+        _print_whatever_the_stream_takes(
+            "   Suspending this command (Ctrl+Z) does not pause the download.",
+            stream=terminal,
+        )
     try:
         with _cli_progress() as report:
             asyncio.run(_ensure_browser_installed(line_callback=report))
@@ -3784,12 +3876,26 @@ async def _refresh_background_task_state() -> None:
             _state.last_error = "LinkedIn login bootstrap task was cancelled"
             logger.warning("LinkedIn login bootstrap task cancelled")
         except Exception as exc:
+            from linkedin_mcp_server.core.exceptions import AccountRestrictedError
+
             _state.auth_state = AuthState.FAILED
             _state.last_error = str(exc)
+            _state.account_restricted = isinstance(exc, AccountRestrictedError)
             logger.warning("LinkedIn login bootstrap failed: %s", exc)
         else:
             _state.auth_state = AuthState.READY
             _state.auth_completed_at = utcnow_iso()
+
+    # Read from the finished import itself, not only from whichever caller
+    # awaited it: a poller that sees the import done, or runs after that caller
+    # was cancelled, would otherwise take the manual-login branch. Left in place
+    # for its awaiters; a fresh no-session episode clears the task first.
+    import_task = _state.import_task
+    if import_task is not None and import_task.done() and not import_task.cancelled():
+        from linkedin_mcp_server.core.exceptions import AccountRestrictedError
+
+        if isinstance(import_task.exception(), AccountRestrictedError):
+            _state.account_restricted = True
 
 
 def _consume_background_setup_failure() -> str | None:
@@ -3816,7 +3922,7 @@ def _consume_background_setup_failure() -> str | None:
 async def ensure_tool_ready_or_raise(
     tool_name: str, ctx: Context | None = None
 ) -> None:
-    """Gate scrape/search tools on browser setup and authentication readiness."""
+    """Gate read/search tools on browser setup and authentication readiness."""
     initialize_bootstrap()
     await _refresh_background_task_state()
     detail = _consume_background_setup_failure()
@@ -4032,6 +4138,7 @@ async def _try_auto_import_session(ctx: Context | None = None) -> bool:
     from linkedin_mcp_server.core.exceptions import (
         AuthenticationError,
         NetworkError,
+        OffLinkedInLandingError,
         ProxyConnectionError,
     )
     from linkedin_mcp_server.exceptions import (
@@ -4082,10 +4189,11 @@ async def _try_auto_import_session(ctx: Context | None = None) -> bool:
     except TimeoutError:
         logger.info("Auto-import timed out after 60s; falling back to manual login")
         return False
-    except ProxyConnectionError:
-        # Ahead of NetworkError, which it subclasses. A dead proxy is not a
-        # missing browser session: swallowing it here would hide the real cause
-        # and fall back to a manual login that has to fail the same way.
+    except (ProxyConnectionError, OffLinkedInLandingError):
+        # Ahead of NetworkError, which both subclass. A dead proxy, or a portal
+        # answering in LinkedIn's place, is not a missing browser session:
+        # swallowing it here would hide the real cause and fall back to a
+        # manual login that has to go through the same network.
         raise
     except (
         NoLinkedInSessionFoundError,
@@ -4115,9 +4223,17 @@ async def _start_login_if_needed(
             "sign in by itself. Retry this tool: the client will open a login "
             "window.",
             # The readiness gate runs before the tool body, so nothing has been
-            # scraped and the client may run the call again once it has signed in.
+            # read and the client may run the call again once it has signed in.
             nothing_ran_yet=True,
         )
+
+    # Imported here, like the other core exceptions in this module, to keep
+    # bootstrap out of the config -> core import cycle.
+    from linkedin_mcp_server.core.exceptions import (
+        AccountRestrictedError,
+        OffLinkedInLandingError,
+        ProxyConnectionError,
+    )
 
     # Cheap check-and-claim under the lock; the slow work (auto-import browser
     # launch, then the bounded inline wait) runs AFTER the lock is released so
@@ -4128,6 +4244,12 @@ async def _start_login_if_needed(
         if _auth_ready():
             _state.auth_state = AuthState.READY
             return
+
+        # Ahead of every branch below, each of which ends in an import or a login
+        # window: LinkedIn has refused this account, and signing in again only
+        # lands on the same page.
+        if _state.account_restricted:
+            raise AccountRestrictedError()
 
         login_task: asyncio.Task[None] | None = None
         import_task: asyncio.Task[bool] | None = None
@@ -4157,20 +4279,22 @@ async def _start_login_if_needed(
     # ---- lock released ----
 
     # Await an import (ours or a peer's). On success the caller falls through to
-    # the scrape; on failure we re-enter to take the manual-login path.
+    # the page read; on failure we re-enter to take the manual-login path.
     if import_task is not None:
-        # Imported here, like the other core exceptions in this module, to keep
-        # bootstrap out of the config -> core import cycle.
-        from linkedin_mcp_server.core.exceptions import ProxyConnectionError
-
         try:
             await import_task
         except asyncio.CancelledError:
             raise
-        except ProxyConnectionError:
-            # The import itself re-raises this rather than reporting "no
-            # session"; swallowing it here would undo that and send the user
-            # into a manual login that has to fail through the same proxy.
+        except (ProxyConnectionError, OffLinkedInLandingError):
+            # The import itself re-raises these rather than reporting "no
+            # session"; swallowing them here would undo that and send the user
+            # into a manual login that has to go through the same network.
+            raise
+        except AccountRestrictedError:
+            # For the same reason: the manual login would land on the page the
+            # imported session already did. Remembered so the next call does not
+            # take that path either.
+            _state.account_restricted = True
             raise
         except Exception:  # noqa: BLE001 - any import failure -> manual login
             logger.debug("Auto-import task failed", exc_info=True)
@@ -4192,6 +4316,8 @@ async def _start_login_if_needed(
             if _auth_ready():
                 _state.auth_state = AuthState.READY
                 return
+            if _state.account_restricted:
+                raise AccountRestrictedError()
             if _state.login_task is not None and not _state.login_task.done():
                 login_task = _state.login_task
                 prior_error = None
@@ -4220,8 +4346,10 @@ async def _start_login_if_needed(
         if _auth_ready():
             _state.auth_state = AuthState.READY
             # Resume one-shot: the caller falls through to
-            # get_or_create_browser()/ensure_authenticated()/scrape.
+            # get_or_create_browser()/ensure_authenticated()/read.
             return
+        if _state.account_restricted:
+            raise AccountRestrictedError()
 
     # Budget elapsed (still running), budget == 0, or the task finished but did
     # not persist a valid session. Emit the poll-friendly pending signal.
@@ -4258,13 +4386,21 @@ async def wait_for_login_to_finish(timeout: float) -> bool:
 
     Returns False when the wait runs out, which leaves the login running: it owns
     the profile and cancelling it would strand a half-finished sign-in.
+
+    Raises:
+        AccountRestrictedError: The login ended on LinkedIn's restriction page,
+            which is an answer rather than a login still to wait for.
     """
+    from linkedin_mcp_server.core.exceptions import AccountRestrictedError
+
     task = _state.login_task
     if task is not None and not task.done():
         # `wait`, never `wait_for`: the latter cancels on timeout, and this task
         # is a browser window somebody may be typing into.
         await asyncio.wait({task}, timeout=timeout)
     await _refresh_background_task_state()
+    if _state.account_restricted and not _auth_ready():
+        raise AccountRestrictedError()
     return _auth_ready()
 
 
@@ -4454,6 +4590,9 @@ async def invalidate_auth_and_trigger_relogin(
         _state.auth_state = AuthState.STARTING
         _state.auth_started_at = utcnow_iso()
         _state.last_error = None
+        # Reached only after a session on disk was tried and failed, so this is
+        # a new attempt, and its own outcome decides the flag again.
+        _state.account_restricted = False
         _state.auth_completed_at = None
         _state.login_supersedes = stale_generation
         _state.login_task = asyncio.create_task(

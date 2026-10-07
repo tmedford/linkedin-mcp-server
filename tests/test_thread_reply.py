@@ -20,7 +20,7 @@ from fastmcp.tools import FunctionTool
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
     InvalidReferenceError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 from linkedin_mcp_server.voyager import overlay
@@ -296,7 +296,7 @@ async def test_auth_and_rate_limit_refusals_keep_their_own_types(status, error):
 async def test_an_unidentified_sender_stops_before_any_write(included):
     replier, page = _replier({"body": json.dumps({"included": included})})
 
-    with pytest.raises(LinkedInScraperException, match="signed-in member"):
+    with pytest.raises(LinkedInOperationError, match="signed-in member"):
         await replier.reply_to_thread(THREAD_ID, "hello", confirm_send=True)
 
     assert page.writes == []
@@ -321,7 +321,10 @@ async def test_the_tool_forwards_the_confirmation_gate(monkeypatch, mock_context
     extractor.reply_to_thread = AsyncMock(return_value=expected)
     reply = await _tool(_served(monkeypatch), "reply_to_thread")
 
-    result = await reply(THREAD_URL, "Draft only", False, mock_context, extractor)
+    monkeypatch.setattr(
+        overlay, "get_ready_extractor", AsyncMock(return_value=extractor)
+    )
+    result = await reply(THREAD_URL, "Draft only", False, mock_context)
 
     assert result is expected
     extractor.reply_to_thread.assert_awaited_once_with(
@@ -354,7 +357,7 @@ async def test_the_tool_names_an_unusable_thread_instead_of_masking_it(
 def test_the_result_carries_exactly_upstreams_message_result_keys():
     # The shape is spelled out in the sender to avoid an import cycle, so this
     # is what notices upstream adding a key to it.
-    from linkedin_mcp_server.scraping import contracts
+    from linkedin_mcp_server.linkedin import contracts
 
     upstream = contracts.message_action_result("u", "s", "m")
     ours = refuse_an_invalid_reply(THREAD_ID, "")

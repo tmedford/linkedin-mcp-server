@@ -1,8 +1,20 @@
+import os
 import sys
 
-import pytest
+# FastMCP 4 bridges camelCase reads on MCP SDK models (`result.isError`) with
+# deprecation shims that this switch turns off. The suite runs with them off,
+# so a read the SDK v2 rename left behind fails here instead of passing on a
+# shim. Set before anything imports fastmcp, which reads its settings once at
+# import, and inherited by every process a test starts. CI sets it before
+# Python starts as well; `test_fastmcp_compatibility.py` checks it took effect.
+os.environ["FASTMCP_MCP_CAMELCASE_COMPAT"] = "false"
 
-pytest_plugins = ("scraping.support.navigation",)
+import pytest  # noqa: E402
+
+# The differential accounting is a plugin rather than a directory conftest so
+# that it is loaded wherever those cases run, the xdist controller included,
+# and counts cases no fixture ever set up.
+pytest_plugins = ("linkedin.support.navigation", "differential.accounting")
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +68,26 @@ def reset_singletons():
     reset_liveness_for_testing()
     teardown_trace_logging(keep_traces=True)
     reset_trace_state_for_testing()
+
+
+#: The browser cache the run was started with, read before any test can write
+#: the variable.
+_INHERITED_BROWSERS_PATH = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+
+
+@pytest.fixture(autouse=True)
+def installed_browser_for_dom_tests(request, reset_singletons, monkeypatch):
+    """Give ``browser_dom`` tests the browser cache the run was started with.
+
+    ``reset_bootstrap_for_testing`` deletes ``PLAYWRIGHT_BROWSERS_PATH`` so that
+    no bootstrap test measures, reports on or installs into a real cache. That
+    also hid a browser installed outside patchright's default cache, such as the
+    server's own under ``~/.linkedin-mcp/patchright-browsers``, and every DOM
+    test skipped. These tests only launch Chromium against synthetic markup, so
+    they get the caller's cache back and nothing else does.
+    """
+    if _INHERITED_BROWSERS_PATH and request.node.get_closest_marker("browser_dom"):
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", _INHERITED_BROWSERS_PATH)
 
 
 @pytest.fixture(autouse=True)

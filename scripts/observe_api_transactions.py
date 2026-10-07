@@ -20,7 +20,7 @@ import os
 import sys
 
 from linkedin_mcp_server.core.browser import BrowserManager
-from linkedin_mcp_server.scraping.session import ScrapingSession
+from linkedin_mcp_server.linkedin.session import PageSession
 from linkedin_mcp_server.voyager.discovery import SURFACES, VoyagerDiscovery
 
 _DEFAULT_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -39,7 +39,7 @@ async def main(surfaces: list[str]) -> int:
     browser = BrowserManager(headless=True, executable_path=chrome)
     await browser.start()
     try:
-        discovery = VoyagerDiscovery(ScrapingSession(browser.page))
+        discovery = VoyagerDiscovery(PageSession(browser.page))
         for surface in surfaces:
             print(f"\n{'=' * 70}\n{surface}\n{'=' * 70}")
             try:

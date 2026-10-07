@@ -10,7 +10,7 @@ import pytest
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 from linkedin_mcp_server.voyager import jobs as jobs_module
@@ -131,21 +131,21 @@ async def test_an_empty_stage_is_an_empty_list():
 
 
 async def test_an_answer_that_is_not_the_tracker_is_refused():
-    with pytest.raises(LinkedInScraperException, match="without the jobs tracker"):
+    with pytest.raises(LinkedInOperationError, match="without the jobs tracker"):
         await _reader(_Page('0:["$","div",null,{}]')).get_saved_jobs()
 
 
 async def test_jobs_named_but_not_parsed_are_refused():
     broken = '0:{"viewName":"opportunity-tracker-add-note","payload":{"jobId":"7","title":"moved"}}'
 
-    with pytest.raises(LinkedInScraperException, match="changed shape"):
+    with pytest.raises(LinkedInOperationError, match="changed shape"):
         await _reader(_Page(broken)).get_saved_jobs()
 
 
 async def test_an_unknown_stage_is_refused_before_any_request():
     page = _Page(_stream([]))
 
-    with pytest.raises(LinkedInScraperException, match="saved, draft"):
+    with pytest.raises(LinkedInOperationError, match="saved, draft"):
         await _reader(page).get_saved_jobs(stage="offers")
 
     assert page.sent == []
@@ -162,7 +162,7 @@ async def test_a_non_tracker_answer_naming_a_job_is_not_called_a_shape_change():
     # An error component can embed a job id without being the tracker.
     stray = '0:{"viewName":"error","payload":{"jobId":"7"}}'
 
-    with pytest.raises(LinkedInScraperException, match="without the jobs tracker"):
+    with pytest.raises(LinkedInOperationError, match="without the jobs tracker"):
         await _reader(_Page(stray)).get_saved_jobs()
 
 
@@ -206,7 +206,7 @@ async def test_action_headers_are_taken_once_and_their_failure_skips_every_job()
     page = _Page(_stream([_record(7), _record(8), _record(9)]))
     reader = _reader(page)
     setattr(views_module, "_HEADER_CACHE", None)
-    taken = AsyncMock(side_effect=LinkedInScraperException("no action seen"))
+    taken = AsyncMock(side_effect=LinkedInOperationError("no action seen"))
     with patch.object(views_module.VoyagerProfileViews, "_page_headers", taken):
         jobs = (await reader.get_saved_jobs())["jobs"]
 
@@ -241,7 +241,7 @@ async def test_a_company_filter_holding_no_id_is_refused():
     from linkedin_mcp_server.voyager.jobs import selected_filters
 
     for blank in (" ", ",", " , "):
-        with pytest.raises(LinkedInScraperException, match="company_id was"):
+        with pytest.raises(LinkedInOperationError, match="company_id was"):
             selected_filters(company_id=blank)
 
 

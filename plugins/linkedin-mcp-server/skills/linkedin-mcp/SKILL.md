@@ -14,7 +14,7 @@ work, health checks, or background maintenance.
 - Start with the smallest read operation that can answer the request.
 - Treat profile, company, job, post, feed, and message results as live LinkedIn
   evidence. Distinguish retrieved facts from inference.
-- Keep searches and result pages modest. Do not bulk scrape or spam.
+- Keep searches and result pages modest. Do not collect data in bulk or spam.
 - Never enable the plugin or its MCP server, edit Codex configuration, or start
   a login flow merely because LinkedIn might be useful. If either component is
   disabled, explain that state and stop.
@@ -41,7 +41,8 @@ instances, clear profiles, or replace the user's browser session.
   `get_sidebar_profiles`.
 - Companies: `get_company_profile`, `get_company_posts`, `search_companies`,
   and `get_company_employees`.
-- Jobs: `search_jobs`, `get_saved_jobs`, and `get_job_details`.
+- Jobs: `search_jobs`, `get_saved_jobs`, `get_job_details`, and
+  `get_job_apply_url`.
 - Content: `get_feed` and `search_posts`.
 - Messages: `get_inbox`, `get_conversation`, and `search_conversations`.
 - Writes: `send_message` and `connect_with_person`, subject to the explicit

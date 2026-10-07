@@ -1,3 +1,4 @@
+import ctypes
 import json
 import os
 import shutil
@@ -7,6 +8,9 @@ import pytest
 
 from linkedin_mcp_server.profile_claim import ensure_profile_claim
 from linkedin_mcp_server.session_state import (
+    SessionChangedError,
+    _native_machine_win32,
+    auth_state_identity,
     clear_auth_state,
     get_runtime_id,
     load_runtime_state,
@@ -182,6 +186,7 @@ def test_runtime_storage_state_path_uses_runtime_dir(isolate_profile_dir):
 
 
 def test_get_runtime_id_marks_container(monkeypatch):
+    monkeypatch.setattr("linkedin_mcp_server.session_state.sys.platform", "linux")
     monkeypatch.setattr(
         "linkedin_mcp_server.session_state.platform.system", lambda: "Linux"
     )
@@ -197,6 +202,7 @@ def test_get_runtime_id_marks_container(monkeypatch):
 
 
 def test_get_runtime_id_marks_container_from_cgroup_v2_mountinfo(monkeypatch):
+    monkeypatch.setattr("linkedin_mcp_server.session_state.sys.platform", "linux")
     monkeypatch.setattr(
         "linkedin_mcp_server.session_state.platform.system", lambda: "Linux"
     )
@@ -219,6 +225,7 @@ def test_get_runtime_id_marks_container_from_cgroup_v2_mountinfo(monkeypatch):
 
 
 def test_get_runtime_id_ignores_non_root_overlay_mounts(monkeypatch):
+    monkeypatch.setattr("linkedin_mcp_server.session_state.sys.platform", "linux")
     monkeypatch.setattr(
         "linkedin_mcp_server.session_state.platform.system", lambda: "Linux"
     )
@@ -247,6 +254,7 @@ def test_get_runtime_id_ignores_other_containers_on_the_host(monkeypatch):
     # /var/lib/containers, which contains no marker word — so it passed either
     # way. A Docker host's mountinfo says "docker" outright, and that is what
     # the substring scan tripped over.
+    monkeypatch.setattr("linkedin_mcp_server.session_state.sys.platform", "linux")
     monkeypatch.setattr(
         "linkedin_mcp_server.session_state.platform.system", lambda: "Linux"
     )
@@ -269,6 +277,245 @@ def test_get_runtime_id_ignores_other_containers_on_the_host(monkeypatch):
     )
 
     assert get_runtime_id() == "linux-amd64-host"
+
+
+def _windows_runtime(monkeypatch) -> None:
+    """Put the runtime id on the Windows branch, off a container."""
+    monkeypatch.setattr("linkedin_mcp_server.session_state.sys.platform", "win32")
+    monkeypatch.setattr(
+        "linkedin_mcp_server.session_state._is_container_runtime", lambda: False
+    )
+
+
+def _refuse_uname(monkeypatch) -> None:
+    """Fail the test if the runtime id reaches WMI.
+
+    Refusing ``platform.uname`` catches both routes in, which a check on one of
+    ``platform.system()`` or ``platform.machine()`` would not.
+    See ``docs/decisions/2026-09-19-windows-runtime-identity.md``.
+    """
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the runtime id asked Windows over WMI")
+
+    monkeypatch.setattr("linkedin_mcp_server.session_state.platform.uname", refuse)
+
+
+def test_the_windows_runtime_id_never_asks_wmi(monkeypatch):
+    # #838. A WMI query on CPython 3.12 can kill the process: `_wmi`'s worker
+    # thread reads the caller's stack frame after the caller gives up waiting
+    # and returns. Captured as an access violation in `_wmi.pyd` that took out
+    # one of eight frontends mid-election. Reaching the query at all is the
+    # defect, so this refuses it rather than asserting on what it returns.
+    _windows_runtime(monkeypatch)
+    _refuse_uname(monkeypatch)
+    monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+    monkeypatch.setattr(
+        "linkedin_mcp_server.session_state._native_machine_win32", lambda: "AMD64"
+    )
+
+    assert get_runtime_id() == "windows-amd64-host"
+
+
+def test_a_wow64_windows_frontend_reports_the_native_architecture(monkeypatch):
+    # A 32-bit process on ARM64 is told `x86` by PROCESSOR_ARCHITECTURE and the
+    # truth by PROCESSOR_ARCHITEW6432. Taking the first would give that process
+    # a different runtime id from every other one on the same machine, and the
+    # id names a directory.
+    _windows_runtime(monkeypatch)
+    _refuse_uname(monkeypatch)
+    monkeypatch.setenv("PROCESSOR_ARCHITEW6432", "ARM64")
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "x86")
+    monkeypatch.setattr(
+        "linkedin_mcp_server.session_state._native_machine_win32", lambda: "ARM64"
+    )
+
+    assert get_runtime_id() == "windows-arm64-host"
+
+
+def test_a_stripped_windows_environment_keeps_the_architecture(monkeypatch):
+    # The regression this fix nearly shipped. `platform._get_machine_win32`
+    # asks WMI *first* and reads these variables only when that fails, so a
+    # process launched without them — an MCP host or a service that sanitises
+    # the environment — used to be told AMD64 by the query. Answering "unknown"
+    # there would rename the directory holding its runtime profile, and the
+    # session inside it would simply stop being found.
+    _windows_runtime(monkeypatch)
+    _refuse_uname(monkeypatch)
+    monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+    monkeypatch.delenv("PROCESSOR_ARCHITECTURE", raising=False)
+    monkeypatch.setattr(
+        "linkedin_mcp_server.session_state._native_machine_win32", lambda: "AMD64"
+    )
+
+    assert get_runtime_id() == "windows-amd64-host"
+
+
+def test_an_unnamed_windows_architecture_does_not_fall_back_to_wmi(monkeypatch):
+    # Both variables gone and the kernel refusing to name the machine too.
+    # "unknown" is a poor answer and a stable one; the only answer left is the
+    # query that crashes, and this asserts it is still not asked.
+    _windows_runtime(monkeypatch)
+    _refuse_uname(monkeypatch)
+    monkeypatch.setenv("PROCESSOR_ARCHITEW6432", "")
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "")
+    monkeypatch.setattr(
+        "linkedin_mcp_server.session_state._native_machine_win32", lambda: ""
+    )
+
+    assert get_runtime_id() == "windows-unknown-host"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires the real Windows kernel API")
+def test_the_native_machine_api_answers_on_windows():
+    # Native execution is supplied by the Windows platform-behaviour CI leg;
+    # the portable tests below constrain the pointer and mapping details.
+    assert _native_machine_win32() in {
+        "x86",
+        "MIPS",
+        "Alpha",
+        "PowerPC",
+        "ARM",
+        "ia64",
+        "AMD64",
+        "ARM64",
+    }
+
+
+class _FakeKernelFunction:
+    def __init__(self, implementation):
+        self.implementation = implementation
+        self.argtypes = None
+        self.restype = None
+        self.calls = 0
+
+    def __call__(self, *args):
+        self.calls += 1
+        return self.implementation(*args)
+
+
+class _FakeKernel32:
+    def __init__(self, process_machine: int, native_machine: int, *, succeeds=True):
+        self.GetCurrentProcess = _FakeKernelFunction(lambda: 1)
+
+        def is_wow64_process2(_process, process_pointer, native_pointer):
+            ctypes.cast(process_pointer, ctypes.POINTER(ctypes.c_ushort))[0] = (
+                process_machine
+            )
+            ctypes.cast(native_pointer, ctypes.POINTER(ctypes.c_ushort))[0] = (
+                native_machine
+            )
+            return succeeds
+
+        self.IsWow64Process2 = _FakeKernelFunction(is_wow64_process2)
+        self.GetNativeSystemInfo = _FakeKernelFunction(
+            lambda _info: pytest.fail("legacy fallback was called needlessly")
+        )
+
+
+@pytest.mark.parametrize(
+    ("native_machine", "expected"),
+    (
+        (0x014C, "x86"),
+        (0x0166, "MIPS"),
+        (0x0184, "Alpha"),
+        (0x01F0, "PowerPC"),
+        (0x01C4, "ARM"),
+        (0x0200, "ia64"),
+        (0x8664, "AMD64"),
+        (0xAA64, "ARM64"),
+    ),
+)
+def test_the_native_machine_api_matches_the_old_wmi_spellings(
+    monkeypatch, native_machine, expected
+):
+    kernel32 = _FakeKernel32(0x014C, native_machine)
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
+    )
+
+    assert _native_machine_win32() == expected
+    assert kernel32.IsWow64Process2.argtypes == (
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_ushort),
+        ctypes.POINTER(ctypes.c_ushort),
+    )
+    assert kernel32.IsWow64Process2.restype is ctypes.c_int
+    assert kernel32.GetCurrentProcess.argtypes == []
+    assert kernel32.GetCurrentProcess.restype is ctypes.c_void_p
+    assert kernel32.GetNativeSystemInfo.calls == 0
+
+
+def test_the_native_machine_output_wins_over_the_process_machine(monkeypatch):
+    kernel32 = _FakeKernel32(0x8664, 0xAA64)
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
+    )
+
+    assert _native_machine_win32() == "ARM64"
+
+
+def test_a_failed_native_machine_query_does_not_use_the_compatibility_answer(
+    monkeypatch,
+):
+    kernel32 = _FakeKernel32(0x8664, 0xAA64, succeeds=False)
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
+    )
+
+    assert _native_machine_win32() == ""
+    assert kernel32.GetNativeSystemInfo.calls == 0
+
+
+def test_a_native_machine_loader_error_is_nonfatal_and_logged(monkeypatch, caplog):
+    def fail(*_args, **_kwargs):
+        raise OSError("kernel32 unavailable")
+
+    monkeypatch.setattr(ctypes, "WinDLL", fail, raising=False)
+    caplog.set_level("DEBUG", logger="linkedin_mcp_server.session_state")
+
+    assert _native_machine_win32() == ""
+    assert "the kernel did not name the architecture" in caplog.text
+
+
+@pytest.mark.parametrize(("architecture", "expected"), ((0, "x86"), (9, "AMD64")))
+def test_old_windows_keeps_x86_and_amd64_without_wmi(
+    monkeypatch, architecture, expected
+):
+    def write_architecture(info_pointer):
+        ctypes.cast(info_pointer, ctypes.POINTER(ctypes.c_ushort))[0] = architecture
+
+    class LegacyKernel32:
+        def __init__(self):
+            self.GetCurrentProcess = _FakeKernelFunction(lambda: 1)
+            self.GetNativeSystemInfo = _FakeKernelFunction(write_architecture)
+
+    kernel32 = LegacyKernel32()
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
+    )
+
+    assert _native_machine_win32() == expected
+    assert kernel32.GetNativeSystemInfo.argtypes is not None
+    assert kernel32.GetNativeSystemInfo.restype is None
+    assert kernel32.GetNativeSystemInfo.calls == 1
+
+
+def test_the_native_machine_precedes_a_compatibility_environment(monkeypatch):
+    # An x64 process emulated on ARM64 can receive AMD64 in its environment,
+    # while the old WMI query returned ARM64. The native-machine output has to
+    # remain authoritative or the runtime profile silently moves directories.
+    _windows_runtime(monkeypatch)
+    _refuse_uname(monkeypatch)
+    monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+    kernel32 = _FakeKernel32(0x8664, 0xAA64)
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False
+    )
+
+    assert get_runtime_id() == "windows-arm64-host"
 
 
 def _seed_session(profile_dir, *, machine_id: str = "4663753") -> None:
@@ -415,6 +662,222 @@ class TestClearAuthState:
         assert not profile_dir.exists()
 
 
+def _hold_elsewhere(profile_dir):
+    """Hold *profile_dir*'s lease as another process would, and return a release.
+
+    A second open file description on the lease file, which the kernel treats
+    as a separate holder even inside this process, so the lease's own
+    reference count cannot answer for it.
+    """
+    from linkedin_mcp_server.profile_lease import (
+        _release_locked_fd,
+        acquire_locked_fd,
+        get_profile_lease,
+    )
+
+    fd = acquire_locked_fd(get_profile_lease(profile_dir)._lease_path, exclusive=True)
+    assert fd is not None
+    released = []
+
+    def release() -> None:
+        if not released:
+            released.append(True)
+            _release_locked_fd(fd)
+
+    return release
+
+
+class TestClearingOnceTheHolderLetsGo:
+    """The bounded wait a logout takes after a shared browser agreed to retire."""
+
+    def test_it_waits_for_a_holder_that_lets_go(self, isolate_profile_dir):
+        import threading
+
+        from linkedin_mcp_server.profile_lease import get_profile_lease
+
+        profile_dir = isolate_profile_dir
+        _seed_session(profile_dir)
+        release = _hold_elsewhere(profile_dir)
+        timer = threading.Timer(0.3, release)
+        timer.start()
+        try:
+            assert clear_auth_state(profile_dir, wait_seconds=10) is True
+        finally:
+            timer.cancel()
+            release()
+
+        assert not profile_dir.exists()
+        assert not get_profile_lease(profile_dir).held, "the wait leaked a reference"
+
+    def test_a_holder_that_keeps_it_leaves_everything_in_place(
+        self, isolate_profile_dir
+    ):
+        from linkedin_mcp_server.profile_lease import get_profile_lease
+
+        profile_dir = isolate_profile_dir
+        _seed_session(profile_dir)
+        release = _hold_elsewhere(profile_dir)
+        try:
+            with pytest.raises(RuntimeError, match="in use by another process"):
+                clear_auth_state(profile_dir, wait_seconds=0.3)
+        finally:
+            release()
+
+        assert portable_cookie_path(profile_dir).exists()
+        assert (profile_dir / "Local State").exists()
+        assert not get_profile_lease(profile_dir).held
+
+    def test_without_a_wait_it_refuses_at_once_as_before(self, isolate_profile_dir):
+        import time
+
+        profile_dir = isolate_profile_dir
+        _seed_session(profile_dir)
+        release = _hold_elsewhere(profile_dir)
+        started = time.monotonic()
+        try:
+            with pytest.raises(RuntimeError, match="in use by another process"):
+                clear_auth_state(profile_dir)
+        finally:
+            release()
+
+        assert time.monotonic() - started < 0.5
+        assert portable_cookie_path(profile_dir).exists()
+
+    def test_the_wait_announces_itself_to_the_holder(self, isolate_profile_dir):
+        # The handoff a successor honours: without the announcement a holder
+        # that hands over on request would never hear this waiter.
+        import threading
+
+        from linkedin_mcp_server.profile_lease import get_profile_lease
+
+        profile_dir = isolate_profile_dir
+        _seed_session(profile_dir)
+        release = _hold_elsewhere(profile_dir)
+        heard: list[bool] = []
+
+        def listen() -> None:
+            heard.append(get_profile_lease(profile_dir).handoff_requested())
+            release()
+
+        timer = threading.Timer(0.3, listen)
+        timer.start()
+        try:
+            assert clear_auth_state(profile_dir, wait_seconds=10) is True
+        finally:
+            timer.cancel()
+            release()
+
+        assert heard == [True]
+
+
+class TestClearingOnlyTheConfirmedSession:
+    """A logout deletes the session the user agreed to, and no later one."""
+
+    def test_an_unchanged_session_is_cleared(self, isolate_profile_dir):
+        profile_dir = isolate_profile_dir
+        _seed_session(profile_dir)
+        confirmed = auth_state_identity(profile_dir)
+
+        assert clear_auth_state(profile_dir, confirmed=confirmed) is True
+
+        assert not profile_dir.exists()
+        assert not portable_cookie_path(profile_dir).exists()
+
+    def test_a_login_after_confirmation_is_left_in_place(self, isolate_profile_dir):
+        profile_dir = isolate_profile_dir
+        _seed_session(profile_dir)
+        confirmed = auth_state_identity(profile_dir)
+        rotate_source_profile(profile_dir)
+        _seed_session(profile_dir, machine_id="9999")
+        generation = write_source_state(profile_dir).login_generation
+
+        with pytest.raises(SessionChangedError, match="changed after you confirmed"):
+            clear_auth_state(profile_dir, confirmed=confirmed)
+
+        state = load_source_state(profile_dir)
+        assert state is not None and state.login_generation == generation
+        assert portable_cookie_path(profile_dir).exists()
+        assert "9999" in (profile_dir / "Local State").read_text()
+        assert len(quarantine_dirs(profile_dir)) == 1
+
+    def test_a_re_export_under_the_same_login_is_still_cleared(
+        self, isolate_profile_dir
+    ):
+        # What a browser closing on the source profile does to the cookie file.
+        profile_dir = isolate_profile_dir
+        _seed_session(profile_dir)
+        confirmed = auth_state_identity(profile_dir)
+        cookies = portable_cookie_path(profile_dir)
+        cookies.unlink()
+        cookies.write_text('[{"name": "li_at"}, {"name": "JSESSIONID"}]')
+
+        assert clear_auth_state(profile_dir, confirmed=confirmed) is True
+
+        assert not cookies.exists()
+
+    def test_without_metadata_the_cookie_file_decides(self, isolate_profile_dir):
+        # State from before generations existed: only the cookie file and the
+        # profile can say whether it is still the one confirmed.
+        profile_dir = isolate_profile_dir
+        _seed_session(profile_dir)
+        source_state_path(profile_dir).unlink()
+        confirmed = auth_state_identity(profile_dir)
+        cookies = portable_cookie_path(profile_dir)
+        cookies.unlink()
+        cookies.write_text('[{"name": "li_at"}, {"name": "JSESSIONID"}]')
+
+        with pytest.raises(SessionChangedError):
+            clear_auth_state(profile_dir, confirmed=confirmed)
+
+        assert cookies.exists()
+        assert (profile_dir / "Local State").exists()
+
+    def test_metadata_that_became_unreadable_is_not_cleared(self, isolate_profile_dir):
+        # The loader reads an unparsable file as no file, so without its own
+        # identity this compared equal to whatever the cookie file said.
+        profile_dir = isolate_profile_dir
+        _seed_session(profile_dir)
+        confirmed = auth_state_identity(profile_dir)
+        source_state_path(profile_dir).write_text("{")
+
+        with pytest.raises(SessionChangedError):
+            clear_auth_state(profile_dir, confirmed=confirmed)
+
+        assert portable_cookie_path(profile_dir).exists()
+        assert (profile_dir / "Local State").exists()
+
+    def test_metadata_written_after_confirmation_is_not_cleared(
+        self, isolate_profile_dir
+    ):
+        # Older state without a generation, and a login that has begun writing
+        # one over it.
+        profile_dir = isolate_profile_dir
+        _seed_session(profile_dir)
+        source_state_path(profile_dir).unlink()
+        confirmed = auth_state_identity(profile_dir)
+        source_state_path(profile_dir).write_text('{"version"')
+
+        with pytest.raises(SessionChangedError):
+            clear_auth_state(profile_dir, confirmed=confirmed)
+
+        assert portable_cookie_path(profile_dir).exists()
+
+    def test_metadata_already_unreadable_when_confirmed_is_cleared(
+        self, isolate_profile_dir
+    ):
+        # What the user was shown and agreed to delete. A logout is the way out
+        # of a broken session, so it must not refuse one.
+        profile_dir = isolate_profile_dir
+        _seed_session(profile_dir)
+        source_state_path(profile_dir).write_text("{")
+        confirmed = auth_state_identity(profile_dir)
+
+        assert clear_auth_state(profile_dir, confirmed=confirmed) is True
+
+        assert not portable_cookie_path(profile_dir).exists()
+        assert not source_state_path(profile_dir).exists()
+
+
 class TestRestoreSourceProfile:
     def test_puts_a_retired_session_back(self, isolate_profile_dir):
         """Rotation happens before the replacement exists, so a login that is
@@ -522,10 +985,49 @@ def test_lock_from_another_host_counts_as_held(isolate_profile_dir):
     _seed_session(profile_dir)
     (profile_dir / "SingletonLock").symlink_to("some-container-1")
 
-    with pytest.raises(RuntimeError, match="in use by another process"):
+    with pytest.raises(RuntimeError, match="locked by host 'some-container'"):
         rotate_source_profile(profile_dir)
 
     assert profile_dir.exists()
+
+
+def test_a_foreign_host_lock_names_what_would_free_the_profile(isolate_profile_dir):
+    """Measured on macOS: the host name changed after a crash, so the lock this
+    machine left behind read as another host's and refused every login for good.
+    The refusal stands, since a container's lock looks the same, but it has to
+    name the files and the condition under which deleting them is safe."""
+    profile_dir = isolate_profile_dir
+    _seed_session(profile_dir)
+    lock = profile_dir / "SingletonLock"
+    lock.symlink_to("old-name.local-4242")
+
+    with pytest.raises(RuntimeError) as refused:
+        rotate_source_profile(profile_dir)
+
+    message = str(refused.value)
+    assert str(lock) in message
+    assert "'old-name.local'" in message
+    assert repr(socket.gethostname()) in message
+    assert "SingletonCookie and SingletonSocket" in message
+    # Deleting a live container's lock corrupts its session, so the advice has
+    # to stay conditional on nothing using the profile.
+    stop = message.index("Stop any server, browser or container")
+    assert stop < message.index("If none is") < message.index("delete")
+    assert lock.is_symlink(), "the refusal must not remove the lock itself"
+    assert profile_dir.exists()
+
+
+def test_a_live_lock_on_this_host_does_not_suggest_deleting_it(isolate_profile_dir):
+    profile_dir = isolate_profile_dir
+    _seed_session(profile_dir)
+    lock = profile_dir / "SingletonLock"
+    lock.symlink_to(f"{socket.gethostname()}-{os.getpid()}")
+
+    with pytest.raises(RuntimeError, match="in use by another process") as refused:
+        rotate_source_profile(profile_dir)
+
+    assert str(lock) in str(refused.value)
+    assert "delete" not in str(refused.value)
 
 
 def test_uncommitted_debris_is_parked_not_deleted(isolate_profile_dir):

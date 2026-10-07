@@ -29,7 +29,7 @@ from urllib.parse import quote
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 
@@ -139,7 +139,7 @@ class VoyagerReader:
                 raise RateLimitError(
                     f"Voyager {self.surface} request rate limited: {detail}"
                 )
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} request failed: {detail}"
             )
         return json.loads(raw["body"])
@@ -159,7 +159,7 @@ class VoyagerReader:
         urns = [urn for urn in urns if isinstance(urn, str) and urn]
         # Exactly one, or a thread would be addressed from a guess.
         if len(urns) != 1 or not urns[0].startswith(_PROFILE_URN_PREFIX):
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} could not identify the signed-in member: "
                 f"expected one profile URN in /me, found {len(urns)}."
             )
@@ -187,7 +187,7 @@ class VoyagerReader:
             rows=urns, payload=payload, path="data['*elements']", container_found=found
         )
         if len(urns) != 1:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} found {len(urns)} members for "
                 f"{identifier!r}, not exactly one. Pass the /in/ public "
                 "identifier exactly as a profile URL shows it."
@@ -245,7 +245,7 @@ class VoyagerReader:
         if not (payload.get("included") or payload.get("data")):
             return
         keys = sorted(payload.keys())
-        raise LinkedInScraperException(
+        raise LinkedInOperationError(
             f"Voyager {self.surface} payload changed shape: the container at "
             f"{path!r} was not found, but the response carried data "
             f"(top-level keys: {keys}). Refusing to report this as an empty "

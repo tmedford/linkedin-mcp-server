@@ -11,9 +11,9 @@ import pytest
 
 from linkedin_mcp_server.core.exceptions import (
     InvalidReferenceError,
-    LinkedInScraperException,
+    LinkedInOperationError,
 )
-from linkedin_mcp_server.scraping.identifiers import (
+from linkedin_mcp_server.linkedin.identifiers import (
     company_page_url,
     job_view_url,
     messaging_thread_url,
@@ -21,6 +21,7 @@ from linkedin_mcp_server.scraping.identifiers import (
     normalize_job_id,
     normalize_opaque_id,
     normalize_person_identifier,
+    normalize_profile_urn,
     normalize_thread_id,
     person_profile_url,
 )
@@ -93,14 +94,14 @@ class TestNormalizePersonIdentifier:
     def test_refuses_a_malformed_escape(self, value: str):
         # unquote leaves a broken escape untouched instead of raising, so it
         # would otherwise survive into the URL.
-        with pytest.raises(LinkedInScraperException):
+        with pytest.raises(LinkedInOperationError):
             normalize_person_identifier(value)
 
     @pytest.mark.parametrize(
         "value", ["felix%2Ffoo", "felix%20foo", "felix%2E%2E%2Ffeed"]
     )
     def test_refuses_syntax_the_escapes_were_hiding(self, value: str):
-        with pytest.raises(LinkedInScraperException):
+        with pytest.raises(LinkedInOperationError):
             normalize_person_identifier(value)
 
     def test_preserves_case(self):
@@ -114,7 +115,7 @@ class TestNormalizePersonIdentifier:
     def test_refuses_a_value_that_would_escape_the_profile_path(self):
         # A browser resolves the dot segments away before the request, so this
         # navigates to /feed/ and returns the feed as if it were a profile.
-        with pytest.raises(LinkedInScraperException):
+        with pytest.raises(LinkedInOperationError):
             normalize_person_identifier("williamhgates/../../feed")
 
     @pytest.mark.parametrize(
@@ -161,7 +162,7 @@ class TestNormalizePersonIdentifier:
     def test_never_collapses_a_link_into_the_signed_in_alias(self):
         # /in/me is LinkedIn's alias for the operator's own profile. Resolving a
         # link into it answers confidently about the wrong person.
-        with pytest.raises(LinkedInScraperException):
+        with pytest.raises(LinkedInOperationError):
             normalize_person_identifier("https://www.linkedin.com/in/me")
 
     @pytest.mark.parametrize(
@@ -177,7 +178,7 @@ class TestNormalizePersonIdentifier:
         ],
     )
     def test_refuses_a_linkedin_link_that_is_not_a_personal_profile(self, value: str):
-        with pytest.raises(LinkedInScraperException):
+        with pytest.raises(LinkedInOperationError):
             normalize_person_identifier(value)
 
     @pytest.mark.parametrize(
@@ -185,7 +186,7 @@ class TestNormalizePersonIdentifier:
         ["https://lnkd.in/eXaMpLe1", "lnkd.in/eXaMpLe1", "http://www.lnkd.in/eXaMpLe1"],
     )
     def test_refuses_a_short_link_that_only_a_redirect_resolves(self, value: str):
-        with pytest.raises(LinkedInScraperException, match="shortened"):
+        with pytest.raises(LinkedInOperationError, match="shortened"):
             normalize_person_identifier(value)
 
     @pytest.mark.parametrize(
@@ -202,7 +203,7 @@ class TestNormalizePersonIdentifier:
         ],
     )
     def test_refuses_a_value_that_cannot_name_a_person(self, value: str):
-        with pytest.raises(LinkedInScraperException):
+        with pytest.raises(LinkedInOperationError):
             normalize_person_identifier(value)
 
 
@@ -222,6 +223,20 @@ class TestNormalizeCompanyIdentifier:
     @pytest.mark.parametrize(
         "value",
         [
+            "beamy.io",
+            "https://www.linkedin.com/company/beamy.io",
+            "https://www.linkedin.com/company/beamy.io/people/",
+            "/company/beamy.io/",
+        ],
+    )
+    def test_keeps_the_period_of_a_domain_slug(self, value: str):
+        # Organizations claim their domain as a slug. The person allowlist has no
+        # period, and sharing it left such a company unreachable in every form.
+        assert normalize_company_identifier(value) == "beamy.io"
+
+    @pytest.mark.parametrize(
+        "value",
+        [
             "https://www.linkedin.com/school/rwth-aachen-university/",
             "https://www.linkedin.com/showcase/microsoft",
         ],
@@ -229,7 +244,7 @@ class TestNormalizeCompanyIdentifier:
     def test_refuses_a_route_it_cannot_build(self, value: str):
         # The slug used to be rebuilt under /company/, which 301-redirects to the
         # organization root. Right for the root, wrong for every section the
-        # company scrape appends: /company/<school-slug>/jobs/ redirects to the
+        # company read appends: /company/<school-slug>/jobs/ redirects to the
         # school root too, and nothing checks where it landed, so root content
         # was recorded under the requested section.
         with pytest.raises(InvalidReferenceError):
@@ -241,11 +256,15 @@ class TestNormalizeCompanyIdentifier:
             "https://www.linkedin.com/in/williamhgates",
             "https://www.linkedin.com/feed/",
             "microsoft/../../feed",
+            ".",
+            "..",
+            "%2e%2e",
+            "/company/../feed/",
             "",
         ],
     )
     def test_refuses_a_value_that_cannot_name_a_company(self, value: str):
-        with pytest.raises(LinkedInScraperException):
+        with pytest.raises(LinkedInOperationError):
             normalize_company_identifier(value)
 
 
@@ -334,6 +353,24 @@ class TestReferencesThisServerEmits:
 
     def test_thread_id_still_passes_through(self):
         assert normalize_thread_id("2-abc123") == "2-abc123"
+
+    @pytest.mark.parametrize(
+        "value",
+        [PROFILE_ID, f"urn:li:fsd_profile:{PROFILE_ID}"],
+    )
+    def test_profile_urn_preserves_each_supported_form(self, value: str):
+        assert normalize_profile_urn(value) == value
+
+    def test_profile_urn_is_trimmed(self):
+        assert normalize_profile_urn(f" {PROFILE_ID} ") == PROFILE_ID
+
+    @pytest.mark.parametrize(
+        "value",
+        ["/feed/", "urn:li:company:123", "urn:li:fsd_profile:"],
+    )
+    def test_profile_urn_refuses_a_non_profile_value(self, value: str):
+        with pytest.raises(InvalidReferenceError, match="profile_urn"):
+            normalize_profile_urn(value)
 
     def test_job_reference_yields_the_id(self):
         assert normalize_job_id("/jobs/view/4252026496/") == "4252026496"
@@ -521,16 +558,23 @@ class TestNothingTidiesTheReference:
 
 
 class TestIdentifierAllowlist:
-    """A public identifier is letters, digits, hyphen and underscore. The old
-    rule listed forbidden syntax instead, so a value carrying none of it passed
-    and spent a page load on a 404."""
+    """A public identifier is letters, digits, hyphen and underscore, and a
+    company slug also takes a period. The old rule listed forbidden syntax
+    instead, so a value carrying none of it passed and spent a page load on a
+    404."""
 
-    @pytest.mark.parametrize(
-        "value", ["foo@example.com", "foo:bar", "foo!bar", "foo.bar"]
-    )
+    @pytest.mark.parametrize("value", ["foo@example.com", "foo:bar", "foo!bar"])
     def test_a_value_that_cannot_be_one_is_refused(self, value: str):
         with pytest.raises(InvalidReferenceError):
             normalize_company_identifier(value)
+
+    @pytest.mark.parametrize(
+        "value",
+        ["foo.bar", "/in/foo.bar/", "https://www.linkedin.com/in/foo.bar"],
+    )
+    def test_a_person_identifier_takes_no_period(self, value: str):
+        with pytest.raises(InvalidReferenceError):
+            normalize_person_identifier(value)
 
     @pytest.mark.parametrize(
         "value", ["williamhgates", "felix-krueckel", "андрей", "a_b"]

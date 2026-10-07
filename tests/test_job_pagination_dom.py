@@ -20,10 +20,10 @@ from __future__ import annotations
 import pytest
 from patchright.async_api import async_playwright
 
-from linkedin_mcp_server.scraping.content import PageContentReader
-from linkedin_mcp_server.scraping.job_pages import JobPageReader
-from linkedin_mcp_server.scraping.navigation import PageNavigator
-from linkedin_mcp_server.scraping.session import ScrapingSession
+from linkedin_mcp_server.linkedin.content import PageContentReader
+from linkedin_mcp_server.linkedin.job_pages import JobPageReader
+from linkedin_mcp_server.linkedin.navigation import PageNavigator
+from linkedin_mcp_server.linkedin.session import PageSession
 
 #: CI uses ``--dist loadgroup``. Keep every test that launches Chromium on one
 #: worker so browser startups cannot compete with the DOM cases' wall-clock
@@ -46,6 +46,13 @@ async def dom_page():
         except Exception as exc:  # pragma: no cover - environment dependent
             pytest.skip(f"chromium unavailable: {exc}")
         try:
+            # On a LinkedIn address, because the reads refuse any other
+            # page, and `set_content` keeps the address it replaces.
+            await page.route(
+                "https://www.linkedin.com/**",
+                lambda route: route.fulfill(content_type="text/html", body=""),
+            )
+            await page.goto("https://www.linkedin.com/jobs/search/")
             yield page
         finally:
             await browser.close()
@@ -53,7 +60,7 @@ async def dom_page():
 
 def _reader(page) -> JobPageReader:
     """The page reader wired the way the facade does, over a real browser."""
-    session = ScrapingSession(page)
+    session = PageSession(page)
     navigator = PageNavigator(session)
     return JobPageReader(session, navigator, PageContentReader(session))
 

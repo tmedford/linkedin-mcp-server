@@ -47,7 +47,7 @@ from urllib.parse import quote
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 from linkedin_mcp_server.voyager.profile_views import (
@@ -337,7 +337,7 @@ class VoyagerContent(VoyagerProfileViews):
         if status == 429:
             raise RateLimitError(f"Voyager {self.surface} rate limited: HTTP {status}")
         if status != 200:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} request failed: HTTP {status}"
             )
         return answer.get("text") or ""
@@ -346,17 +346,17 @@ class VoyagerContent(VoyagerProfileViews):
         self, keywords: str, date_posted: str | None = None, max_pages: int = 3
     ) -> dict[str, Any]:
         """Up to ``max_pages`` pages of ten posts matching a search."""
-        from linkedin_mcp_server.scraping.search_urls import (
+        from linkedin_mcp_server.linkedin.search_urls import (
             CONTENT_DATE_POSTED_MAP,
             build_content_search_url,
         )
 
         if not keywords.strip():
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "keywords was blank. Pass the words to search for."
             )
         if not 1 <= max_pages <= 10:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"max_pages must be between 1 and 10, got {max_pages}."
             )
         # Upstream's builder is the validator: it refuses a recency token
@@ -382,7 +382,7 @@ class VoyagerContent(VoyagerProfileViews):
             )
             window = parse_content_posts(text)
             if not window and '"feed-full-update"' in text:
-                raise LinkedInScraperException(
+                raise LinkedInOperationError(
                     f"Voyager {self.surface} changed shape: posts are marked in "
                     "the answer but none parsed. Refusing to report that as no "
                     "results."
@@ -419,7 +419,7 @@ class VoyagerContent(VoyagerProfileViews):
         from linkedin_mcp_server.voyager.person import parse_posts, render_posts
 
         if not 1 <= num_posts <= FEED_MAX:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"num_posts must be between 1 and {FEED_MAX}, got {num_posts}."
             )
         # A window comes back short: promotions sit among the posts with no
@@ -478,7 +478,7 @@ class VoyagerContent(VoyagerProfileViews):
 
     async def get_sidebar_profiles(self, linkedin_username: str) -> dict[str, Any]:
         """The people LinkedIn suggests beside a profile, by section."""
-        from linkedin_mcp_server.scraping.identifiers import (
+        from linkedin_mcp_server.linkedin.identifiers import (
             normalize_person_identifier,
             person_profile_url,
         )

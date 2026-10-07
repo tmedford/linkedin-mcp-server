@@ -23,6 +23,7 @@ tool and what to do about it, rather than at some later call.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
@@ -32,16 +33,35 @@ from pydantic import Field
 from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
 )
 from linkedin_mcp_server.dependencies import get_ready_extractor, handle_auth_error
 from linkedin_mcp_server.error_handler import raise_tool_error
-from linkedin_mcp_server.scraping.contracts import FilterValidationError
+from linkedin_mcp_server.linkedin.contracts import FilterValidationError
 from linkedin_mcp_server.tools.person import StrList
 from linkedin_mcp_server.voyager.person_message import refuse_an_invalid_person_message
 from linkedin_mcp_server.voyager.thread_reply import refuse_an_invalid_reply
 
 logger = logging.getLogger(__name__)
+
+
+#: Set to "1" to serve upstream's own tools and leave the overlay out.
+#:
+#: Upstream's differential rows (``tests/differential``) run the real server
+#: against a synthetic LinkedIn origin and call ``get_feed`` or
+#: ``get_person_profile`` as a probe of the daemon, the browser and the
+#: session. That origin serves the pages upstream's tools read and none of the
+#: API endpoints ours call, so with the overlay on every row fails on an HTTP
+#: 404 that says nothing about what the row measures. The rows are about the
+#: layer beneath the tools, which this fork does not change, so they run with
+#: upstream's tools. The root ``conftest.py`` sets this for those runs.
+#:
+#: **The name must not start with ``LINKEDIN``.** The differential harness
+#: builds each server's environment from its own minus every name with that
+#: prefix, so a switch called ``LINKEDIN_MCP_...`` is set in the test process
+#: and never arrives. Measured: the first version of this switch was named
+#: that way and every row still failed. Nothing sets this in production.
+UPSTREAM_TOOLS_ENV = "VOYAGER_OVERLAY_DISABLED"
 
 
 class OverlayError(RuntimeError):
@@ -138,7 +158,7 @@ def _remove_one(mcp: FastMCP, name: str) -> None:
     provider = getattr(mcp, "local_provider", None)
     remove = getattr(provider, "remove_tool", None) if provider else None
     if remove is None:
-        remove = mcp.remove_tool
+        remove = getattr(mcp, "remove_tool")
     remove(name)
 
 
@@ -163,6 +183,12 @@ def install_voyager_overlay(
     mcp: FastMCP, *, tool_timeout: float = DEFAULT_TOOL_TIMEOUT_SECONDS
 ) -> None:
     """Remove the tools we supersede, then register ours in their place."""
+    if os.environ.get(UPSTREAM_TOOLS_ENV) == "1":
+        logger.warning(
+            "%s=1: serving upstream's page-reading tools; the API overlay is off",
+            UPSTREAM_TOOLS_ENV,
+        )
+        return
     _remove_superseded(mcp)
 
     @mcp.tool(
@@ -173,13 +199,11 @@ def install_voyager_overlay(
         # is marked read.
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"messaging", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_conversations(
         ctx: Context,
         cursor: str | None = None,
         category: str | None = None,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Read ONE page of conversations (up to 25) from LinkedIn's messaging API.
@@ -234,9 +258,7 @@ def install_voyager_overlay(
             so an empty page that reaches you really is an empty result.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_conversations"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_conversations")
             logger.info("Reading conversations page (cursor=%s)", bool(cursor))
 
             await ctx.report_progress(
@@ -267,14 +289,12 @@ def install_voyager_overlay(
         # accepted, ignored or withdrawn -- this only reports what is pending.
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"invitations", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_invitations(
         ctx: Context,
         direction: str = "received",
         start: int = 0,
         count: int = 50,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Read ONE page of the invitation manager from LinkedIn's own API.
@@ -315,9 +335,7 @@ def install_voyager_overlay(
             only honest count is how many rows actually parsed.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_invitations"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_invitations")
             logger.info("Reading %s invitations (start=%s)", direction, start)
 
             await ctx.report_progress(
@@ -349,14 +367,12 @@ def install_voyager_overlay(
         # upstream tool of this name it does not mark anything read.
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"messaging", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_conversation(
         ctx: Context,
         linkedin_username: str | None = None,
         thread_id: str | None = None,
         index: int = 0,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Read the recent messages of ONE LinkedIn messaging thread from the API.
@@ -405,15 +421,13 @@ def install_voyager_overlay(
         """
         if not linkedin_username and not thread_id:
             raise_tool_error(
-                LinkedInScraperException(
+                LinkedInOperationError(
                     "Provide at least one of linkedin_username or thread_id"
                 ),
                 "get_conversation",
             )
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_conversation"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_conversation")
             logger.info(
                 "Reading conversation: username=%s, thread=%s, index=%d",
                 linkedin_username,
@@ -448,14 +462,12 @@ def install_voyager_overlay(
         # sends, so it carries send_message's hints rather than theirs.
         annotations={"destructiveHint": True, "openWorldHint": True},
         tags={"messaging", "actions"},
-        exclude_args=["extractor"],
     )
     async def reply_to_thread(
         thread_id: str,
         message: str,
         confirm_send: bool,
         ctx: Context,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Reply inside an EXISTING LinkedIn messaging thread, and nowhere else.
@@ -505,9 +517,7 @@ def install_voyager_overlay(
             refusal = refuse_an_invalid_reply(thread_id, message)
             if refusal is not None:
                 return refusal
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="reply_to_thread"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="reply_to_thread")
             logger.info(
                 "Replying to thread %s (confirm_send=%s)", thread_id, confirm_send
             )
@@ -539,14 +549,12 @@ def install_voyager_overlay(
         # result is opened, so no thread is marked read.
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"messaging", "scraping"},
-        exclude_args=["extractor"],
     )
     async def search_conversations(
         keywords: str,
         ctx: Context,
         limit: int = 20,
         cursor: str | None = None,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Find conversations by keyword, ONE page (up to 20) from the messaging API.
@@ -579,9 +587,7 @@ def install_voyager_overlay(
             page; zero_reason then says "no-matches" or "after-cursor".
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="search_conversations"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="search_conversations")
             logger.info("Searching messages (cursor=%s)", bool(cursor))
 
             await ctx.report_progress(
@@ -607,7 +613,6 @@ def install_voyager_overlay(
         title="Send Message",
         annotations={"destructiveHint": True, "openWorldHint": True},
         tags={"messaging", "actions"},
-        exclude_args=["extractor"],
     )
     async def send_message(
         linkedin_username: str,
@@ -615,7 +620,6 @@ def install_voyager_overlay(
         confirm_send: bool,
         ctx: Context,
         profile_urn: str | None = None,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Send a message to a person through LinkedIn's messaging API.
@@ -660,9 +664,7 @@ def install_voyager_overlay(
             refusal = refuse_an_invalid_person_message(linkedin_username, message)
             if refusal is not None:
                 return refusal
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="send_message"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="send_message")
             logger.info(
                 "Messaging %s (confirm_send=%s)", linkedin_username, confirm_send
             )
@@ -696,7 +698,6 @@ def install_voyager_overlay(
         # Reads the profile API. No profile page is loaded.
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"person", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_person_profile(
         linkedin_username: str,
@@ -704,7 +705,6 @@ def install_voyager_overlay(
         sections: str | None = None,
         max_scrolls: int | None = None,
         compare_to_me: bool = True,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Read a person's WHOLE profile from LinkedIn's API, and what you share.
@@ -781,9 +781,7 @@ def install_voyager_overlay(
             get_person_posts to page through them.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_person_profile"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_person_profile")
             logger.info("Reading person %s", linkedin_username)
 
             await ctx.report_progress(progress=0, total=100, message="Reading profile")
@@ -823,14 +821,12 @@ def install_voyager_overlay(
         title="Get Mutual Connections",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"person", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_mutual_connections(
         linkedin_username: str,
         ctx: Context,
         start: int = 0,
         count: int = 40,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Read ONE page of the connections you share with a person.
@@ -858,7 +854,7 @@ def install_voyager_overlay(
             when there are more, and None for an empty page.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
+            extractor = await get_ready_extractor(
                 ctx, tool_name="get_mutual_connections"
             )
             logger.info("Reading mutual connections (start=%s)", start)
@@ -888,14 +884,12 @@ def install_voyager_overlay(
         title="Get Person Posts",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"person", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_person_posts(
         linkedin_username: str,
         ctx: Context,
         count: int = 10,
         cursor: str | None = None,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Read ONE page of a person's posts and reposts from LinkedIn's API.
@@ -929,9 +923,7 @@ def install_voyager_overlay(
             False for a full page, and None for an empty page.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_person_posts"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_person_posts")
             logger.info("Reading posts (cursor=%s)", bool(cursor))
 
             await ctx.report_progress(progress=0, total=100, message="Reading posts")
@@ -957,7 +949,6 @@ def install_voyager_overlay(
         title="Search People",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"person", "search"},
-        exclude_args=["extractor"],
     )
     async def search_people(
         keywords: str,
@@ -967,7 +958,6 @@ def install_voyager_overlay(
         current_company: str | None = None,
         start: int = 0,
         count: int = 10,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Search for people on LinkedIn, ONE page from LinkedIn's search API.
@@ -1011,9 +1001,7 @@ def install_voyager_overlay(
             concluded from it.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="search_people"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="search_people")
             logger.info(
                 "Searching people: keywords='%s', location='%s', network=%s, "
                 "current_company='%s', start=%s",
@@ -1060,7 +1048,6 @@ def install_voyager_overlay(
         title="Get Profile Views",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"person", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_profile_views(
         ctx: Context,
@@ -1071,7 +1058,6 @@ def install_voyager_overlay(
         industry_id: str | None = None,
         geo_id: str | None = None,
         sort: str = "recent",
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Read who viewed YOUR profile: every viewer LinkedIn lists, newest first.
@@ -1148,9 +1134,7 @@ def install_voyager_overlay(
             Recruiter views are a separate page: use get_recruiter_views.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_profile_views"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_profile_views")
             logger.info("Reading profile views")
 
             await ctx.report_progress(
@@ -1184,12 +1168,10 @@ def install_voyager_overlay(
         title="Get Recruiter Views",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"person", "jobs", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_recruiter_views(
         ctx: Context,
         days: int | None = None,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Read which recruiters viewed YOUR profile, by company, newest first.
@@ -1227,9 +1209,7 @@ def install_voyager_overlay(
             company mean several recruiters or visits.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_recruiter_views"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_recruiter_views")
             logger.info("Reading recruiter views")
 
             await ctx.report_progress(
@@ -1255,14 +1235,12 @@ def install_voyager_overlay(
         title="Connect With Person",
         annotations={"destructiveHint": True, "openWorldHint": True},
         tags={"person", "actions"},
-        exclude_args=["extractor"],
     )
     async def connect_with_person(
         linkedin_username: str,
         ctx: Context,
         note: str | None = None,
         dry_run: bool = False,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Send a LinkedIn connection request or accept an incoming one.
@@ -1309,9 +1287,7 @@ def install_voyager_overlay(
             answer in response_excerpt.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="connect_with_person"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="connect_with_person")
             logger.info(
                 "Connecting with person: %s (note=%s, dry_run=%s)",
                 linkedin_username,
@@ -1346,7 +1322,6 @@ def install_voyager_overlay(
         # member's job-search history.
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"job", "search"},
-        exclude_args=["extractor"],
     )
     async def search_jobs(
         keywords: str,
@@ -1360,7 +1335,6 @@ def install_voyager_overlay(
         easy_apply: bool = False,
         sort_by: str | None = None,
         company_id: str | None = None,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Search for jobs on LinkedIn, from LinkedIn's job-search API.
@@ -1408,9 +1382,7 @@ def install_voyager_overlay(
             complete is True when the last page was reached within max_pages.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="search_jobs"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="search_jobs")
             logger.info(
                 "Searching jobs: keywords='%s', location='%s', max_pages=%d",
                 keywords,
@@ -1452,12 +1424,10 @@ def install_voyager_overlay(
         title="Get Job Details",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"job", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_job_details(
         job_id: str,
         ctx: Context,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Get one job posting, whole, from LinkedIn's API.
@@ -1480,9 +1450,7 @@ def install_voyager_overlay(
             than its poster, so treat them as unknown rather than as none.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_job_details"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_job_details")
             logger.info("Reading job: %s", job_id)
 
             await ctx.report_progress(progress=0, total=100, message="Reading job")
@@ -1506,13 +1474,11 @@ def install_voyager_overlay(
         title="Get Saved Jobs",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"job", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_saved_jobs(
         ctx: Context,
         max_pages: Annotated[int, Field(ge=1, le=10)] = 3,
         stage: str = "saved",
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         List the jobs in your LinkedIn jobs tracker, by stage.
@@ -1542,9 +1508,7 @@ def install_voyager_overlay(
             search_jobs.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_saved_jobs"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_saved_jobs")
             logger.info("Reading jobs tracker (stage=%s)", stage)
 
             await ctx.report_progress(
@@ -1570,13 +1534,11 @@ def install_voyager_overlay(
         title="Get My Profile",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"person", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_my_profile(
         ctx: Context,
         sections: str | None = None,
         max_scrolls: Annotated[int, Field(ge=1, le=50)] | None = None,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Read YOUR OWN LinkedIn profile, whole, from LinkedIn's API.
@@ -1602,9 +1564,7 @@ def install_voyager_overlay(
             connections or common_ground for your own profile.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_my_profile"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_my_profile")
             logger.info("Reading own profile")
 
             await ctx.report_progress(progress=0, total=100, message="Reading profile")
@@ -1648,13 +1608,11 @@ def install_voyager_overlay(
         title="Get Company Profile",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"company", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_company_profile(
         company_name: str,
         ctx: Context,
         sections: str | None = None,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Get a company's LinkedIn profile from LinkedIn's API.
@@ -1682,9 +1640,7 @@ def install_voyager_overlay(
                 get_company_posts and search_jobs return them.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_company_profile"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_company_profile")
             await ctx.report_progress(progress=0, total=100, message="Reading")
 
             result = await extractor.company_record(company_name)
@@ -1726,14 +1682,12 @@ def install_voyager_overlay(
         title="Get Company Posts",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"company", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_company_posts(
         company_name: str,
         ctx: Context,
         count: int = 10,
         start: int = 0,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Get ONE page of a company's posts from LinkedIn's API.
@@ -1753,9 +1707,7 @@ def install_voyager_overlay(
             repost_header and the original's author and text.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_company_posts"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_company_posts")
             await ctx.report_progress(progress=0, total=100, message="Reading")
 
             result = await extractor.company_posts(
@@ -1779,7 +1731,6 @@ def install_voyager_overlay(
         title="Get Company Employees",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"company", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_company_employees(
         company_name: str,
@@ -1788,7 +1739,6 @@ def install_voyager_overlay(
         start: int = 0,
         count: int = 12,
         schools: list[str] | None = None,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         List people at a company and its demographics, from LinkedIn's API.
@@ -1825,7 +1775,7 @@ def install_voyager_overlay(
             people there) and at_end.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
+            extractor = await get_ready_extractor(
                 ctx, tool_name="get_company_employees"
             )
             await ctx.report_progress(progress=0, total=100, message="Reading")
@@ -1855,14 +1805,12 @@ def install_voyager_overlay(
         title="Search Companies",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"company", "search"},
-        exclude_args=["extractor"],
     )
     async def search_companies(
         keywords: str,
         ctx: Context,
         start: int = 0,
         count: int = 10,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Search for companies on LinkedIn, ONE page from LinkedIn's search API.
@@ -1883,9 +1831,7 @@ def install_voyager_overlay(
             (industry and place), followers_text, summary and url.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="search_companies"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="search_companies")
             await ctx.report_progress(progress=0, total=100, message="Reading")
 
             result = await extractor.find_companies(keywords, start=start, count=count)
@@ -1907,14 +1853,12 @@ def install_voyager_overlay(
         title="Search Posts",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"post", "search"},
-        exclude_args=["extractor"],
     )
     async def search_posts(
         keywords: str,
         ctx: Context,
         date_posted: str | None = None,
         max_pages: Annotated[int, Field(ge=1, le=10)] = 3,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Search LinkedIn posts globally by keyword, through LinkedIn's own
@@ -1944,9 +1888,7 @@ def install_voyager_overlay(
             instead.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="search_posts"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="search_posts")
             await ctx.report_progress(progress=0, total=100, message="Reading")
 
             try:
@@ -1973,12 +1915,10 @@ def install_voyager_overlay(
         title="Get Feed",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"feed", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_feed(
         ctx: Context,
         num_posts: Annotated[int, Field(ge=1, le=50)] = 10,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Get posts from your LinkedIn home feed, from LinkedIn's API.
@@ -1998,9 +1938,7 @@ def install_voyager_overlay(
             ("Luan Lam likes this").
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_feed"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_feed")
             await ctx.report_progress(progress=0, total=100, message="Reading")
 
             result = await extractor.home_feed(num_posts=num_posts)
@@ -2022,12 +1960,10 @@ def install_voyager_overlay(
         title="Get Sidebar Profiles",
         annotations={"readOnlyHint": True, "openWorldHint": True},
         tags={"person", "scraping"},
-        exclude_args=["extractor"],
     )
     async def get_sidebar_profiles(
         linkedin_username: str,
         ctx: Context,
-        extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
         Get the profiles LinkedIn suggests beside a person's profile.
@@ -2046,9 +1982,7 @@ def install_voyager_overlay(
             are included.
         """
         try:
-            extractor = extractor or await get_ready_extractor(
-                ctx, tool_name="get_sidebar_profiles"
-            )
+            extractor = await get_ready_extractor(ctx, tool_name="get_sidebar_profiles")
             await ctx.report_progress(progress=0, total=100, message="Reading")
 
             result = await extractor.sidebar_people(linkedin_username)

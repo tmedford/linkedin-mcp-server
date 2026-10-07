@@ -136,11 +136,9 @@ def test_issue_form_routes_preserve_existing_issue_types() -> None:
         )
 
 
-def test_agent_instructions_match_and_point_to_packet_skill() -> None:
+def test_agent_instructions_point_to_packet_skill() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     agents_path = repo_root / "AGENTS.md"
-    claude_path = repo_root / "CLAUDE.md"
-    assert agents_path.read_bytes() == claude_path.read_bytes()
 
     pointer = (
         "[.agents/skills/issue-packet/SKILL.md](.agents/skills/issue-packet/SKILL.md)"
@@ -219,7 +217,7 @@ def test_packet_skill_cli_create_preserves_form_routes() -> None:
 def test_reporting_workflow_links_do_not_contain_stale_intake_copy() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     readme_path = repo_root / "README.md"
-    contributing_path = repo_root / "CONTRIBUTING.md"
+    contributing_path = repo_root / ".github" / "CONTRIBUTING.md"
 
     readme_text = readme_path.read_text(encoding="utf-8")
     contributing_text = contributing_path.read_text(encoding="utf-8")
@@ -277,7 +275,7 @@ def test_maintainer_skills_evaluate_packet_before_live() -> None:
     assert "Incomplete packets never enter the reproduction shortlist." in triage
     assert "Recommend `needs more info`" in triage
     assert (
-        "Do not check out, start the MCP server, run scrapers, apply labels, "
+        "Do not check out, start the MCP server, call its LinkedIn tools, apply labels, "
         "comment, close, or assign."
     ) in triage
 

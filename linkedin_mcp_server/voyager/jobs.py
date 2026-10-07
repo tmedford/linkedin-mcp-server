@@ -45,7 +45,7 @@ from urllib.parse import quote
 
 from linkedin_mcp_server.core.exceptions import (
     AuthenticationError,
-    LinkedInScraperException,
+    LinkedInOperationError,
     RateLimitError,
 )
 from linkedin_mcp_server.voyager.people_search import VoyagerPeopleSearch
@@ -72,7 +72,7 @@ _WORKPLACE = {"1": "on_site", "2": "remote", "3": "hybrid"}
 
 def _filters() -> dict[str, tuple[str, dict[str, str]]]:
     """Each upstream argument -> (LinkedIn's filter name, name -> code)."""
-    from linkedin_mcp_server.scraping.search_urls import (
+    from linkedin_mcp_server.linkedin.search_urls import (
         EXPERIENCE_LEVEL_MAP,
         JOB_DATE_POSTED_MAP,
         JOB_TYPE_MAP,
@@ -105,9 +105,7 @@ def selected_filters(**arguments: Any) -> str:
         # Only some filters take several values; date and sort take one.
         values = [v.strip() for v in str(value).split(",") if v.strip()]
         if name in ("timePostedRange", "sortBy") and len(values) > 1:
-            raise LinkedInScraperException(
-                f"{argument} takes one value, got {value!r}."
-            )
+            raise LinkedInOperationError(f"{argument} takes one value, got {value!r}.")
         codes = []
         for item in values:
             if item in mapping:
@@ -115,7 +113,7 @@ def selected_filters(**arguments: Any) -> str:
             elif item in mapping.values():
                 codes.append(item)
             else:
-                raise LinkedInScraperException(
+                raise LinkedInOperationError(
                     f"{argument} was {item!r}. Pass one of: {', '.join(mapping)}."
                 )
         parts.append(f"{name}:List({','.join(codes)})")
@@ -127,7 +125,7 @@ def selected_filters(**arguments: Any) -> str:
         # " " and "," are truthy and hold no id: without this the filter
         # would be sent as an empty list and the search would run unfiltered.
         if not ids or not all(c.isdigit() for c in ids):
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"company_id was {company!r}. Pass LinkedIn's numeric company "
                 "id (get_recruiter_views and search_jobs report it), not a name."
             )
@@ -336,17 +334,17 @@ class VoyagerJobs(VoyagerPeopleSearch):
         company_id: str | None = None,
     ) -> dict[str, Any]:
         """Read up to ``max_pages`` pages of 25 jobs matching a search."""
-        from linkedin_mcp_server.scraping.search_urls import build_job_search_url
+        from linkedin_mcp_server.linkedin.search_urls import build_job_search_url
 
         if not keywords.strip() and not company_id:
             # Measured: a search on a company alone answers (494 roles for
             # one company with no keywords), so words are optional then.
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "keywords was blank. Pass the words to search for, or a "
                 "company_id to list that company's jobs."
             )
         if not 1 <= max_pages <= 10:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"max_pages must be between 1 and 10, got {max_pages}."
             )
         filters = selected_filters(
@@ -433,14 +431,14 @@ class VoyagerJobs(VoyagerPeopleSearch):
         """One job posting, whole."""
         job_id = str(job_id).strip()
         if not job_id.isdigit():
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"job_id was {job_id!r}. Pass the numeric id from a job URL "
                 "(/jobs/view/<id>/) or from search_jobs."
             )
         payload = await self._fetch(_POSTING.format(job_id=job_id))
         job = parse_posting(payload)
         if job is None:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} answered for job {job_id} with no "
                 "posting in it."
             )
@@ -606,7 +604,7 @@ class VoyagerSavedJobs(VoyagerJobs):
         finally:
             page.remove_listener("request", _capture)
         if not seen:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 "LinkedIn's feed sent no route prefetch to copy headers from, so "
                 "the jobs tracker cannot be asked for. The page did not load, or "
                 "LinkedIn changed how it loads routes."
@@ -636,7 +634,7 @@ class VoyagerSavedJobs(VoyagerJobs):
             )._page_headers()
         except (AuthenticationError, RateLimitError):
             raise
-        except LinkedInScraperException as exc:
+        except LinkedInOperationError as exc:
             logger.info("Saved-job contacts unavailable: %s", exc)
             return None
 
@@ -690,7 +688,7 @@ class VoyagerSavedJobs(VoyagerJobs):
         from linkedin_mcp_server.voyager.profile_views import _POST_STREAM_JS
 
         if stage not in STAGES:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"stage was {stage!r}. Pass one of: {', '.join(STAGES)}."
             )
         answer = await self._session.page.evaluate(
@@ -722,7 +720,7 @@ class VoyagerSavedJobs(VoyagerJobs):
         if status == 429:
             raise RateLimitError(f"Voyager {self.surface} rate limited: HTTP {status}")
         if status != 200:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} request failed: HTTP {status}"
             )
         text = answer.get("text") or ""
@@ -730,12 +728,12 @@ class VoyagerSavedJobs(VoyagerJobs):
         # Asked first: an answer that is not the tracker at all can still
         # embed a job id, and that is not the tracker changing shape.
         if "opportunity-tracker" not in text:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} answered without the jobs tracker in "
                 "it. Refusing to report that as an empty stage."
             )
         if not jobs and _RECORD_START in text:
-            raise LinkedInScraperException(
+            raise LinkedInOperationError(
                 f"Voyager {self.surface} changed shape: the tracker names jobs "
                 "but none parsed. Refusing to report that as an empty stage."
             )

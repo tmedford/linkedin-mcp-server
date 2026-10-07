@@ -16,7 +16,7 @@ RUN uv sync --frozen --no-install-project --no-dev --no-editable --compile-bytec
 # project and nothing else.
 COPY . .
 RUN uv pip install --python /app/.venv/bin/python --no-deps --compile-bytecode \
-    --build-constraints build-constraints.txt .
+    --build-constraints requirements/build-constraints.txt .
 
 
 # -- Stage 2: Production runtime --
@@ -24,8 +24,8 @@ FROM python:3.13.13-slim-bookworm@sha256:355bfa66770995d7e9a0da4b3473b44d0cb451f
 
 # The official MCP Registry proves ownership of an image by pulling its config
 # and comparing Config.Labels["io.modelcontextprotocol.server.name"] to the name
-# in server.json. A LABEL instruction is what writes that; a manifest annotation
-# is a different surface it never reads. It has to be on the runtime stage,
+# in .github/mcp/server.json. A LABEL instruction is what writes that; a manifest
+# annotation is a different surface it never reads. It has to be on the runtime stage,
 # because the builder's labels never ship.
 LABEL io.modelcontextprotocol.server.name="io.github.stickerdaniel/linkedin-mcp-server"
 
@@ -52,7 +52,7 @@ RUN patchright install-deps chromium && \
 # host directory's ownership and are prepared by the documented login command.
 RUN install -d -m 0700 -o pwuser -g pwuser /home/pwuser/.linkedin-mcp
 
-COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/linkedin-mcp-entrypoint
+COPY --chmod=755 scripts/docker-entrypoint.sh /usr/local/bin/linkedin-mcp-entrypoint
 
 # A full headed browser on a virtual display. No window reaches the host, and
 # HEADLESS stays overridable for anyone who deliberately wants Chromium's real

@@ -2,3 +2,6 @@ mcp-server-linkedin
 Copyright 2025-2026 Daniel Sticker
 
 Licensed under the Apache License, Version 2.0.
+
+The tools under linkedin_mcp_server/voyager/ and their tests are
+Copyright 2026 Taylor Medford, licensed under the same terms.

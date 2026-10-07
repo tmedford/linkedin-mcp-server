@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from linkedin_mcp_server.core.exceptions import LinkedInScraperException
+from linkedin_mcp_server.core.exceptions import LinkedInOperationError
 from linkedin_mcp_server.voyager import profile_views as views_module
 from linkedin_mcp_server.voyager.profile_views import (
     VoyagerProfileViews,
@@ -299,7 +299,7 @@ async def test_it_says_it_is_not_every_viewer():
 async def test_an_answer_without_the_card_is_refused_rather_than_read_as_no_viewers():
     reader, _ = _reader(_payload(card=False))
 
-    with pytest.raises(LinkedInScraperException, match="changed shape"):
+    with pytest.raises(LinkedInOperationError, match="changed shape"):
         await reader.get_profile_views(full=False)
 
 
@@ -475,7 +475,7 @@ async def test_a_row_older_than_the_period_means_the_period_was_ignored():
     [
         (401, "AuthenticationError"),
         (429, "RateLimitError"),
-        (500, "LinkedInScraperException"),
+        (500, "LinkedInOperationError"),
     ],
 )
 async def test_a_refused_list_request_raises_as_what_it_is(status, error):
@@ -490,7 +490,7 @@ async def test_a_refused_list_request_raises_as_what_it_is(status, error):
 async def test_a_page_that_sends_nothing_to_copy_headers_from_is_an_error():
     reader, _ = _reader(_payload(), [_row("p", "P Q", "Viewed 1d ago")], emits=False)
 
-    with pytest.raises(LinkedInScraperException, match="no component request"):
+    with pytest.raises(LinkedInOperationError, match="no component request"):
         await reader.get_profile_views()
 
     assert getattr(reader, "test_page").windows == []
@@ -506,7 +506,7 @@ async def test_a_page_that_sends_nothing_to_copy_headers_from_is_an_error():
 async def test_an_unusable_period_is_refused_before_any_request(arguments, message):
     reader, requests = _reader(_payload())
 
-    with pytest.raises(LinkedInScraperException, match=message):
+    with pytest.raises(LinkedInOperationError, match=message):
         await reader.get_profile_views(**arguments)
 
     assert requests == []
@@ -582,7 +582,7 @@ async def test_a_filter_that_matches_nobody_is_an_empty_list_not_the_highlights(
 async def test_an_unusable_filter_is_refused_before_any_request(arguments, message):
     reader, requests = _reader(_payload())
 
-    with pytest.raises(LinkedInScraperException, match=message):
+    with pytest.raises(LinkedInOperationError, match=message):
         await reader.get_profile_views(**arguments)
 
     assert requests == []
@@ -645,7 +645,7 @@ async def test_the_default_order_is_newest_first():
 async def test_an_unusable_sort_is_refused_before_any_request(arguments, message):
     reader, requests = _reader(_payload())
 
-    with pytest.raises(LinkedInScraperException, match=message):
+    with pytest.raises(LinkedInOperationError, match=message):
         await reader.get_profile_views(**arguments)
 
     assert requests == []

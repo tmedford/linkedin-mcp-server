@@ -14,18 +14,18 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from patchright.async_api import BrowserType, async_playwright
 
-from linkedin_mcp_server.scraping.message_sender import (
+from linkedin_mcp_server.linkedin.message_sender import (
     MessageSender,
     _MESSAGE_COMPOSER_STATE_JS,
     _PROFILE_MESSAGE_TARGET_JS,
     _ProfileMessageTarget,
 )
-from linkedin_mcp_server.scraping.navigation import PageNavigator
-from linkedin_mcp_server.scraping.session import ScrapingSession
+from linkedin_mcp_server.linkedin.navigation import PageNavigator
+from linkedin_mcp_server.linkedin.session import PageSession
 
 
 def _sender(page) -> MessageSender:
-    session = ScrapingSession(page)
+    session = PageSession(page)
     return MessageSender(session, PageNavigator(session))
 
 
@@ -113,14 +113,16 @@ async def test_dom_page_launch_failure_skips_locally(monkeypatch):
         await fixture.__anext__()
 
 
-def _composer(*, identity: str, buttons: str = "", extra: str = "") -> str:
+def _composer(
+    *, identity: str, buttons: str = "", extra: str = "", editor: str = ""
+) -> str:
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
       <main>
         <section role="dialog">
           {identity}
           <form>
             <div role="textbox" contenteditable="true"
-                 style="display:block;width:200px;height:30px"></div>
+                 style="display:block;width:200px;height:30px">{editor}</div>
             {buttons}
           </form>
         </section>
@@ -216,6 +218,7 @@ class TestMessageSurfaceDom:
             "active": False,
             "empty": False,
             "submitCount": 0,
+            "enterToSend": False,
             "submitUsable": False,
         }
 
@@ -244,6 +247,100 @@ class TestProfileMessageTargetDom:
 
         assert result["displayName"] == "Test User"
         assert result["composeHrefs"] == ["/messaging/compose/?recipient=ACoAAB"]
+
+    # The shape measured on live profiles in September 2026 (#986): the top
+    # card sits in a headingless wrapper section, the name is an h2, the card
+    # carries a hidden duplicate of its action bar, and the global nav and
+    # the sidebar hold compose links of their own.
+    @staticmethod
+    def _nested_page(card: str) -> str:
+        return f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
+          <header>
+            <a href="/messaging/compose/?recipient=ACoAAB">Message</a>
+          </header>
+          <main><div><div>
+            <section><div><div>
+              <section>{card}</section>
+              <section><h2>About</h2></section>
+            </div></div></section>
+            <aside><section>
+              <h2>People you may know</h2>
+              <a href="/messaging/compose/?recipient=OTHER">Message</a>
+            </section></aside>
+          </div></div></main>
+        </body></html>
+        """
+
+    async def test_resolves_nested_top_card_with_h2_name(self, dom_page):
+        await _set_composer_content(
+            dom_page,
+            self._nested_page(
+                """<div><a href="/in/testuser/"><h2>Test User</h2></a></div>
+                <div><a href="/messaging/compose/?recipient=ACoAAB">Message</a></div>
+                <div style="display:none">
+                  <a href="/messaging/compose/?recipient=ACoAAB">Message</a>
+                </div>"""
+            ),
+        )
+
+        result = await dom_page.evaluate(_PROFILE_MESSAGE_TARGET_JS)
+
+        assert result["status"] == "resolved"
+        assert result["displayName"] == "Test User"
+        assert result["composeHrefs"] == ["/messaging/compose/?recipient=ACoAAB"]
+
+    async def test_nested_top_card_without_message_is_unavailable(self, dom_page):
+        await _set_composer_content(
+            dom_page, self._nested_page("<h2>Test User</h2><button>Follow</button>")
+        )
+
+        result = await dom_page.evaluate(_PROFILE_MESSAGE_TARGET_JS)
+
+        assert result["status"] == "unavailable"
+
+    async def test_top_card_without_its_name_yet_is_unresolved(self, dom_page):
+        await _set_composer_content(
+            dom_page,
+            self._nested_page(
+                '<div><a href="/messaging/compose/?recipient=ACoAAB">Message</a></div>'
+            ),
+        )
+
+        result = await dom_page.evaluate(_PROFILE_MESSAGE_TARGET_JS)
+
+        assert result == {"status": "unresolved"}
+
+    async def test_sidebar_is_never_taken_for_an_unrendered_top_card(self, dom_page):
+        await _set_composer_content(
+            dom_page,
+            """<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
+              <main><div><div>
+                <div></div>
+                <aside><section>
+                  <h2>People you may know</h2>
+                  <a href="/messaging/compose/?recipient=OTHER">Message</a>
+                </section></aside>
+              </div></div></main>
+            </body></html>
+            """,
+        )
+
+        result = await dom_page.evaluate(_PROFILE_MESSAGE_TARGET_JS)
+
+        assert result == {"status": "unresolved"}
+
+    async def test_nested_top_card_with_two_headings_fails_closed(self, dom_page):
+        await _set_composer_content(
+            dom_page,
+            self._nested_page(
+                """<h2>Test User</h2><h3>Other User</h3>
+                <a href="/messaging/compose/?recipient=ACoAAB">Message</a>"""
+            ),
+        )
+
+        result = await dom_page.evaluate(_PROFILE_MESSAGE_TARGET_JS)
+
+        assert result == {"status": "unresolved"}
 
 
 class TestMessageComposerDom:
@@ -848,3 +945,199 @@ class TestMessageComposerDom:
             is None
         )
         assert await dom_page.evaluate("document.body.dataset.foreignKey") is None
+
+
+# The empty LinkedIn composer holds one empty paragraph, `<p><br></p>`
+# (measured live in a recipient-less probe, September 2026). Inserting a
+# multi-line message there with `insertText` gives `<p>` per line and
+# `<p><br></p>` per empty line, as it did live; the shapes below are what this
+# Chromium produces from that start, not copies of LinkedIn markup.
+_EMPTY_PARAGRAPH = "<p><br></p>"
+
+_COUNTING_BUTTON = (
+    '<button type="submit" onclick="event.preventDefault();'
+    "document.body.dataset.clicks = Number(document.body.dataset.clicks || 0) + 1"
+    '">Send</button>'
+)
+
+
+class TestMultiLineComposerDom:
+    @staticmethod
+    async def _open(page):
+        await _set_composer_content(
+            page,
+            _composer(
+                identity='<a href="https://www.linkedin.com/in/testuser/">Test</a>',
+                buttons=_COUNTING_BUTTON,
+                editor=_EMPTY_PARAGRAPH,
+            ),
+        )
+        await page.evaluate(
+            """() => {
+                const count = name => {
+                    document.body.dataset[name] =
+                        Number(document.body.dataset[name] || 0) + 1;
+                };
+                document.querySelector('form').addEventListener('submit', event => {
+                    event.preventDefault();
+                    count('submits');
+                });
+                document.querySelector('[role="textbox"]').addEventListener(
+                    'keydown', event => { if (event.key === 'Enter') count('enters'); }
+                );
+            }"""
+        )
+        sender = _sender(page)
+        owner = await sender._resolve_message_owner(
+            _message_target(), expected_route=page.url
+        )
+        assert owner is not None
+        return sender, owner
+
+    @staticmethod
+    async def _counters(page) -> dict:
+        return await page.evaluate(
+            """() => ({
+                clicks: document.body.dataset.clicks || '0',
+                submits: document.body.dataset.submits || '0',
+                enters: document.body.dataset.enters || '0',
+            })"""
+        )
+
+    @staticmethod
+    async def _editor_html(page) -> str:
+        return await page.locator('[role="textbox"]').evaluate("e => e.innerHTML")
+
+    async def test_two_lines_are_written_and_clicked_once(self, dom_page):
+        message = "Line one\nLine two"
+        sender, owner = await self._open(dom_page)
+
+        written = await sender._write_verified_message(
+            message, target=_message_target(), owner=owner
+        )
+        ready = await sender._wait_for_verified_submit(
+            message, target=_message_target(), owner=owner
+        )
+        before = await self._counters(dom_page)
+        html = await self._editor_html(dom_page)
+        submitted = await sender._submit_verified_message(
+            message, target=_message_target(), owner=owner
+        )
+        after = await self._counters(dom_page)
+        await sender._dispose_message_owner(owner)
+
+        assert html == "<p>Line one</p><p>Line two</p>"
+        assert (written, ready, submitted) == ("written", True, "clicked")
+        assert before == {"clicks": "0", "submits": "0", "enters": "0"}
+        assert after == {"clicks": "1", "submits": "0", "enters": "0"}
+
+    @pytest.mark.parametrize("message", ["a\n\nb", "a\n\n\nb"])
+    async def test_empty_lines_are_written_and_clicked(self, dom_page, message):
+        sender, owner = await self._open(dom_page)
+
+        written = await sender._write_verified_message(
+            message, target=_message_target(), owner=owner
+        )
+        submitted = await sender._submit_verified_message(
+            message, target=_message_target(), owner=owner
+        )
+        await sender._dispose_message_owner(owner)
+
+        assert (written, submitted) == ("written", "clicked")
+        assert (await self._counters(dom_page))["clicks"] == "1"
+
+    async def test_space_stored_as_nbsp_still_belongs_to_the_message(self, dom_page):
+        message = "line \nnext"
+        sender, owner = await self._open(dom_page)
+
+        written = await sender._write_verified_message(
+            message, target=_message_target(), owner=owner
+        )
+        html = await self._editor_html(dom_page)
+        await sender._dispose_message_owner(owner)
+
+        assert html == "<p>line&nbsp;</p><p>next</p>"
+        assert written == "written"
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            "editor.insertAdjacentHTML('beforeend', '<p>Author draft</p>')",
+            "editor.firstChild.replaceChildren("
+            "Object.assign(document.createElement('span'), {textContent: 'Line one'}))",
+            "editor.innerHTML = '<p>Line one<br>Line two</p>'",
+            "editor.firstChild.replaceWith("
+            "Object.assign(document.createElement('div'), {textContent: 'Line one'}))",
+            "editor.append(document.createComment('note'))",
+            "editor.firstChild.replaceWith('Line one')",
+            "editor.firstChild.setAttribute('dir', 'ltr')",
+        ],
+        ids=[
+            "appended-paragraph",
+            "line-in-span",
+            "br-joined-lines",
+            "root-div",
+            "root-comment",
+            "root-text",
+            "paragraph-attribute",
+        ],
+    )
+    async def test_foreign_content_after_write_is_never_sent_or_cleared(
+        self, dom_page, change
+    ):
+        message = "Line one\nLine two"
+        sender, owner = await self._open(dom_page)
+        written = await sender._write_verified_message(
+            message, target=_message_target(), owner=owner
+        )
+        await dom_page.locator('[role="textbox"]').evaluate(
+            f"editor => {{ {change}; }}"
+        )
+        changed = await self._editor_html(dom_page)
+
+        ready = await sender._wait_for_verified_submit(
+            message, target=_message_target(), owner=owner
+        )
+        submitted = await sender._submit_verified_message(
+            message, target=_message_target(), owner=owner
+        )
+        await sender._cleanup_owned_message(message, owner)
+        await sender._dispose_message_owner(owner)
+
+        assert written == "written"
+        assert (ready, submitted) == (False, "invalid")
+        assert (await self._counters(dom_page))["clicks"] == "0"
+        assert await self._editor_html(dom_page) == changed
+
+    async def test_removed_empty_line_is_never_sent(self, dom_page):
+        message = "a\n\nb"
+        sender, owner = await self._open(dom_page)
+        written = await sender._write_verified_message(
+            message, target=_message_target(), owner=owner
+        )
+        await dom_page.locator('[role="textbox"] p:nth-child(2)').evaluate(
+            "paragraph => paragraph.remove()"
+        )
+
+        submitted = await sender._submit_verified_message(
+            message, target=_message_target(), owner=owner
+        )
+        await sender._dispose_message_owner(owner)
+
+        assert (written, submitted) == ("written", "invalid")
+        assert (await self._counters(dom_page))["clicks"] == "0"
+        assert await self._editor_html(dom_page) == "<p>a</p><p>b</p>"
+
+    async def test_cleanup_empties_an_owned_multi_line_message(self, dom_page):
+        message = "Line one\n\nLine two"
+        sender, owner = await self._open(dom_page)
+        written = await sender._write_verified_message(
+            message, target=_message_target(), owner=owner
+        )
+
+        await sender._cleanup_owned_message(message, owner)
+        await sender._dispose_message_owner(owner)
+
+        assert written == "written"
+        assert await self._editor_html(dom_page) == ""
+        assert (await self._counters(dom_page))["clicks"] == "0"

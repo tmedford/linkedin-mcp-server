@@ -18,17 +18,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       should-release: ${{ steps.check.outputs.should-release }}
       new-version: ${{ steps.check.outputs.new-version }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 2  # Need to compare with previous commit
           persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
 
@@ -55,6 +56,83 @@ jobs:
             echo "should-release=false" >> $GITHUB_OUTPUT
           fi
 
+      # Composed here, before build and publish-pypi, so a CHANGELOG without a
+      # section for this version stops the release while nothing exists yet
+      # that would have to be withdrawn. The previous version is read on its
+      # own and an unreadable parent manifest fails the step. The author of
+      # every pull request the section links is looked up for the credit
+      # line, and a failed lookup fails the step too. An author other than the
+      # owner or a bot whose merged pull requests all sit in this section is
+      # searched for and named as a first contribution.
+      - name: Compose release notes
+        if: steps.check.outputs.should-release == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.new-version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PREVIOUS=$(git show HEAD~1:pyproject.toml | python3 -c \
+            'import sys, tomllib; print(tomllib.load(sys.stdin.buffer)["project"]["version"])')
+          echo "Previous version: $PREVIOUS"
+          git ls-remote --exit-code --tags origin "refs/tags/v$PREVIOUS"
+          PULLS=$(python3 scripts/compose_release_notes.py --list-pull-requests \
+            --changelog docs/CHANGELOG.md \
+            --version "$VERSION" \
+            --repository "$GITHUB_REPOSITORY")
+          : > "$RUNNER_TEMP/pr-authors.txt"
+          for N in $PULLS; do
+            LOGIN=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$N" --jq .user.login)
+            printf '%s %s\n' "$N" "$LOGIN" >> "$RUNNER_TEMP/pr-authors.txt"
+          done
+          python3 -c 'import json, sys; print(json.dumps(dict(line.split() for line in sys.stdin)))' \
+            < "$RUNNER_TEMP/pr-authors.txt" > "$RUNNER_TEMP/pr-authors.json"
+          OWNER=${GITHUB_REPOSITORY%%/*}
+          cut -d' ' -f2 "$RUNNER_TEMP/pr-authors.txt" | sort -u > "$RUNNER_TEMP/authors.txt"
+          : > "$RUNNER_TEMP/first-contributors.txt"
+          # Read on fd 3, so nothing inside the loop can consume the list.
+          while read -r LOGIN <&3; do
+            case "$LOGIN" in *'[bot]') continue ;; esac
+            if printf '%s\n' "$LOGIN" | grep -qixF "$OWNER"; then continue; fi
+            # Search allows 30 requests a minute; stay under it however many
+            # authors a release credits.
+            sleep 2
+            MERGED=$(gh api -X GET search/issues \
+              -f q="repo:$GITHUB_REPOSITORY is:pr is:merged author:$LOGIN" \
+              -f per_page=100 \
+              --jq '[.incomplete_results, .total_count, .items[].number] | map(tostring) | join(" ")')
+            # Only a complete search that finds this release's pull request and
+            # nothing older names a first contribution; a search that timed out
+            # or found nothing leaves the author unmarked.
+            FIRST=$(python3 -c 'import sys; incomplete, total, *merged = sys.argv[1].split(); print(incomplete == "false" and bool(merged) and int(total) <= 100 and set(merged) <= set(sys.argv[2].split()))' \
+              "$MERGED" "$PULLS")
+            if [ "$FIRST" = True ]; then
+              echo "$LOGIN" >> "$RUNNER_TEMP/first-contributors.txt"
+            fi
+          done 3< "$RUNNER_TEMP/authors.txt"
+          python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))' \
+            < "$RUNNER_TEMP/first-contributors.txt" > "$RUNNER_TEMP/first-contributors.json"
+          python3 scripts/compose_release_notes.py \
+            --changelog docs/CHANGELOG.md \
+            --template .github/RELEASE_NOTES_TEMPLATE.md \
+            --fragments-dir changelog.d \
+            --version "$VERSION" \
+            --previous-version "$PREVIOUS" \
+            --repository "$GITHUB_REPOSITORY" \
+            --pr-authors "$RUNNER_TEMP/pr-authors.json" \
+            --first-contributors "$RUNNER_TEMP/first-contributors.json" \
+            --pyproject pyproject.toml \
+            --output RELEASE_NOTES.md
+
+      - name: Upload release notes
+        if: steps.check.outputs.should-release == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes
+          path: RELEASE_NOTES.md
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
   # Builds the distributions without any publishing or administration
   # credentials: the build backend is third-party code and must not run where
   # it could reach the OIDC identity. Its output travels to the publishing job
@@ -66,22 +144,22 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
 
-      # build-constraints.txt pins the build backend to a hashed version, so a
+      # requirements/build-constraints.txt pins the build backend to a hashed version, so a
       # tampered setuptools release cannot slip into the distributions. The
       # requirement in pyproject.toml stays a lower bound, because an exact pin
       # there would be baked into every published sdist.
       - name: Build package distributions
         run: |
-          uv build --no-sources --build-constraint build-constraints.txt --require-hashes
+          uv build --no-sources --build-constraint requirements/build-constraints.txt --require-hashes
           echo "Built package distributions:"
           ls -lh dist/
 
@@ -145,7 +223,7 @@ jobs:
       # version commit and the tag. fetch-depth: 0 brings the existing tags in
       # for the duplicate check below.
       - name: Checkout code
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6 # zizmor: ignore[artipacked]
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
 
@@ -174,7 +252,7 @@ jobs:
           from pathlib import Path
 
           version = sys.argv[1]
-          path = Path("server.json")
+          path = Path(".github/mcp/server.json")
           doc = json.loads(path.read_text(encoding="utf-8"))
 
           doc["version"] = version
@@ -255,7 +333,7 @@ jobs:
           from pathlib import Path
 
           version = sys.argv[1]
-          server = json.loads(Path("server.json").read_text(encoding="utf-8"))
+          server = json.loads(Path(".github/mcp/server.json").read_text(encoding="utf-8"))
           manifest = json.loads(Path("manifest.json").read_text(encoding="utf-8"))
           plugin = json.loads(
               Path(
@@ -330,9 +408,25 @@ jobs:
           PY
           echo "✅ Every versioned file reads $VERSION"
 
+      # Capture before deleting: an unreadable policy must leave protection in place.
+      - name: Read branch protection
+        id: protection
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          STRICT=$(gh api "repos/$GITHUB_REPOSITORY/branches/main/protection" \
+            --jq '.required_status_checks.strict | if type == "boolean" then . else error("strict must be a JSON boolean") end')
+          case "$STRICT" in
+            true|false) ;;
+            *) echo "::error::No boolean strict setting; leaving protection in place."; exit 1 ;;
+          esac
+          printf 'strict=%s\n' "$STRICT" >> "$GITHUB_OUTPUT"
+          printf 'Captured required_status_checks.strict=%s\n' "$STRICT"
+
       - name: Remove branch protection (temporary)
         run: |
-          gh api repos/${{ github.repository }}/branches/main/protection \
+          gh api "repos/$GITHUB_REPOSITORY/branches/main/protection" \
             --method DELETE
         env:
           GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
@@ -342,7 +436,7 @@ jobs:
           set -e
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add manifest.json docker-compose.yml server.json \
+          git add manifest.json docker-compose.yml .github/mcp/server.json \
             plugins/linkedin-mcp-server/.codex-plugin/plugin.json \
             plugins/linkedin-mcp-server/.mcp.json
           if git diff --staged --quiet; then
@@ -353,14 +447,15 @@ jobs:
             echo "✅ Committed version updates"
           fi
 
+      # The separate successful capture survives a failed DELETE or version sync.
       - name: Restore branch protection
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+          STRICT: ${{ steps.protection.outputs.strict }}
           PAYLOAD: >-
             {
               "required_status_checks": {
-                "strict": true,
                 "checks": [
                   {"context": "lint-and-check", "app_id": 15368},
                   {"context": "test", "app_id": 15368},
@@ -376,7 +471,25 @@ jobs:
               "restrictions": null
             }
         run: |
-          echo "$PAYLOAD" | gh api repos/${{ github.repository }}/branches/main/protection \
+          set -euo pipefail
+          if [[ -z "$STRICT" ]]; then
+            echo "No captured strict setting; leaving protection unchanged."
+            exit 0
+          fi
+          case "$STRICT" in
+            true|false) ;;
+            *) echo "::error::Captured strict setting is not boolean; refusing to restore."; exit 1 ;;
+          esac
+          RESTORE_PAYLOAD=$(python3 - <<'PY'
+          import json
+          import os
+
+          payload = json.loads(os.environ["PAYLOAD"])
+          payload["required_status_checks"]["strict"] = os.environ["STRICT"] == "true"
+          print(json.dumps(payload))
+          PY
+          )
+          printf '%s\n' "$RESTORE_PAYLOAD" | gh api "repos/$GITHUB_REPOSITORY/branches/main/protection" \
             --method PUT \
             --input -
 
@@ -410,7 +523,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.prepare-release.outputs.release-sha }}
           persist-credentials: false
@@ -454,7 +567,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.prepare-release.outputs.release-sha }}
           persist-credentials: false
@@ -468,20 +581,13 @@ jobs:
           bunx "@anthropic-ai/mcpb@$MCPB_VERSION" pack .
           mv linkedin-mcp-server.mcpb linkedin-mcp-server-v$VERSION.mcpb
 
-      - name: Generate release notes
-        run: |
-          envsubst < RELEASE_NOTES_TEMPLATE.md > RELEASE_NOTES.md
-          echo "✅ Generated release notes from template"
-
       # Overwrites for the same reason as the distributions upload: the bun
       # cache save runs after this and can fail the job around it.
       - name: Upload release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: github-release-assets
-          path: |
-            linkedin-mcp-server-v${{ env.VERSION }}.mcpb
-            RELEASE_NOTES.md
+          path: linkedin-mcp-server-v${{ env.VERSION }}.mcpb
           if-no-files-found: error
           overwrite: true
           retention-days: 7
@@ -501,6 +607,11 @@ jobs:
         with:
           name: github-release-assets
 
+      - name: Download release notes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-notes
+
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -509,7 +620,7 @@ jobs:
           tag_name: v${{ env.VERSION }}
           files: |
             *.mcpb
-          generate_release_notes: true
+          generate_release_notes: false
           draft: false
           prerelease: false
           name: "v${{ env.VERSION }}"

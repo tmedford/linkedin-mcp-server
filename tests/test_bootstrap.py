@@ -43,9 +43,10 @@ from linkedin_mcp_server.bootstrap import (
     RuntimePolicy,
     SetupState,
     start_background_browser_setup_if_needed,
+    wait_for_login_to_finish,
 )
 from linkedin_mcp_server.config.schema import AppConfig
-from linkedin_mcp_server.core.exceptions import NetworkError
+from linkedin_mcp_server.core.exceptions import AccountRestrictedError, NetworkError
 from linkedin_mcp_server.exceptions import (
     AuthenticationBootstrapFailedError,
     AuthenticationInProgressError,
@@ -88,6 +89,28 @@ def _patch_inline_wait(monkeypatch, seconds: float, *, auto_import=False) -> Non
 async def _wait_event(event: asyncio.Event) -> None:
     """Await an event, returning None so the wrapping task is a Task[None]."""
     await event.wait()
+
+
+async def _wait_for_setup_signal(
+    signal: asyncio.Event, setup: asyncio.Task[None], hang_guard: asyncio.Event
+) -> None:
+    signal_wait = asyncio.create_task(signal.wait())
+    hang_wait = asyncio.create_task(hang_guard.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {signal_wait, setup, hang_wait}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if signal_wait in done:
+            return
+        if setup in done:
+            await setup
+            pytest.fail("browser setup completed before the expected test signal")
+        pytest.fail("browser setup test exceeded its independent hang guard")
+    finally:
+        for waiter in (signal_wait, hang_wait):
+            if not waiter.done():
+                waiter.cancel()
+        await asyncio.gather(signal_wait, hang_wait, return_exceptions=True)
 
 
 class TestBootstrap:
@@ -431,6 +454,7 @@ class TestBrowserSetupReady:
 
     def test_false_when_metadata_absent(self, isolate_profile_dir, monkeypatch):
         _patch_targets_and_version(monkeypatch)
+        _materialize_install(browsers_path(), ["chromium-1217"])
         assert browser_setup_ready() is False
 
     def test_false_when_browsers_dir_missing(self, isolate_profile_dir, monkeypatch):
@@ -446,31 +470,86 @@ class TestBrowserSetupReady:
         _write_metadata(install_metadata_path(), bdir)
         assert browser_setup_ready() is True
 
-    def test_false_when_marker_missing(self, isolate_profile_dir, monkeypatch):
+    @pytest.mark.parametrize("metadata_version", [_PATCHRIGHT_VERSION, "1.42.0"])
+    def test_false_when_marker_missing(
+        self, isolate_profile_dir, monkeypatch, metadata_version
+    ):
         _patch_targets_and_version(monkeypatch)
         bdir = browsers_path()
         bdir.mkdir(parents=True, exist_ok=True)
         (bdir / "chromium-1217").mkdir()
         (bdir / "chromium_headless_shell-1217").mkdir()
         # No INSTALLATION_COMPLETE files
-        _write_metadata(install_metadata_path(), bdir)
+        _write_metadata(
+            install_metadata_path(), bdir, patchright_version=metadata_version
+        )
         assert browser_setup_ready() is False
 
+    @pytest.mark.parametrize("metadata_version", [_PATCHRIGHT_VERSION, "1.42.0"])
     def test_false_when_required_revision_missing(
-        self, isolate_profile_dir, monkeypatch
+        self, isolate_profile_dir, monkeypatch, metadata_version
     ):
         _patch_targets_and_version(monkeypatch)
         bdir = browsers_path()
         _materialize_install(bdir, ["chromium-1208", "chromium_headless_shell-1208"])
-        _write_metadata(install_metadata_path(), bdir)
+        _write_metadata(
+            install_metadata_path(), bdir, patchright_version=metadata_version
+        )
         assert browser_setup_ready() is False
 
-    def test_false_on_pkg_version_mismatch(self, isolate_profile_dir, monkeypatch):
-        _patch_targets_and_version(monkeypatch, version="1.42.0")
+    @pytest.mark.parametrize("metadata_version", ["1.40.0", "1.42.0"])
+    def test_ready_with_peer_metadata_and_own_revision(
+        self, isolate_profile_dir, monkeypatch, metadata_version
+    ):
+        _patch_targets_and_version(monkeypatch)
         bdir = browsers_path()
-        _materialize_install(bdir, ["chromium-1217", "chromium_headless_shell-1217"])
-        _write_metadata(install_metadata_path(), bdir, patchright_version="1.41.0")
-        assert browser_setup_ready() is False
+        _materialize_install(bdir, ["chromium-1217"])
+        _write_metadata(
+            install_metadata_path(), bdir, patchright_version=metadata_version
+        )
+        assert browser_setup_ready() is True
+
+    @pytest.mark.parametrize(
+        "version,revision,peer_version",
+        [("1.62.3", "1234", "1.63.0"), ("1.63.0", "1243", "1.62.3")],
+    )
+    async def test_peer_metadata_does_not_restart_setup(
+        self, isolate_profile_dir, monkeypatch, version, revision, peer_version
+    ):
+        from linkedin_mcp_server import bootstrap
+
+        _patch_inline_wait(monkeypatch, 0)
+        _patch_targets_and_version(
+            monkeypatch, targets={"chromium-": revision}, version=version
+        )
+        _make_auth_ready(isolate_profile_dir)
+        bdir = browsers_path()
+        _materialize_install(bdir, ["chromium-1234", "chromium-1243"])
+        installer = AsyncMock()
+        monkeypatch.setattr(bootstrap, "_run_browser_setup", installer)
+        monkeypatch.setattr(
+            bootstrap, "_schedule_retained_browser_revision_report", lambda: None
+        )
+        initialize_bootstrap("managed")
+
+        try:
+            async with asyncio.timeout(5):
+                for writer_version in (version, peer_version, version, peer_version):
+                    with monkeypatch.context() as writer:
+                        writer.setattr(
+                            bootstrap,
+                            "_patchright_pkg_version",
+                            lambda: writer_version,
+                        )
+                        bootstrap._write_install_metadata(bdir, {"chromium-": True})
+                    metadata = install_metadata_path().read_bytes()
+
+                    await ensure_tool_ready_or_raise("search_jobs")
+
+                    installer.assert_not_awaited()
+                    assert install_metadata_path().read_bytes() == metadata
+        finally:
+            await bootstrap.stop_background_browser_setup()
 
     def test_false_on_browsers_path_mismatch(
         self, isolate_profile_dir, monkeypatch, tmp_path
@@ -1576,18 +1655,53 @@ class TestTwoStageInstall:
     ):
         from linkedin_mcp_server import bootstrap
 
+        loop = asyncio.get_running_loop()
+        clock = [loop.time()]
+        setup_started = asyncio.Event()
+        request_activity = asyncio.Event()
+        activity_recorded = asyncio.Event()
+        hang_guard = asyncio.Event()
+        monkeypatch.setattr(loop, "time", lambda: clock[0])
+
         async def progressing_setup(
             *, activity_callback: Callable[[], None], **_kwargs: object
         ) -> None:
+            setup_started.set()
             for _ in range(3):
-                await asyncio.sleep(0.04)
+                await request_activity.wait()
+                request_activity.clear()
                 activity_callback()
+                activity_recorded.set()
+
+        def trip_hang_guard() -> None:
+            try:
+                loop.call_soon_threadsafe(hang_guard.set)
+            except RuntimeError:
+                pass
 
         monkeypatch.setattr(bootstrap, "_browser_setup_ready", lambda: False)
         monkeypatch.setattr(bootstrap, "_run_browser_setup", progressing_setup)
         monkeypatch.setattr(bootstrap, "_BACKGROUND_BROWSER_SETUP_SECONDS", 0.06)
 
-        await bootstrap._run_background_browser_setup()
+        setup = asyncio.create_task(bootstrap._run_background_browser_setup())
+        fallback = threading.Timer(5.0, trip_hang_guard)
+        fallback.start()
+        try:
+            await _wait_for_setup_signal(setup_started, setup, hang_guard)
+            for _ in range(3):
+                clock[0] += 0.059
+                timers_checked = asyncio.Event()
+                loop.call_at(clock[0], timers_checked.set)
+                await _wait_for_setup_signal(timers_checked, setup, hang_guard)
+                request_activity.set()
+                await _wait_for_setup_signal(activity_recorded, setup, hang_guard)
+                activity_recorded.clear()
+            await setup
+        finally:
+            fallback.cancel()
+            if not setup.done():
+                setup.cancel()
+            await asyncio.gather(setup, return_exceptions=True)
 
     async def test_activity_still_extends_inactivity_under_the_ceiling(
         self, isolate_profile_dir, monkeypatch
@@ -1595,28 +1709,58 @@ class TestTwoStageInstall:
         """The absolute ceiling must not cost the inactivity extension."""
         from linkedin_mcp_server import bootstrap
 
+        loop = asyncio.get_running_loop()
+        clock = [loop.time()]
+        setup_started = asyncio.Event()
+        request_activity = asyncio.Event()
+        activity_recorded = asyncio.Event()
+        hang_guard = asyncio.Event()
         rounds = 0
+        monkeypatch.setattr(loop, "time", lambda: clock[0])
 
         async def progressing_setup(
             *, activity_callback: Callable[[], None], **_kwargs: object
         ) -> None:
             nonlocal rounds
+            setup_started.set()
             for _ in range(6):
-                await asyncio.sleep(0.04)
+                await request_activity.wait()
+                request_activity.clear()
                 activity_callback()
                 rounds += 1
+                activity_recorded.set()
+
+        def trip_hang_guard() -> None:
+            try:
+                loop.call_soon_threadsafe(hang_guard.set)
+            except RuntimeError:
+                pass
 
         monkeypatch.setattr(bootstrap, "_browser_setup_ready", lambda: False)
         monkeypatch.setattr(bootstrap, "_run_browser_setup", progressing_setup)
         monkeypatch.setattr(bootstrap, "_BACKGROUND_BROWSER_SETUP_SECONDS", 0.06)
         monkeypatch.setattr(bootstrap, "_BROWSER_SETUP_LIFETIME_SECONDS", 30.0)
 
-        await bootstrap._run_background_browser_setup()
+        setup = asyncio.create_task(bootstrap._run_background_browser_setup())
+        fallback = threading.Timer(5.0, trip_hang_guard)
+        fallback.start()
+        try:
+            await _wait_for_setup_signal(setup_started, setup, hang_guard)
+            for _ in range(6):
+                clock[0] += 0.059
+                timers_checked = asyncio.Event()
+                loop.call_at(clock[0], timers_checked.set)
+                await _wait_for_setup_signal(timers_checked, setup, hang_guard)
+                request_activity.set()
+                await _wait_for_setup_signal(activity_recorded, setup, hang_guard)
+                activity_recorded.clear()
+            await setup
+        finally:
+            fallback.cancel()
+            if not setup.done():
+                setup.cancel()
+            await asyncio.gather(setup, return_exceptions=True)
 
-        # Six rounds of 40ms outlive a 60ms inactivity window only because each
-        # one rescheduled it. The margin is a third of the window rather than a
-        # quarter of it: at 15ms against 20ms an ordinary scheduling delay was
-        # enough to expire the deadline this test says cannot expire.
         assert rounds == 6
 
     async def test_continuous_activity_cannot_extend_the_absolute_lifetime(
@@ -1857,29 +2001,44 @@ class TestTwoStageInstall:
 
         blocked = threading.Event()
         release = threading.Event()
+        fallback_fired = threading.Event()
+        loop = asyncio.get_running_loop()
+        clock = [loop.time()]
 
         def slow_mkdir(path: Path) -> None:
             blocked.set()
             release.wait()
 
+        def release_fallback() -> None:
+            fallback_fired.set()
+            release.set()
+
         async def install_must_not_start(*args: object, **kwargs: object) -> None:
             pytest.fail("the deadline should expire during cache preparation")
 
+        monkeypatch.setattr(loop, "time", lambda: clock[0])
         monkeypatch.setattr(bootstrap, "secure_mkdir", slow_mkdir)
         monkeypatch.setattr(
             bootstrap, "_run_patchright_install", install_must_not_start
         )
         monkeypatch.setattr(bootstrap, "_BACKGROUND_BROWSER_SETUP_SECONDS", 0.01)
 
-        started = asyncio.get_running_loop().time()
+        setup = asyncio.create_task(bootstrap._run_background_browser_setup())
+        fallback = threading.Timer(1.0, release_fallback)
+        fallback.start()
         try:
+            assert await asyncio.to_thread(blocked.wait, 5), (
+                "cache preparation did not enter its worker thread"
+            )
+            clock[0] += 0.01
             with pytest.raises(BrowserSetupFailedError, match="background deadline"):
-                await bootstrap._run_background_browser_setup()
+                await setup
+            assert not fallback_fired.is_set(), (
+                "the hang fallback released cache preparation before the deadline"
+            )
         finally:
             release.set()
-
-        assert blocked.is_set()
-        assert asyncio.get_running_loop().time() - started < 0.1
+            fallback.cancel()
 
     async def test_setup_filesystem_work_uses_a_daemon_thread(self, monkeypatch):
         from linkedin_mcp_server import bootstrap
@@ -2975,16 +3134,14 @@ class TestInstallerSupervisorLaunch:
             with pytest.raises(BrowserSetupFailedError, match="could not be measured"):
                 bootstrap._installer_download_snapshot(tmp_path, (target,))
 
-    async def test_a_vanished_peak_leaves_the_install_its_result(
-        self, monkeypatch, caplog
-    ):
-        """The ceiling bounds the footprint that stays, not the peak (#815).
+    async def test_an_observed_peak_refuses_a_successful_exit(self, monkeypatch):
+        """A breach the watcher saw decides, even when the archive is gone (#837).
 
-        A breach the watcher reports in the same turn the installer exits is
-        never consumed by the supervision loop, so what decides is the final
-        accounting. It runs on every success, which is why an install whose
-        archive is gone and whose tree fits is kept, and said out loud rather
-        than dropped.
+        The watcher reports it in the same turn the installer exits, and the
+        installer has deleted its archive, so the final tree fits. Before, the
+        supervision loop never read that report and the install was kept with
+        a warning, while the same breach a turn earlier refused it. A peak no
+        poll ever saw is still bounded only by the final accounting (#815).
         """
         from linkedin_mcp_server import bootstrap
         from linkedin_mcp_server.exceptions import BrowserSetupFailedError
@@ -3004,11 +3161,31 @@ class TestInstallerSupervisorLaunch:
             asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
         )
 
-        with caplog.at_level(logging.WARNING, logger="linkedin_mcp_server.bootstrap"):
+        with pytest.raises(BrowserSetupFailedError, match="exceeded its size limit"):
             await asyncio.wait_for(bootstrap._run_patchright_install("--no-shell"), 5)
 
-        assert proc.returncode == 0, "the install kept its own result"
-        assert "exceeded a setup bound" in caplog.text
+    async def test_a_failed_install_keeps_its_message_over_a_breach(self, monkeypatch):
+        """The installer's own failure still outranks the watcher's report."""
+        from linkedin_mcp_server import bootstrap
+        from linkedin_mcp_server.exceptions import BrowserSetupFailedError
+
+        proc = _FakeProc([b"ERROR: the mirror refused the archive\n"], 1)
+
+        async def breach(*_args: object) -> None:
+            raise BrowserSetupFailedError("Browser setup exceeded its size limit")
+
+        monkeypatch.setattr(bootstrap, "_watch_installer_activity", breach)
+        monkeypatch.setattr(
+            bootstrap,
+            "_installer_download_snapshot",
+            lambda *_args: (("kept", 1024, 1),),
+        )
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+        )
+
+        with pytest.raises(BrowserSetupFailedError, match="mirror refused"):
+            await asyncio.wait_for(bootstrap._run_patchright_install("--no-shell"), 5)
 
     async def test_a_failed_install_keeps_its_message_over_the_scan(self, monkeypatch):
         """The installer named the cause, so the accounting may not answer for it.
@@ -4079,26 +4256,45 @@ class TestPatchrightInstallStreaming:
             assert prefix == "linkedin-mcp-installer-"
             assert dir == Path(tempfile.gettempdir()).resolve()
             blocked.set()
-            release.wait()
+            # Bounded, so a version that ran this on the event loop stalls the
+            # loop for a while instead of hanging the suite.
+            release.wait(2.0)
             private.mkdir()
             created.set()
             return str(private)
 
         monkeypatch.setattr(bootstrap.tempfile, "mkdtemp", slow_temporary_root)
         self._patch_proc(monkeypatch, [], 0)
-        fallback = threading.Timer(0.2, release.set)
-        fallback.start()
-        started = asyncio.get_running_loop().time()
+        loop = asyncio.get_running_loop()
+        installing = asyncio.create_task(
+            bootstrap._run_patchright_install("--no-shell")
+        )
         try:
+            # The worker thread starts on the scheduler's time, not the
+            # test's. The timeout is measured from inside the blocked creation,
+            # because a 10ms budget spent before the worker even ran says
+            # nothing about whether that creation can hold the loop.
+            # Five seconds, the allowance this suite gives a thread to start
+            # under -n auto load; the entry wait is no claim about the timeout.
+            entry_deadline = loop.time() + 5.0
+            while not blocked.is_set():
+                assert loop.time() < entry_deadline, "the root creation never began"
+                await asyncio.sleep(0.001)
+            assert not created.is_set(), "the root was created on the event loop"
+            started = loop.time()
             with pytest.raises(TimeoutError):
                 async with asyncio.timeout(0.01):
-                    await bootstrap._run_patchright_install("--no-shell")
+                    await installing
+            elapsed = loop.time() - started
+            assert not created.is_set(), "the timeout waited for the root"
         finally:
             release.set()
-            fallback.cancel()
+            if not installing.done():
+                installing.cancel()
+            await asyncio.wait({installing}, timeout=1.0)
 
-        assert blocked.is_set()
-        assert asyncio.get_running_loop().time() - started < 0.1
+        assert installing.done()
+        assert elapsed < 0.1, f"the timeout took {elapsed:.3f}s"
         assert await asyncio.to_thread(created.wait, 1.0)
         for _ in range(100):
             if not private.exists():
@@ -4111,10 +4307,14 @@ class TestPatchrightInstallStreaming:
 
         blocked = threading.Event()
         release = threading.Event()
+        finished = threading.Event()
 
         def slow_targets() -> dict[str, str]:
             blocked.set()
-            release.wait()
+            # Bounded, so a version that ran this on the event loop stalls the
+            # loop for a while instead of hanging the suite.
+            release.wait(2.0)
+            finished.set()
             return {"chromium-": "1217"}
 
         monkeypatch.setattr(bootstrap, "_patchright_install_targets", slow_targets)
@@ -4124,19 +4324,33 @@ class TestPatchrightInstallStreaming:
             lambda: bootstrap._InstallerTemporaryRoot(tmp_path / "private", 0, 0, None),
         )
         self._patch_proc(monkeypatch, [], 0)
-        fallback = threading.Timer(0.2, release.set)
-        fallback.start()
-        started = asyncio.get_running_loop().time()
+        loop = asyncio.get_running_loop()
+        installing = asyncio.create_task(
+            bootstrap._run_patchright_install("--no-shell")
+        )
         try:
+            # Measured from inside the blocked read, for the reason
+            # test_slow_temporary_root_creation_cannot_block_timeout gives: a
+            # 10ms budget spent before the worker ran proves nothing about it.
+            entry_deadline = loop.time() + 5.0
+            while not blocked.is_set():
+                assert loop.time() < entry_deadline, "the registry read never began"
+                await asyncio.sleep(0.001)
+            assert not finished.is_set(), "the registry read ran on the event loop"
+            started = loop.time()
             with pytest.raises(TimeoutError):
                 async with asyncio.timeout(0.01):
-                    await bootstrap._run_patchright_install("--no-shell")
+                    await installing
+            elapsed = loop.time() - started
+            assert not finished.is_set(), "the timeout waited for the registry read"
         finally:
             release.set()
-            fallback.cancel()
+            if not installing.done():
+                installing.cancel()
+            await asyncio.wait({installing}, timeout=1.0)
 
-        assert blocked.is_set()
-        assert asyncio.get_running_loop().time() - started < 0.1
+        assert installing.done()
+        assert elapsed < 0.1, f"the timeout took {elapsed:.3f}s"
 
     @pytest.mark.parametrize("release", [(3, 12, 0), (3, 12, 3), (3, 13, 15)])
     def test_windows_creates_its_own_acl_on_every_supported_python(
@@ -5205,6 +5419,176 @@ class TestPatchrightInstallStreaming:
 
         assert events == ["terminate-job", "release-handle", "drain-job"]
         assert managed.assigned
+
+
+class TestWindowsInstallerTempFallback:
+    @pytest.fixture
+    def windows_temp(self, tmp_path, monkeypatch):
+        from linkedin_mcp_server import bootstrap, windows_acl
+
+        home = tmp_path / "home"
+        temporary = home / "AppData" / "Local" / "Temp"
+        temporary.mkdir(parents=True)
+        monkeypatch.setattr(bootstrap, "os", SimpleNamespace(name="nt", environ={}))
+        monkeypatch.setattr(bootstrap, "get_config", lambda: AppConfig())
+        monkeypatch.setattr(bootstrap.tempfile, "gettempdir", lambda: str(temporary))
+        monkeypatch.setattr(bootstrap.Path, "home", lambda: home)
+        real_lstat = Path.lstat
+
+        def windows_lstat(path):
+            details = real_lstat(path)
+            return SimpleNamespace(
+                st_mode=details.st_mode,
+                st_dev=details.st_dev,
+                st_ino=details.st_ino,
+                st_file_attributes=0,
+            )
+
+        monkeypatch.setattr(Path, "lstat", windows_lstat)
+        monkeypatch.setattr(windows_acl, "close_directory_pin", lambda _pin: None)
+        return home, temporary
+
+    @pytest.mark.parametrize("os_error", [False, True])
+    def test_rejected_default_temp_falls_back_to_home(
+        self, windows_temp, monkeypatch, caplog, os_error
+    ):
+        from linkedin_mcp_server import bootstrap, windows_acl
+        from linkedin_mcp_server.private_state import PrivateStateError
+
+        home, temporary = windows_temp
+        refusal = f"{home / 'AppData'} grants S-1-15-2-1 permission to remove or re-permission the installer path below it"
+
+        def create(parent, *, prefix):
+            if parent == temporary:
+                raise (
+                    PermissionError(refusal) if os_error else PrivateStateError(refusal)
+                )
+            target = parent / f"{prefix}example"
+            target.mkdir()
+            return target, object()
+
+        monkeypatch.setattr(windows_acl, "create_owner_only_directory", create)
+        with caplog.at_level(logging.INFO):
+            root = bootstrap._create_installer_temporary_root()
+
+        assert root.path.parent == home
+        assert root.path.is_dir()
+        assert root.pin is not None
+        assert list(temporary.iterdir()) == []
+        assert refusal in caplog.text
+
+    @pytest.mark.parametrize(
+        "error", [PermissionError("temp denied"), FileNotFoundError("temp removed")]
+    )
+    def test_default_parent_resolution_failure_falls_back(
+        self, windows_temp, monkeypatch, error
+    ):
+        from linkedin_mcp_server import bootstrap, windows_acl
+
+        home, _temporary = windows_temp
+
+        def unavailable_parent():
+            raise error
+
+        def create(parent, *, prefix):
+            target = parent / f"{prefix}example"
+            target.mkdir()
+            return target, object()
+
+        monkeypatch.setattr(
+            bootstrap, "_installer_temporary_parent", unavailable_parent
+        )
+        monkeypatch.setattr(windows_acl, "create_owner_only_directory", create)
+
+        root = bootstrap._create_installer_temporary_root()
+        assert root.path.parent == home
+        assert root.path.is_dir()
+
+    def test_safe_default_keeps_system_temp(self, windows_temp, monkeypatch):
+        from linkedin_mcp_server import bootstrap, windows_acl
+
+        _home, temporary = windows_temp
+
+        def create(parent, *, prefix):
+            target = parent / f"{prefix}example"
+            target.mkdir()
+            return target, object()
+
+        monkeypatch.setattr(windows_acl, "create_owner_only_directory", create)
+        root = bootstrap._create_installer_temporary_root()
+
+        assert root.path.parent == temporary
+        assert root.path.is_dir()
+
+    @pytest.mark.parametrize("configured", ["config", "environment"])
+    @pytest.mark.parametrize("resolution_fails", [False, True])
+    def test_explicit_temp_never_falls_back(
+        self, windows_temp, monkeypatch, configured, resolution_fails
+    ):
+        from linkedin_mcp_server import bootstrap, windows_acl
+        from linkedin_mcp_server.private_state import PrivateStateError
+
+        home, temporary = windows_temp
+        if configured == "config":
+            config = AppConfig()
+            config.browser.installer_temp_dir = str(temporary)
+            monkeypatch.setattr(bootstrap, "get_config", lambda: config)
+        else:
+            bootstrap.os.environ["INSTALLER_TEMP_DIR"] = str(temporary)
+        attempted = []
+
+        def refuse(parent, *, prefix):
+            attempted.append(parent)
+            raise PrivateStateError("sandbox grant")
+
+        monkeypatch.setattr(windows_acl, "create_owner_only_directory", refuse)
+        if resolution_fails:
+            temporary.rmdir()
+        with pytest.raises(PrivateStateError, match="INSTALLER_TEMP_DIR"):
+            bootstrap._create_installer_temporary_root()
+
+        assert attempted == ([] if resolution_fails else [temporary])
+        assert list(home.iterdir()) == [home / "AppData"]
+
+    def test_unsafe_home_reports_both_failures(self, windows_temp, monkeypatch):
+        from linkedin_mcp_server import bootstrap, windows_acl
+        from linkedin_mcp_server.private_state import PrivateStateError
+
+        home, temporary = windows_temp
+
+        def refuse(parent, *, prefix):
+            raise PrivateStateError(f"unsafe {parent}")
+
+        monkeypatch.setattr(windows_acl, "create_owner_only_directory", refuse)
+        with pytest.raises(PrivateStateError, match="INSTALLER_TEMP_DIR") as caught:
+            bootstrap._create_installer_temporary_root()
+
+        assert f"unsafe {temporary}" in str(caught.value)
+        assert f"unsafe {home}" in str(caught.value)
+        assert list(home.iterdir()) == [home / "AppData"]
+
+    @pytest.mark.parametrize(
+        "error", [PermissionError("home denied"), RuntimeError("no home")]
+    )
+    def test_unavailable_home_keeps_recovery_guidance(
+        self, windows_temp, monkeypatch, error
+    ):
+        from linkedin_mcp_server import bootstrap, windows_acl
+        from linkedin_mcp_server.private_state import PrivateStateError
+
+        def refuse(parent, *, prefix):
+            raise PrivateStateError("sandbox grant")
+
+        def unavailable_home():
+            raise error
+
+        monkeypatch.setattr(windows_acl, "create_owner_only_directory", refuse)
+        monkeypatch.setattr(bootstrap.Path, "home", unavailable_home)
+        with pytest.raises(PrivateStateError, match="INSTALLER_TEMP_DIR") as caught:
+            bootstrap._create_installer_temporary_root()
+
+        assert "sandbox grant" in str(caught.value)
+        assert str(error) in str(caught.value)
 
 
 class TestCredentialRedaction:
@@ -7694,6 +8078,69 @@ class TestEnsureBrowserInstalled:
 
         assert calls["value"] == 0
 
+    @staticmethod
+    def _terminal(monkeypatch, *, on: tuple[int, ...], foreground: bool) -> None:
+        """Put descriptors *on* a terminal, with this job in its foreground or not."""
+        group = os.getpgrp()
+        monkeypatch.setattr(os, "isatty", lambda fd: fd in on)
+        monkeypatch.setattr(
+            os, "tcgetpgrp", lambda _fd: group if foreground else group + 1
+        )
+
+    @pytest.mark.parametrize(
+        ("on", "foreground", "told_on"),
+        [
+            pytest.param((0, 1, 2), True, "out", id="at-a-terminal"),
+            # ``--status </dev/null`` from a shell: still stopped by Ctrl+Z.
+            pytest.param((1, 2), True, "out", id="stdin-redirected"),
+            # ``--status > status.log``: said where the user is, not in the file.
+            pytest.param((0, 2), True, "err", id="stdout-redirected"),
+            pytest.param((0,), True, None, id="both-outputs-redirected"),
+            pytest.param((0, 1, 2), False, None, id="background-job"),
+            pytest.param((), True, None, id="no-terminal"),
+        ],
+    )
+    def test_a_terminal_user_hears_that_suspending_does_not_pause(
+        self, isolate_profile_dir, monkeypatch, capsys, on, foreground, told_on
+    ):
+        """The installer runs outside the terminal's process group (#792).
+
+        So Ctrl+Z stops the command and the download goes on. Only the
+        foreground job of a terminal receives it, so only that job says so,
+        and on an output that is the terminal.
+        """
+        if os.name == "nt":
+            pytest.skip("Windows has no job control")
+        _patch_targets_and_version(monkeypatch)
+        monkeypatch.setattr(
+            "linkedin_mcp_server.bootstrap.browser_ready", lambda: False
+        )
+        self._stub(monkeypatch)
+        self._terminal(monkeypatch, on=on, foreground=foreground)
+
+        ensure_browser_installed()
+
+        captured = capsys.readouterr()
+        said = {
+            name
+            for name, text in (("out", captured.out), ("err", captured.err))
+            if "does not pause the download" in text
+        }
+        assert said == ({told_on} if told_on else set())
+
+    def test_a_ready_browser_says_nothing_about_suspending(
+        self, isolate_profile_dir, monkeypatch, capsys
+    ):
+        if os.name == "nt":
+            pytest.skip("Windows has no job control")
+        monkeypatch.setattr("linkedin_mcp_server.bootstrap.browser_ready", lambda: True)
+        self._stub(monkeypatch)
+        self._terminal(monkeypatch, on=(0, 1, 2), foreground=True)
+
+        ensure_browser_installed()
+
+        assert "pause" not in capsys.readouterr().out
+
     def test_shell_only_is_not_enough(self, isolate_profile_dir, monkeypatch):
         """A pre-existing shell-only install must still trigger the download.
 
@@ -7978,7 +8425,7 @@ class TestPatchrightCommandTargetContract:
     def test_the_locked_release_is_the_one_this_contract_describes(self):
         import importlib.metadata
 
-        assert importlib.metadata.version("patchright") == "1.61.2"
+        assert importlib.metadata.version("patchright") == "1.63.0"
 
     def _assert_is_an_ffmpeg_directory(self, name: str) -> None:
         """Pin the kind, and the revision to one this browsers.json names.
@@ -8043,22 +8490,28 @@ class TestPatchrightCommandTargetContract:
         """The condition a POSIX dry-run cannot show, read from the resolver."""
         import patchright
 
-        bundle = (
-            Path(patchright.__file__).parent
-            / "driver"
-            / "package"
-            / "lib"
-            / "coreBundle.js"
-        ).read_text()
+        # Whitespace collapsed: 1.63.0 prints each of these on one line where
+        # 1.61.2 broke it after the condition, and the condition is the claim.
+        bundle = " ".join(
+            (
+                Path(patchright.__file__).parent
+                / "driver"
+                / "package"
+                / "lib"
+                / "coreBundle.js"
+            )
+            .read_text()
+            .split()
+        )
 
         assert (
-            'if (process.platform === "win32")\n'
-            '          executables.push(this.findExecutable("winldd"));' in bundle
+            'if (process.platform === "win32") '
+            'executables.push(this.findExecutable("winldd"));' in bundle
         )
         # And ffmpeg's condition beside it: any argument resolving to a browser.
         assert (
-            "if (executable?.browserName)\n"
-            '            executables.push(this.findExecutable("ffmpeg"));' in bundle
+            "if (executable?.browserName) "
+            'executables.push(this.findExecutable("ffmpeg"));' in bundle
         )
         # winldd carries no revisionOverrides, so its directory is the plain one.
         assert "revisionOverrides" not in _registry_entry("winldd")
@@ -8426,7 +8879,7 @@ class TestInlineLoginWait:
         initialize_bootstrap("managed")
 
         # No raise: ensure_tool_ready_or_raise returns normally so the caller
-        # falls through to the scrape path.
+        # falls through to the page-read path.
         result = await ensure_tool_ready_or_raise("get_person_profile")
         assert result is None
 
@@ -8984,7 +9437,7 @@ class TestAutoLogin:
             _make_auth_ready(isolate_profile_dir)
             return True
 
-        # current_headless() reports the operator's --no-headless scrape mode; the
+        # current_headless() reports the operator's --no-headless read mode; the
         # restore in finally must put exactly that value back.
         monkeypatch.setattr(
             "linkedin_mcp_server.bootstrap.close_browser", spy_close_browser
@@ -9185,6 +9638,219 @@ class TestProxyErrorSurvivesTheImportTask:
 
         # No login task started: the proxy has to be fixed first.
         assert get_bootstrap_state().login_task is None
+
+
+class TestAPortalDuringImportOpensNoLogin:
+    """An import validation that lands on a portal is not a missing session.
+
+    Both handlers on the way out are broad enough to read it as one: the import
+    catches every network error as "nothing to import", and the awaiting caller
+    catches everything else as "fall back to a login". Either way the login it
+    opens has to go through the portal that is in the way.
+    """
+
+    async def test_the_refusal_reaches_the_caller_and_starts_no_login(
+        self, isolate_profile_dir, monkeypatch, _stub_import_env
+    ):
+        from linkedin_mcp_server.core.destination import raise_if_off_linkedin
+        from linkedin_mcp_server.core.exceptions import OffLinkedInLandingError
+
+        started: list[int] = []
+
+        async def fake_login_flow() -> None:
+            started.append(1)
+
+        async def landing_on_a_portal(*_args, **_kwargs):
+            raise_if_off_linkedin("https://portal.invalid/interstitial")
+
+        monkeypatch.setattr(
+            "linkedin_mcp_server.bootstrap._run_login_flow", fake_login_flow
+        )
+        # The real import wrapper runs, so its own handler is part of the path.
+        monkeypatch.setattr(_IMPORT_TARGET, landing_on_a_portal)
+        _patch_inline_wait(monkeypatch, 5, auto_import=True)
+        initialize_bootstrap("managed")
+
+        with pytest.raises(OffLinkedInLandingError, match="portal.invalid"):
+            await ensure_tool_ready_or_raise("get_person_profile")
+
+        assert started == []
+        assert get_bootstrap_state().login_task is None
+
+
+class TestARestrictedAccountOpensNoLoginWindow:
+    """LinkedIn's restriction ends the login, and no retry reopens one.
+
+    Nothing a person types into a new window can lift it, so each window after
+    the first would only land on the same page.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_session(self, isolate_profile_dir, monkeypatch):
+        monkeypatch.setattr(
+            "linkedin_mcp_server.bootstrap.browser_setup_ready", lambda: True
+        )
+        monkeypatch.setattr("linkedin_mcp_server.bootstrap._auth_ready", lambda: False)
+        initialize_bootstrap("managed")
+
+    def _restricted_login(self, monkeypatch) -> list[int]:
+        started: list[int] = []
+
+        async def fake_login_flow() -> None:
+            started.append(1)
+            raise AccountRestrictedError()
+
+        monkeypatch.setattr(
+            "linkedin_mcp_server.bootstrap._run_login_flow", fake_login_flow
+        )
+        return started
+
+    async def test_the_next_call_reports_it_instead_of_logging_in_again(
+        self, monkeypatch
+    ):
+        started = self._restricted_login(monkeypatch)
+        _patch_inline_wait(monkeypatch, 0)
+
+        with pytest.raises(AuthenticationInProgressError):
+            await ensure_tool_ready_or_raise("get_person_profile")
+        login_task = get_bootstrap_state().login_task
+        assert login_task is not None
+        await asyncio.wait({login_task})
+
+        with pytest.raises(AccountRestrictedError, match="identity verification"):
+            await ensure_tool_ready_or_raise("get_person_profile")
+
+        assert started == [1]
+        assert get_bootstrap_state().login_task is None
+
+    async def test_the_inline_wait_reports_it(self, monkeypatch):
+        started = self._restricted_login(monkeypatch)
+        _patch_inline_wait(monkeypatch, 5)
+
+        with pytest.raises(AccountRestrictedError, match="identity verification"):
+            await ensure_tool_ready_or_raise("get_person_profile")
+
+        assert started == [1]
+
+    async def test_a_restricted_import_is_not_followed_by_a_manual_login(
+        self, monkeypatch, _stub_import_env
+    ):
+        started = self._restricted_login(monkeypatch)
+        _patch_inline_wait(monkeypatch, 5, auto_import=True)
+
+        async def restricted_import(_ctx=None):
+            raise AccountRestrictedError()
+
+        monkeypatch.setattr(
+            "linkedin_mcp_server.bootstrap._try_auto_import_session",
+            restricted_import,
+        )
+
+        for _ in range(2):
+            with pytest.raises(AccountRestrictedError):
+                await ensure_tool_ready_or_raise("get_person_profile")
+
+        assert started == []
+        assert get_bootstrap_state().login_task is None
+
+    async def test_a_poller_after_a_restricted_import_opens_no_login(
+        self, monkeypatch, _stub_import_env
+    ):
+        # The import's own awaiter is not the only reader: a second poller can
+        # run after the import finished and before that awaiter sees the error.
+        started = self._restricted_login(monkeypatch)
+        _patch_inline_wait(monkeypatch, 0, auto_import=True)
+        other: asyncio.Task[None] | None = None
+
+        async def restricted_import(_ctx=None):
+            nonlocal other
+            other = asyncio.create_task(_start_login_if_needed())
+            raise AccountRestrictedError()
+
+        monkeypatch.setattr(
+            "linkedin_mcp_server.bootstrap._try_auto_import_session",
+            restricted_import,
+        )
+
+        # Straight into the login logic, as a readiness check reaches it, so the
+        # second poller is scheduled before the first sees the import's error.
+        with pytest.raises(AccountRestrictedError):
+            await _start_login_if_needed()
+        assert other is not None
+        with pytest.raises(AccountRestrictedError):
+            await other
+
+        assert started == []
+        assert get_bootstrap_state().login_task is None
+
+    async def test_a_cancelled_import_awaiter_leaves_no_login_behind(
+        self, monkeypatch, _stub_import_env
+    ):
+        # If the call that awaited the import is cancelled before it can record
+        # the refusal, the finished import still answers the next call.
+        started = self._restricted_login(monkeypatch)
+        _patch_inline_wait(monkeypatch, 0, auto_import=True)
+        import_done = asyncio.Event()
+
+        async def restricted_import(_ctx=None):
+            import_done.set()
+            raise AccountRestrictedError()
+
+        monkeypatch.setattr(
+            "linkedin_mcp_server.bootstrap._try_auto_import_session",
+            restricted_import,
+        )
+
+        first = asyncio.create_task(ensure_tool_ready_or_raise("get_person_profile"))
+        await import_done.wait()
+        first.cancel()
+        with pytest.raises((asyncio.CancelledError, AccountRestrictedError)):
+            await first
+
+        with pytest.raises(AccountRestrictedError):
+            await ensure_tool_ready_or_raise("get_person_profile")
+
+        assert started == []
+        assert get_bootstrap_state().login_task is None
+
+    async def test_waiting_for_the_sign_in_ends_with_the_restriction(self, monkeypatch):
+        # What the frontend waits on while repairing auth for the shared owner.
+        self._restricted_login(monkeypatch)
+        _patch_inline_wait(monkeypatch, 0)
+        with pytest.raises(AuthenticationInProgressError):
+            await ensure_tool_ready_or_raise("get_person_profile")
+
+        with pytest.raises(AccountRestrictedError):
+            await asyncio.wait_for(wait_for_login_to_finish(5), timeout=10)
+
+    async def test_a_retired_stale_session_gets_a_login_of_its_own(self, monkeypatch):
+        # A session on disk that failed is retired for a fresh login, and that
+        # login's own outcome is the answer, not the earlier refusal.
+        get_bootstrap_state().account_restricted = True
+        never_done = asyncio.Event()
+
+        async def pending_login() -> None:
+            await never_done.wait()
+
+        monkeypatch.setattr(
+            "linkedin_mcp_server.bootstrap._run_login_flow", pending_login
+        )
+        monkeypatch.setattr(
+            "linkedin_mcp_server.bootstrap._force_move_auth_state_aside",
+            lambda *_args: None,
+        )
+        _patch_inline_wait(monkeypatch, 0)
+
+        try:
+            with pytest.raises(AuthenticationStartedError):
+                await invalidate_auth_and_trigger_relogin()
+            with pytest.raises(AuthenticationInProgressError):
+                await ensure_tool_ready_or_raise("get_person_profile")
+        finally:
+            never_done.set()
+            login_task = get_bootstrap_state().login_task
+            if login_task is not None:
+                login_task.cancel()
 
 
 class TestAnOwnerNeverSignsInItself:
